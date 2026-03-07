@@ -52,6 +52,7 @@ import com.projekt_x.studybuddy.bridge.LlamaBridge
 import com.projekt_x.studybuddy.bridge.MockVADBridge
 import com.projekt_x.studybuddy.bridge.VoicePipelineManager
 import com.projekt_x.studybuddy.model.ModelInfo
+import com.projekt_x.studybuddy.service.WakeWordService
 import com.projekt_x.studybuddy.ui.components.PerformanceStatusBar
 import com.projekt_x.studybuddy.ui.components.RamOptimizerButton
 import com.projekt_x.studybuddy.ui.components.RamOptimizerDialog
@@ -120,6 +121,12 @@ class MainActivity : ComponentActivity() {
                     contextSize = config.contextSize
                 )
                 
+                // Check if launched from wake word
+                val launchFromWakeWord = intent?.getBooleanExtra(WakeWordService.EXTRA_LAUNCH_FROM_WAKE, false) ?: false
+                if (launchFromWakeWord) {
+                    Log.i(TAG, "🎯 App launched from wake word!")
+                }
+                
                 // Switch to UI thread to update content
                 withContext(Dispatchers.Main) {
                     setContent {
@@ -127,7 +134,8 @@ class MainActivity : ComponentActivity() {
                             MiniApp(
                                 bridge = bridge!!,
                                 queue = queue!!,
-                                metricsState = metricsState
+                                metricsState = metricsState,
+                                launchFromWakeWord = launchFromWakeWord
                             )
                         }
                     }
@@ -276,7 +284,8 @@ fun InitializingView() {
 fun MiniApp(
     bridge: com.projekt_x.studybuddy.bridge.LlamaBridge,
     queue: InferenceQueue,
-    metricsState: PerformanceMetricsState
+    metricsState: PerformanceMetricsState,
+    launchFromWakeWord: Boolean = false
 ) {
     // Sync with bridge's actual loaded state
     var isModelLoaded by remember { mutableStateOf(bridge.isLoaded()) }
@@ -284,7 +293,7 @@ fun MiniApp(
     var errorMessage by remember { mutableStateOf<String?>(null) }
     
     // Voice mode states
-    var isVoiceModeActive by remember { mutableStateOf(false) }
+    var isVoiceModeActive by remember { mutableStateOf(launchFromWakeWord) }
     
     // Periodically sync model loaded state from bridge
     LaunchedEffect(Unit) {
@@ -416,7 +425,8 @@ fun MiniApp(
                     queue = queue,
                     metricsState = metricsState,
                     isVoiceModeActive = isVoiceModeActive,
-                    onVoiceModeChange = { isVoiceModeActive = it }
+                    onVoiceModeChange = { isVoiceModeActive = it },
+                    launchFromWakeWord = launchFromWakeWord
                 )
             }
             
@@ -802,7 +812,8 @@ fun UnifiedChatView(
     queue: InferenceQueue,
     metricsState: PerformanceMetricsState,
     isVoiceModeActive: Boolean,
-    onVoiceModeChange: (Boolean) -> Unit
+    onVoiceModeChange: (Boolean) -> Unit,
+    launchFromWakeWord: Boolean = false
 ) {
     val context = LocalContext.current
     val focusManager = LocalFocusManager.current
@@ -821,6 +832,9 @@ fun UnifiedChatView(
     var voiceResponse by remember { mutableStateOf("") }
     var isRecording by remember { mutableStateOf(false) }
     var audioLevel by remember { mutableFloatStateOf(0f) }
+    
+    // Wake word greeting state
+    var hasPlayedWakeGreeting by remember { mutableStateOf(false) }
     
     // Permission launcher
     val permissionLauncher = rememberLauncherForActivityResult(
@@ -897,6 +911,17 @@ fun UnifiedChatView(
             voicePipelineManager?.startVoiceConversation()
         } else if (!isVoiceModeActive) {
             voicePipelineManager?.stopConversation()
+        }
+    }
+    
+    // Play greeting when launched from wake word
+    LaunchedEffect(isVoiceModeActive, isVoiceReady, hasPlayedWakeGreeting) {
+        if (launchFromWakeWord && isVoiceModeActive && isVoiceReady && !hasPlayedWakeGreeting) {
+            hasPlayedWakeGreeting = true
+            // Small delay to ensure TTS is fully ready
+            delay(500)
+            Log.i(TAG, "🎯 Playing wake word greeting...")
+            voicePipelineManager?.playGreeting("Hey there! How can I help you?")
         }
     }
     

@@ -151,6 +151,9 @@ dependencies {
     
     // Sherpa-ONNX for TTS (local AAR)
     implementation(files("libs/sherpa-onnx.aar"))
+    
+    // Porcupine Wake Word Detection
+    implementation("ai.picovoice:porcupine-android:2.2.0")
 
     // Testing
     testImplementation("junit:junit:4.13.2")

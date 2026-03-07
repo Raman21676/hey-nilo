@@ -1140,6 +1140,30 @@ class VoicePipelineManager(
     }
     
     /**
+     * Play a greeting message via TTS
+     * Used when app is launched from wake word
+     */
+    fun playGreeting(text: String) {
+        scope.launch {
+            try {
+                if (kokoroTTS?.isReady == true) {
+                    Log.i(TAG, "Playing greeting: '$text'")
+                    kokoroTTS?.speak(text)
+                    
+                    // Add greeting to UI
+                    withContext(Dispatchers.Main) {
+                        onResponseUpdate?.invoke(text, true)
+                    }
+                } else {
+                    Log.w(TAG, "TTS not ready, cannot play greeting")
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Error playing greeting", e)
+            }
+        }
+    }
+    
+    /**
      * Release all resources
      */
     fun release() {

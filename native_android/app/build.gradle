@@ -1,0 +1,163 @@
+plugins {
+    id 'com.android.application'
+    id 'org.jetbrains.kotlin.android'
+    id 'org.jetbrains.kotlin.plugin.compose'
+}
+
+android {
+    namespace = "com.projekt_x.studybuddy"
+    compileSdk = 35
+    ndkVersion = "27.0.12077973"
+
+    defaultConfig {
+        applicationId = "com.projekt_x.studybuddy"
+        minSdk = 26
+        targetSdk = 35
+        versionCode = 1
+        versionName = "1.0"
+
+        // NDK configuration optimized for low-end devices
+        ndk {
+            // Only ARM64 - most modern Android devices
+            abiFilters += ["arm64-v8a"]
+        }
+
+        externalNativeBuild {
+            cmake {
+                // Aggressive optimization for mobile
+                cppFlags += [
+                    "-O3",
+                    "-fPIC",
+                    "-std=c++17",
+                    "-ffast-math",
+                    "-funroll-loops",
+                    "-ftree-vectorize",
+                    "-DNDEBUG"
+                ]
+                arguments += [
+                    "-DANDROID_STL=c++_shared",
+                    "-DCMAKE_BUILD_TYPE=Release",
+                    "-DLLAMA_BUILD_TESTS=OFF",
+                    "-DLLAMA_BUILD_EXAMPLES=OFF",
+                    // CPU optimizations
+                    "-DGGML_NATIVE=OFF",
+                    "-DGGML_CPU_ARM_ARCH=native",
+                    "-DLLAMA_FILE=OFF",
+                    // Memory optimizations for low-end devices
+                    "-DGGML_BACKEND_DL=OFF",
+                    "-DLLAMA_SERVER=OFF",
+                    "-DLLAMA_BUILD_COMMON=OFF"
+                ]
+            }
+        }
+    }
+
+    externalNativeBuild {
+        cmake {
+            path = file("src/main/cpp/CMakeLists.txt")
+            version = "3.22.1"
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled = true
+            shrinkResources = true
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro"
+            )
+        }
+        debug {
+            minifyEnabled = false
+            externalNativeBuild {
+                cmake {
+                    arguments += "-DCMAKE_BUILD_TYPE=RelWithDebInfo"
+                }
+            }
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
+    }
+
+    kotlinOptions {
+        jvmTarget = "17"
+    }
+    
+    // Use Java 17 toolchain - more compatible
+    kotlin {
+        jvmToolchain(17)
+    }
+    
+    java {
+        toolchain {
+            languageVersion = JavaLanguageVersion.of(17)
+        }
+    }
+
+    buildFeatures {
+        compose = true
+    }
+
+    composeOptions {
+        kotlinCompilerExtensionVersion = "1.5.15"
+    }
+
+    packaging {
+        resources {
+            excludes += "/META-INF/{AL2.0,LGPL2.1}"
+        }
+        jniLibs {
+            pickFirsts += ["lib/**/libc++_shared.so", "lib/**/libonnxruntime.so"]
+            // Include Sherpa-ONNX native libraries
+            keepDebugSymbols += ["lib/**/libsherpa-onnx-*.so"]
+        }
+    }
+    
+    // Prevent compression of large model files
+    androidResources {
+        noCompress += ["onnx", "bin", "gguf"]
+    }
+}
+
+dependencies {
+    // Core Android
+    implementation("androidx.core:core-ktx:1.15.0")
+    implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.7")
+    implementation("androidx.activity:activity-compose:1.10.0")
+
+    // Jetpack Compose
+    implementation(platform("androidx.compose:compose-bom:2024.12.01"))
+    implementation("androidx.compose.ui:ui")
+    implementation("androidx.compose.ui:ui-graphics")
+    implementation("androidx.compose.ui:ui-tooling-preview")
+    implementation("androidx.compose.material3:material3")
+
+    // ViewModel
+    implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.7")
+    implementation("androidx.lifecycle:lifecycle-runtime-compose:2.8.7")
+
+    // Coroutines
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.1")
+
+    // ONNX Runtime for VAD and TTS
+    implementation("com.microsoft.onnxruntime:onnxruntime-android:1.16.3")
+    
+    // ReLinker for proper native library loading with RTLD_GLOBAL
+    implementation("com.getkeepsafe.relinker:relinker:1.4.5")
+    
+    // Sherpa-ONNX for TTS (local AAR)
+    implementation(files("libs/sherpa-onnx.aar"))
+
+    // Testing
+    testImplementation("junit:junit:4.13.2")
+    androidTestImplementation("androidx.test.ext:junit:1.2.1")
+    androidTestImplementation("androidx.test.espresso:espresso-core:3.6.1")
+    androidTestImplementation(platform("androidx.compose:compose-bom:2024.12.01"))
+    androidTestImplementation("androidx.compose.ui:ui-test-junit4")
+    debugImplementation("androidx.compose.ui:ui-tooling")
+    debugImplementation("androidx.compose.ui:ui-test-manifest")
+}

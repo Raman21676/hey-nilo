@@ -1,0 +1,8 @@
+<resources>
+    <style name="Theme.Mini" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+        <!-- Use panda logo for splash screen background -->
+        <item name="android:windowBackground">@drawable/splash_background</item>
+    </style>
+</resources>

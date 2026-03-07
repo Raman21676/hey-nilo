@@ -1,0 +1,32 @@
+# macOS
+.DS_Store
+
+# Gradle
+.gradle/
+build/
+!gradle/wrapper/gradle-wrapper.jar
+
+# CMake
+.cxx/
+.externalNativeBuild/
+
+# Local properties
+local.properties
+
+# IDE
+.idea/
+*.iml
+
+# APK outputs
+*.apk
+*.aab
+
+# Model files (large binaries - download separately)
+*.onnx
+*.bin
+*.gguf
+native_android/app/src/main/assets/models/
+
+# Large dependencies (submodules)
+llama.cpp/
+whisper.cpp/

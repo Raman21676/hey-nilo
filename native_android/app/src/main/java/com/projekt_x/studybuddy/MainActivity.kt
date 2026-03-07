@@ -889,10 +889,13 @@ fun UnifiedChatView(
     }
     
     // Handle voice mode activation
-    LaunchedEffect(isVoiceModeActive) {
+    // FIX: Also depend on isVoiceReady to handle race condition
+    // When user opens voice mode before initialization completes,
+    // this will trigger again once isVoiceReady becomes true
+    LaunchedEffect(isVoiceModeActive, isVoiceReady) {
         if (isVoiceModeActive && isVoiceReady) {
             voicePipelineManager?.startVoiceConversation()
-        } else {
+        } else if (!isVoiceModeActive) {
             voicePipelineManager?.stopConversation()
         }
     }

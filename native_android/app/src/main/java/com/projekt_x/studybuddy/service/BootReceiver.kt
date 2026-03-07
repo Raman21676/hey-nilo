@@ -35,8 +35,8 @@ class BootReceiver : BroadcastReceiver() {
     }
 
     private fun startWakeWordService(context: Context) {
-        val serviceIntent = Intent(context, WakeWordService::class.java).apply {
-            action = WakeWordService.ACTION_START
+        val serviceIntent = Intent(context, OpenSourceWakeWordService::class.java).apply {
+            action = OpenSourceWakeWordService.ACTION_START
         }
         
         try {
@@ -45,7 +45,7 @@ class BootReceiver : BroadcastReceiver() {
             } else {
                 context.startService(serviceIntent)
             }
-            Log.i(TAG, "✓ Wake word service started")
+            Log.i(TAG, "✓ Open source wake word service started")
         } catch (e: Exception) {
             Log.e(TAG, "Failed to start wake word service", e)
         }

@@ -53,7 +53,7 @@ import com.projekt_x.studybuddy.bridge.MockVADBridge
 import com.projekt_x.studybuddy.bridge.VoicePipelineManager
 import com.projekt_x.studybuddy.model.ModelInfo
 import com.projekt_x.studybuddy.service.WakeWordManager
-import com.projekt_x.studybuddy.service.WakeWordService
+import com.projekt_x.studybuddy.service.OpenSourceWakeWordService
 import com.projekt_x.studybuddy.ui.components.PerformanceStatusBar
 import com.projekt_x.studybuddy.ui.components.RamOptimizerButton
 import com.projekt_x.studybuddy.ui.components.RamOptimizerDialog
@@ -123,7 +123,7 @@ class MainActivity : ComponentActivity() {
                 )
                 
                 // Check if launched from wake word
-                val launchFromWakeWord = intent?.getBooleanExtra(WakeWordService.EXTRA_LAUNCH_FROM_WAKE, false) ?: false
+                val launchFromWakeWord = intent?.getBooleanExtra(OpenSourceWakeWordService.EXTRA_LAUNCH_FROM_WAKE, false) ?: false
                 if (launchFromWakeWord) {
                     Log.i(TAG, "🎯 App launched from wake word!")
                 }
@@ -467,10 +467,7 @@ fun WakeWordSettingsDialog(
     
     val context = LocalContext.current
     var wakeWordEnabled by remember { mutableStateOf(wakeWordManager.isEnabled()) }
-    var accessKey by remember { mutableStateOf(wakeWordManager.getAccessKey()) }
     var isServiceRunning by remember { mutableStateOf(wakeWordManager.isServiceRunning()) }
-    var showAccessKeyInput by remember { mutableStateOf(false) }
-    var tempAccessKey by remember { mutableStateOf(accessKey) }
     
     // Main Settings Dialog
     AlertDialog(
@@ -525,33 +522,40 @@ fun WakeWordSettingsDialog(
                     Switch(
                         checked = wakeWordEnabled,
                         onCheckedChange = { enabled ->
-                            if (enabled && !wakeWordManager.hasAccessKey()) {
-                                showAccessKeyInput = true
-                            } else {
-                                wakeWordEnabled = enabled
-                                wakeWordManager.setEnabled(enabled)
-                                isServiceRunning = wakeWordManager.isServiceRunning()
-                            }
+                            wakeWordEnabled = enabled
+                            wakeWordManager.setEnabled(enabled)
+                            isServiceRunning = wakeWordManager.isServiceRunning()
                         }
                     )
                 }
                 
-                // Access Key Button
-                OutlinedButton(
-                    onClick = { 
-                        tempAccessKey = accessKey
-                        showAccessKeyInput = true 
-                    },
-                    modifier = Modifier.fillMaxWidth()
+                // Open Source Info
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.secondaryContainer
+                    )
                 ) {
-                    Icon(imageVector = Icons.Default.Settings, contentDescription = null)
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text(if (wakeWordManager.hasAccessKey()) "Update Access Key" else "Set Access Key")
+                    Column(
+                        modifier = Modifier.padding(12.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        Text(
+                            text = "🆓 100% Open Source",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSecondaryContainer
+                        )
+                        Text(
+                            text = "Uses Sherpa-ONNX - no third-party services, no API keys, completely free!",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSecondaryContainer
+                        )
+                    }
                 }
                 
                 // Instructions
                 Text(
-                    text = "1. Get free access key at picovoice.ai\n2. Train 'Hey Nilo' wake word\n3. Enter access key above\n4. Enable wake word",
+                    text = "Note: Wake word model files required.\n\nDownload from:\ngithub.com/k2-fsa/sherpa-onnx/releases\n\nPlace files in:\nAndroid/data/com.projekt_x.studybuddy/files/models/wake_word/",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -563,47 +567,6 @@ fun WakeWordSettingsDialog(
             }
         }
     )
-    
-    // Access Key Input Dialog
-    if (showAccessKeyInput) {
-        AlertDialog(
-            onDismissRequest = { showAccessKeyInput = false },
-            title = { Text("Picovoice Access Key") },
-            text = {
-                Column {
-                    OutlinedTextField(
-                        value = tempAccessKey,
-                        onValueChange = { tempAccessKey = it },
-                        label = { Text("Access Key") },
-                        placeholder = { Text("Enter your Picovoice access key") },
-                        singleLine = true
-                    )
-                    Spacer(modifier = Modifier.height(8.dp))
-                    Text(
-                        text = "Get your free access key at:\npicovoice.ai/console",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-            },
-            confirmButton = {
-                TextButton(
-                    onClick = {
-                        accessKey = tempAccessKey
-                        wakeWordManager.setAccessKey(tempAccessKey)
-                        showAccessKeyInput = false
-                    }
-                ) {
-                    Text("Save")
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { showAccessKeyInput = false }) {
-                    Text("Cancel")
-                }
-            }
-        )
-    }
 }
 
 @Composable

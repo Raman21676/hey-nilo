@@ -149,11 +149,8 @@ dependencies {
     // ReLinker for proper native library loading with RTLD_GLOBAL
     implementation("com.getkeepsafe.relinker:relinker:1.4.5")
     
-    // Sherpa-ONNX for TTS (local AAR)
+    // Sherpa-ONNX for TTS, STT, VAD, and Keyword Spotting (local AAR)
     implementation(files("libs/sherpa-onnx.aar"))
-    
-    // Porcupine Wake Word Detection
-    implementation("ai.picovoice:porcupine-android:2.2.0")
 
     // Testing
     testImplementation("junit:junit:4.13.2")

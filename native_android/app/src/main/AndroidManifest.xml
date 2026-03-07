@@ -41,9 +41,9 @@
             </intent-filter>
         </activity>
         
-        <!-- Wake Word Detection Service -->
+        <!-- Open Source Wake Word Detection Service -->
         <service
-            android:name=".service.WakeWordService"
+            android:name=".service.OpenSourceWakeWordService"
             android:enabled="true"
             android:exported="false"
             android:foregroundServiceType="microphone"

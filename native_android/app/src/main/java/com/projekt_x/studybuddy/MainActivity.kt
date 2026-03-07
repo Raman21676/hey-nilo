@@ -52,6 +52,7 @@ import com.projekt_x.studybuddy.bridge.LlamaBridge
 import com.projekt_x.studybuddy.bridge.MockVADBridge
 import com.projekt_x.studybuddy.bridge.VoicePipelineManager
 import com.projekt_x.studybuddy.model.ModelInfo
+import com.projekt_x.studybuddy.service.WakeWordManager
 import com.projekt_x.studybuddy.service.WakeWordService
 import com.projekt_x.studybuddy.ui.components.PerformanceStatusBar
 import com.projekt_x.studybuddy.ui.components.RamOptimizerButton
@@ -303,11 +304,18 @@ fun MiniApp(
         }
     }
     
+    // Context
+    val context = LocalContext.current
+    
     // RAM Optimizer state
     var isOptimizing by remember { mutableStateOf(false) }
     var showOptimizerDialog by remember { mutableStateOf(false) }
     var optimizationProgress by remember { mutableFloatStateOf(0f) }
     var optimizationResult by remember { mutableStateOf<OptimizationResult?>(null) }
+    
+    // Wake Word settings state
+    var showWakeWordSettings by remember { mutableStateOf(false) }
+    val wakeWordManager = remember { WakeWordManager(context) }
     
     val scope = rememberCoroutineScope()
     val metrics by remember { derivedStateOf { metricsState.metrics } }
@@ -380,8 +388,8 @@ fun MiniApp(
                             onOptimize = { performOptimization() },
                             isOptimizing = isOptimizing
                         )
-                        IconButton(onClick = { /* Show device info */ }) {
-                            Icon(Icons.Default.Settings, contentDescription = "Settings")
+                        IconButton(onClick = { showWakeWordSettings = true }) {
+                            Icon(Icons.Default.Settings, contentDescription = "Wake Word Settings")
                         }
                     }
                 )
@@ -438,7 +446,163 @@ fun MiniApp(
                 result = optimizationResult,
                 onDismiss = { showOptimizerDialog = false }
             )
+            
+            // Wake Word Settings Dialog
+            WakeWordSettingsDialog(
+                isVisible = showWakeWordSettings,
+                onDismiss = { showWakeWordSettings = false },
+                wakeWordManager = wakeWordManager
+            )
         }
+    }
+}
+
+@Composable
+fun WakeWordSettingsDialog(
+    isVisible: Boolean,
+    onDismiss: () -> Unit,
+    wakeWordManager: WakeWordManager
+) {
+    if (!isVisible) return
+    
+    val context = LocalContext.current
+    var wakeWordEnabled by remember { mutableStateOf(wakeWordManager.isEnabled()) }
+    var accessKey by remember { mutableStateOf(wakeWordManager.getAccessKey()) }
+    var isServiceRunning by remember { mutableStateOf(wakeWordManager.isServiceRunning()) }
+    var showAccessKeyInput by remember { mutableStateOf(false) }
+    var tempAccessKey by remember { mutableStateOf(accessKey) }
+    
+    // Main Settings Dialog
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Wake Word Settings") },
+        text = {
+            Column(
+                verticalArrangement = Arrangement.spacedBy(16.dp)
+            ) {
+                // Status
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = CardDefaults.cardColors(
+                        containerColor = if (isServiceRunning) 
+                            MaterialTheme.colorScheme.primaryContainer 
+                        else 
+                            MaterialTheme.colorScheme.surfaceVariant
+                    )
+                ) {
+                    Column(
+                        modifier = Modifier.padding(16.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Text(
+                            text = if (isServiceRunning) "🎙️ Listening for 'Hey Nilo'" else "⏸️ Wake word disabled",
+                            style = MaterialTheme.typography.titleSmall
+                        )
+                        Text(
+                            text = if (isServiceRunning) 
+                                "Service is running in background" 
+                            else 
+                                "Enable to use voice activation",
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                    }
+                }
+                
+                // Enable/Disable Toggle
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column {
+                        Text("Enable Wake Word")
+                        Text(
+                            "Listen for 'Hey Nilo'",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Switch(
+                        checked = wakeWordEnabled,
+                        onCheckedChange = { enabled ->
+                            if (enabled && !wakeWordManager.hasAccessKey()) {
+                                showAccessKeyInput = true
+                            } else {
+                                wakeWordEnabled = enabled
+                                wakeWordManager.setEnabled(enabled)
+                                isServiceRunning = wakeWordManager.isServiceRunning()
+                            }
+                        }
+                    )
+                }
+                
+                // Access Key Button
+                OutlinedButton(
+                    onClick = { 
+                        tempAccessKey = accessKey
+                        showAccessKeyInput = true 
+                    },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Icon(imageVector = Icons.Default.Settings, contentDescription = null)
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(if (wakeWordManager.hasAccessKey()) "Update Access Key" else "Set Access Key")
+                }
+                
+                // Instructions
+                Text(
+                    text = "1. Get free access key at picovoice.ai\n2. Train 'Hey Nilo' wake word\n3. Enter access key above\n4. Enable wake word",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Close")
+            }
+        }
+    )
+    
+    // Access Key Input Dialog
+    if (showAccessKeyInput) {
+        AlertDialog(
+            onDismissRequest = { showAccessKeyInput = false },
+            title = { Text("Picovoice Access Key") },
+            text = {
+                Column {
+                    OutlinedTextField(
+                        value = tempAccessKey,
+                        onValueChange = { tempAccessKey = it },
+                        label = { Text("Access Key") },
+                        placeholder = { Text("Enter your Picovoice access key") },
+                        singleLine = true
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text(
+                        text = "Get your free access key at:\npicovoice.ai/console",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        accessKey = tempAccessKey
+                        wakeWordManager.setAccessKey(tempAccessKey)
+                        showAccessKeyInput = false
+                    }
+                ) {
+                    Text("Save")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showAccessKeyInput = false }) {
+                    Text("Cancel")
+                }
+            }
+        )
     }
 }
 

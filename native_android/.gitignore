@@ -17,3 +17,9 @@ local.properties
 # APK outputs
 *.apk
 *.aab
+
+# Model files (large binaries - download separately)
+*.onnx
+*.bin
+*.gguf
+app/src/main/assets/models/

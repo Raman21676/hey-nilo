@@ -58,7 +58,7 @@ private val LightColorScheme = lightColorScheme(
 )
 
 @Composable
-fun StudyBuddyTheme(
+fun HeyNiloTheme(
     darkTheme: Boolean = isSystemInDarkTheme(),
     // Disable dynamic color to use our panda theme consistently
     dynamicColor: Boolean = false,

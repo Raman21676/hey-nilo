@@ -58,7 +58,7 @@ import com.projekt_x.studybuddy.ui.components.PerformanceStatusBar
 import com.projekt_x.studybuddy.ui.components.RamOptimizerButton
 import com.projekt_x.studybuddy.ui.components.RamOptimizerDialog
 import com.projekt_x.studybuddy.ui.components.OptimizationResult
-import com.projekt_x.studybuddy.ui.theme.StudyBuddyTheme
+import com.projekt_x.studybuddy.ui.theme.HeyNiloTheme
 import kotlinx.coroutines.*
 import kotlin.coroutines.coroutineContext
 import androidx.compose.runtime.mutableFloatStateOf
@@ -85,7 +85,7 @@ class MainActivity : ComponentActivity() {
         // Show loading UI first
         enableEdgeToEdge()
         setContent {
-            StudyBuddyTheme {
+            HeyNiloTheme {
                 InitializingView()
             }
         }
@@ -136,8 +136,8 @@ class MainActivity : ComponentActivity() {
                 // Switch to UI thread to update content
                 withContext(Dispatchers.Main) {
                     setContent {
-                        StudyBuddyTheme {
-                            MiniApp(
+                        HeyNiloTheme {
+                            HeyNiloApp(
                                 bridge = bridge!!,
                                 queue = queue!!,
                                 memoryManager = memManager,
@@ -159,7 +159,7 @@ class MainActivity : ComponentActivity() {
                         Toast.LENGTH_LONG
                     ).show()
                     setContent {
-                        StudyBuddyTheme {
+                        HeyNiloTheme {
                             ErrorView(
                                 message = "Failed to initialize: ${e.message}",
                                 onRetry = { recreate() }
@@ -250,14 +250,14 @@ fun InitializingView() {
             ) {
                 Image(
                     painter = painterResource(id = R.drawable.panda_logo),
-                    contentDescription = "Mini Logo",
+                    contentDescription = "Hey-Nilo Logo",
                     modifier = Modifier.size(140.dp)
                 )
             }
             
             // App Name
             Text(
-                text = "Mini",
+                text = "Hey-Nilo",
                 style = MaterialTheme.typography.headlineLarge,
                 color = MaterialTheme.colorScheme.primary,
                 fontWeight = androidx.compose.ui.text.font.FontWeight.Bold
@@ -287,7 +287,7 @@ fun InitializingView() {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun MiniApp(
+fun HeyNiloApp(
     bridge: com.projekt_x.studybuddy.bridge.LlamaBridge,
     queue: InferenceQueue,
     memoryManager: MemoryManager?,
@@ -382,7 +382,7 @@ fun MiniApp(
         topBar = {
             Column {
                 TopAppBar(
-                    title = { Text("Mini") },
+                    title = { Text("Hey-Nilo") },
                     actions = {
                         // RAM Optimizer Button
                         RamOptimizerButton(
@@ -405,7 +405,7 @@ fun MiniApp(
                 .padding(padding)
         ) {
             when {
-                isLoading -> LoadingView("Loading Mini...")
+                isLoading -> LoadingView("Loading Hey-Nilo...")
                 errorMessage != null -> ErrorView(
                     message = errorMessage!!,
                     onRetry = { errorMessage = null }
@@ -572,14 +572,14 @@ fun ModelSetupView(
     ) {
         Image(
             painter = painterResource(id = R.drawable.panda_logo),
-            contentDescription = "Mini Logo",
+            contentDescription = "Hey-Nilo Logo",
             modifier = Modifier.size(120.dp)
         )
         
         Spacer(modifier = Modifier.height(24.dp))
         
         Text(
-            text = "Mini",
+            text = "Hey-Nilo",
             style = MaterialTheme.typography.headlineSmall
         )
         
@@ -1047,7 +1047,7 @@ fun UnifiedChatView(
                         value = inputText,
                         onValueChange = { inputText = it },
                         modifier = Modifier.weight(1f),
-                        placeholder = { Text("Message Mini...") },
+                        placeholder = { Text("Message Hey-Nilo...") },
                         enabled = !isGenerating && !isVoiceModeActive,
                         keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
                         keyboardActions = KeyboardActions(

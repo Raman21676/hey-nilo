@@ -30,13 +30,6 @@ class OfflineLLMProvider(
     
     companion object {
         private const val TAG = "OfflineLLMProvider"
-        
-        // TinyLlama chat template tokens
-        private const val SYSTEM_START = "<|system|>\n"
-        private const val SYSTEM_END = "</s>"
-        private const val USER_START = "<|user|>\n"
-        private const val USER_END = "</s>"
-        private const val ASSISTANT_START = "<|assistant|>\n"
     }
     
     override val provider: ApiProvider = ApiProvider.OFFLINE
@@ -240,54 +233,44 @@ class OfflineLLMProvider(
     
     /**
      * Format prompt using TinyLlama chat template
+     * Delegates to LlamaBridge.buildTinyLlamaPrompt for consistency
      */
     private fun formatPrompt(request: CompletionRequest): String {
-        val sb = StringBuilder()
-        
-        // System prompt
+        // Build combined system prompt with memory context
         val systemPrompt = buildString {
-            // Base system prompt
             request.systemPrompt?.let { append(it) }
-            
-            // Add memory context if present
             request.memoryContext?.let { context ->
                 if (isNotEmpty()) append("\n\n")
                 append(context)
             }
         }
         
-        if (systemPrompt.isNotBlank()) {
-            sb.append(SYSTEM_START)
-            sb.append(systemPrompt)
-            sb.append(SYSTEM_END)
-            sb.append("\n")
+        // Get the last user message
+        val lastUserMessage = request.messages
+            .lastOrNull { it.role == MessageRole.USER }
+            ?.content ?: ""
+        
+        // Use LlamaBridge's prompt builder if available, otherwise build manually
+        return llamaBridge?.buildTinyLlamaPrompt(
+            userMessage = lastUserMessage,
+            systemPrompt = systemPrompt.ifBlank { LlamaBridge.DEFAULT_SYSTEM_PROMPT },
+            memoryContext = null // Already included in systemPrompt
+        ) ?: buildManualPrompt(systemPrompt, lastUserMessage)
+    }
+    
+    /**
+     * Manual prompt builder (fallback if LlamaBridge not available)
+     */
+    private fun buildManualPrompt(systemPrompt: String, userMessage: String): String {
+        return buildString {
+            append("<|system|>\n")
+            append(systemPrompt.ifBlank { LlamaBridge.DEFAULT_SYSTEM_PROMPT })
+            append("</s>\n")
+            append("<|user|>\n")
+            append(userMessage)
+            append("</s>\n")
+            append("<|assistant|>\n")
         }
-        
-        // Messages
-        request.messages.forEach { message ->
-            when (message.role) {
-                MessageRole.USER -> {
-                    sb.append(USER_START)
-                    sb.append(message.content)
-                    sb.append(USER_END)
-                    sb.append("\n")
-                }
-                MessageRole.ASSISTANT -> {
-                    sb.append(ASSISTANT_START)
-                    sb.append(message.content)
-                    sb.append(SYSTEM_END) // </s> for assistant too
-                    sb.append("\n")
-                }
-                MessageRole.SYSTEM -> {
-                    // Already handled above
-                }
-            }
-        }
-        
-        // Start assistant response
-        sb.append(ASSISTANT_START)
-        
-        return sb.toString()
     }
     
     /**

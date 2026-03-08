@@ -48,6 +48,16 @@ class LlamaBridge(private val context: Context) : BaseBridge() {
         private const val TAG = "LlamaBridge"
         private const val MODEL_SIZE_MB = 650L // TinyLlama size
         
+        // Default system prompt (fallback)
+        const val DEFAULT_SYSTEM_PROMPT = "You are a helpful AI assistant. Answer clearly and concisely."
+        
+        // TinyLlama chat template tokens
+        const val SYSTEM_START = "<|system|>\n"
+        const val SYSTEM_END = "</s>"
+        const val USER_START = "<|user|>\n"
+        const val USER_END = "</s>"
+        const val ASSISTANT_START = "<|assistant|>\n"
+        
         // Native library loading
         init {
             try {
@@ -68,6 +78,7 @@ class LlamaBridge(private val context: Context) : BaseBridge() {
     // Model configuration
     private var currentConfig: BridgeConfig? = null
     private var modelPath: String? = null
+    private var currentSystemPrompt: String = DEFAULT_SYSTEM_PROMPT
 
     // ========================================================================
     // BaseBridge Implementation
@@ -256,16 +267,98 @@ class LlamaBridge(private val context: Context) : BaseBridge() {
 
     /**
      * Set system prompt/persona
+     * 
+     * @param prompt The system prompt text
+     * @param includeMemory Whether to include memory context (if available)
+     * @return true if successful
      */
-    fun setSystemPrompt(prompt: String): Boolean {
+    @JvmOverloads
+    fun setSystemPrompt(prompt: String, includeMemory: Boolean = false): Boolean {
         return try {
+            currentSystemPrompt = prompt
             nativeSetSystemPrompt(prompt)
-            Log.i(TAG, "System prompt set")
+            Log.i(TAG, "System prompt set (includeMemory=$includeMemory)")
             true
         } catch (e: Exception) {
             Log.e(TAG, "Error setting system prompt: ${e.message}")
             false
         }
+    }
+    
+    /**
+     * Get current system prompt
+     */
+    fun getSystemPrompt(): String = currentSystemPrompt
+    
+    /**
+     * Generate text with system prompt prepended
+     * 
+     * This method formats the prompt using TinyLlama chat template:
+     * <|system|>{systemPrompt}</s>
+     * <|user|>{userMessage}</s>
+     * <|assistant|>
+     * 
+     * @param userMessage The user's message
+     * @param systemPrompt Optional system prompt (uses current if null)
+     * @param memoryContext Optional memory context to inject
+     * @param callback Streaming callback for tokens
+     */
+    fun generateWithSystemPrompt(
+        userMessage: String,
+        systemPrompt: String? = null,
+        memoryContext: String? = null,
+        callback: StreamingCallback
+    ) {
+        val fullPrompt = buildTinyLlamaPrompt(
+            userMessage = userMessage,
+            systemPrompt = systemPrompt ?: currentSystemPrompt,
+            memoryContext = memoryContext
+        )
+        generate(fullPrompt, callback)
+    }
+    
+    /**
+     * Build TinyLlama chat template formatted prompt
+     * 
+     * Format:
+     * <|system|>
+     * {systemPrompt}
+     * [Memory Context]
+     * </s>
+     * <|user|>
+     * {userMessage}</s>
+     * <|assistant|>
+     */
+    fun buildTinyLlamaPrompt(
+        userMessage: String,
+        systemPrompt: String = currentSystemPrompt,
+        memoryContext: String? = null
+    ): String {
+        val sb = StringBuilder()
+        
+        // System section
+        sb.append(SYSTEM_START)
+        sb.append(systemPrompt)
+        
+        // Add memory context if provided
+        memoryContext?.let {
+            sb.append("\n\n")
+            sb.append(it)
+        }
+        
+        sb.append(SYSTEM_END)
+        sb.append("\n")
+        
+        // User section
+        sb.append(USER_START)
+        sb.append(userMessage)
+        sb.append(USER_END)
+        sb.append("\n")
+        
+        // Assistant prefix (model will complete this)
+        sb.append(ASSISTANT_START)
+        
+        return sb.toString()
     }
 
     /**

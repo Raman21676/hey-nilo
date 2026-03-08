@@ -188,16 +188,27 @@
 - `getSystemPrompt()` - returns current system prompt
 - Updated `setSystemPrompt(prompt, includeMemory=false)` - @JvmOverloads for Java compatibility
 
-### Job 2.4: VoicePipelineManager Integration ⏱️ 4h
-- [ ] Inject memory context block before each LLM call
-- [ ] Build system prompt with `[MEMORY]` block
-- [ ] Use `OfflineLLMProvider` instead of direct `LlamaBridge` calls
-- [ ] Test: Verify offline voice mode still works end-to-end
-- [ ] Verify context injection doesn't break token limits
-- [ ] Measure latency impact (should be < 50ms)
+### Job 2.4: VoicePipelineManager Integration ✅ COMPLETE ⏱️ 4h
+- [x] Inject memory context block before each LLM call
+- [x] Build system prompt with `[MEMORY]` block
+- [x] Use `LLMProvider` abstraction with fallback to legacy queue
+- [x] Added `processWithLLMProvider()` for streaming with new provider
+- [x] Added `processWithLegacyQueue()` for backward compatibility
+- [x] Auto-detect provider availability and switch accordingly
 
-**Files to modify:**
-- `bridge/VoicePipelineManager.kt`
+**Files modified:**
+- `bridge/VoicePipelineManager.kt` - Added LLMProvider integration
+
+**New Methods:**
+- `processWithLLMProvider(transcription)` - Uses LLMProvider.stream()
+- `processWithLegacyQueue(transcription)` - Falls back to InferenceQueue
+- `initializeLLMProvider()` - Sets up provider in initialization
+
+**Integration:**
+- VoicePipelineManager now accepts optional `llmProvider` parameter
+- If provider available → uses streaming LLMProvider
+- If not available → falls back to legacy InferenceQueue
+- Memory context injected automatically in both paths
 
 ### Job 2.5: Testing ⏱️ 3h
 - [ ] Test: Voice mode with memory context

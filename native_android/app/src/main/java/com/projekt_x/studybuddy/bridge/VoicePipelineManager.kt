@@ -6,6 +6,7 @@ import android.os.Environment
 import android.speech.tts.TextToSpeech
 import android.util.Log
 import com.projekt_x.studybuddy.InferenceQueue
+import com.projekt_x.studybuddy.bridge.llm.*
 import com.projekt_x.studybuddy.util.CopyAssetToExternal
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
@@ -23,11 +24,19 @@ import java.util.concurrent.atomic.AtomicBoolean
  * 
  * Fixed version with proper audio buffering and VAD-driven STT triggering.
  */
+/**
+ * Voice Pipeline Manager - Updated for LLMProvider abstraction
+ * 
+ * Supports both offline (TinyLlama) and online (API) LLMs through
+ * the LLMProvider interface. Memory context is automatically injected
+ * into system prompts for personalized responses.
+ */
 class VoicePipelineManager(
     private val context: Context,
     private val llmBridge: LlamaBridge? = null,
     private val queue: InferenceQueue? = null,
-    private val memoryManager: MemoryManager? = null
+    private val memoryManager: MemoryManager? = null,
+    private val llmProvider: LLMProvider? = null
 ) {
     
     companion object {
@@ -223,8 +232,15 @@ class VoicePipelineManager(
                     kokoroTTS = null
                 }
                 
-                // Step 5: Validate pipeline
-                Log.i(TAG, "\n[Step 5/5] Validating pipeline...")
+                // Step 5: Initialize LLM Provider (if not already provided)
+                Log.i(TAG, "\n[Step 5/6] Initializing LLM Provider...")
+                val providerOk = initializeLLMProvider()
+                if (!providerOk) {
+                    Log.w(TAG, "⚠ LLM Provider not available")
+                }
+                
+                // Step 6: Validate pipeline
+                Log.i(TAG, "\n[Step 6/6] Validating pipeline...")
                 val pipelineValid = validatePipeline()
                 
                 isInitialized = pipelineValid
@@ -235,6 +251,8 @@ class VoicePipelineManager(
                 Log.i(TAG, "  STT: ${if (sttBridge?.isAvailable() == true) "✓" else "✗"} ${sttBridge?.getName() ?: "None"}")
                 Log.i(TAG, "  TTS: ${if (kokoroTTS?.isReady == true) "✓" else "✗"} Kokoro TTS")
                 Log.i(TAG, "  Audio: ${if (audioRecorder != null) "✓" else "✗"}")
+                Log.i(TAG, "  LLM: ${if (llmProvider?.isAvailable() == true) "✓" else "✗"} ${llmProvider?.displayName ?: "Legacy"}")
+                Log.i(TAG, "  Memory: ${if (memoryManager != null) "✓" else "✗"} ${if (memoryManager != null) "Active" else "Disabled"}")
                 Log.i(TAG, "=".repeat(60))
                 
                 withContext(Dispatchers.Main) {
@@ -334,6 +352,43 @@ class VoicePipelineManager(
         }
         
         return allSuccess
+    }
+    
+    /**
+     * Initialize LLM Provider
+     * Creates OfflineLLMProvider if llmBridge is available and no provider was injected
+     */
+    private suspend fun initializeLLMProvider(): Boolean {
+        return try {
+            // If provider already injected, just initialize it
+            if (llmProvider != null) {
+                Log.i(TAG, "Using injected LLM Provider: ${llmProvider.displayName}")
+                val initialized = llmProvider.initialize()
+                if (initialized) {
+                    Log.i(TAG, "✓ LLM Provider initialized: ${llmProvider.displayName}")
+                } else {
+                    Log.w(TAG, "⚠ LLM Provider failed to initialize")
+                }
+                return initialized
+            }
+            
+            // Otherwise, create OfflineLLMProvider from llmBridge if available
+            if (llmBridge?.isLoaded() == true) {
+                Log.i(TAG, "Creating OfflineLLMProvider from LlamaBridge")
+                val offlineProvider = OfflineLLMProvider(context, llmBridge)
+                val initialized = offlineProvider.initialize()
+                if (initialized) {
+                    Log.i(TAG, "✓ OfflineLLMProvider created and initialized")
+                }
+                return initialized
+            }
+            
+            Log.w(TAG, "No LLM bridge available for provider creation")
+            false
+        } catch (e: Exception) {
+            Log.e(TAG, "Error initializing LLM Provider", e)
+            false
+        }
     }
     
     /**
@@ -785,10 +840,134 @@ class VoicePipelineManager(
     /**
      * Send transcription to LLM for processing
      * 
+     * LLM PROVIDER INTEGRATION: Uses LLMProvider abstraction when available,
+     * falls back to InferenceQueue for backward compatibility.
+     * 
      * MEMORY INTEGRATION: Injects memory context block into the prompt
      * Format: [MEMORY] User: {name}. Facts: ... People: ... Pending: ... [/MEMORY]\n\nUser: {message}
      */
     private fun processWithLLM(transcription: String) {
+        // Use LLMProvider if available, otherwise fall back to queue
+        if (llmProvider?.isAvailable() == true) {
+            processWithLLMProvider(transcription)
+        } else {
+            processWithLegacyQueue(transcription)
+        }
+    }
+    
+    /**
+     * Process with new LLMProvider (streaming, memory context)
+     */
+    private fun processWithLLMProvider(transcription: String) {
+        scope.launch {
+            try {
+                // Clear previous response text when NEW user query starts
+                fullResponseText.clear()
+                
+                // Build memory context
+                val memoryContext = memoryManager?.buildContextBlock(maxTokens = 300) ?: ""
+                
+                Log.i(TAG, "Sending to LLM Provider: '$transcription'")
+                Log.i(TAG, "Memory context: ${if (memoryContext.isNotBlank()) "present" else "none"}")
+                
+                // Prepare streaming TTS
+                ttsTextBuffer.clear()
+                lastSpokenPosition = 0
+                ttsStartTime = System.currentTimeMillis()
+                isStreamingTTSActive = false
+                
+                // Build completion request
+                val request = CompletionRequest(
+                    messages = listOf(ChatMessage.user(transcription)),
+                    systemPrompt = LlamaBridge.DEFAULT_SYSTEM_PROMPT,
+                    memoryContext = memoryContext.ifBlank { null },
+                    maxTokens = 256,
+                    stream = true
+                )
+                
+                // Stream response
+                var tokenCount = 0
+                llmProvider?.stream(request)?.collect { response ->
+                    when {
+                        response.isError -> {
+                            currentState = PipelineState.ERROR
+                            withContext(Dispatchers.Main) {
+                                onError?.invoke("LLM Error: ${response.error}")
+                            }
+                        }
+                        response.isComplete -> {
+                            Log.i(TAG, "LLM response complete, tokens: $tokenCount")
+                            isLLMResponseComplete = true
+                            
+                            val finalResponse = fullResponseText.toString()
+                            
+                            // Start TTS if not already started
+                            if (!isStreamingTTSActive && kokoroTTS?.isReady == true && ttsTextBuffer.isNotBlank()) {
+                                Log.i(TAG, "LLM complete, starting TTS for short response")
+                                startStreamingTTS()
+                            }
+                            
+                            // Send final response to UI
+                            withContext(Dispatchers.Main) {
+                                onResponseUpdate?.invoke(finalResponse, true)
+                            }
+                            
+                            // Save conversation to memory
+                            scope.launch(Dispatchers.IO) {
+                                try {
+                                    memoryManager?.saveConversationExchange(
+                                        userMessage = transcription,
+                                        assistantMessage = finalResponse
+                                    )
+                                    Log.d(TAG, "Conversation exchange saved to memory")
+                                } catch (e: Exception) {
+                                    Log.w(TAG, "Failed to save conversation: ${e.message}")
+                                }
+                            }
+                        }
+                        response.isStreaming -> {
+                            tokenCount++
+                            currentState = PipelineState.SPEAKING
+                            
+                            // Append token to response
+                            val newText = response.text
+                            val token = newText.removePrefix(fullResponseText.toString())
+                            fullResponseText.append(token)
+                            
+                            // Add to TTS buffer
+                            if (token.isNotBlank()) {
+                                ttsTextBuffer.append(token)
+                            }
+                            
+                            // Start TTS when we have a complete sentence
+                            if (!isStreamingTTSActive && hasCompleteSentence(ttsTextBuffer.toString())) {
+                                Log.i(TAG, "First sentence ready (${ttsTextBuffer.length} chars), starting streaming TTS")
+                                startStreamingTTS()
+                            }
+                            
+                            // Update UI
+                            withContext(Dispatchers.Main) {
+                                onResponseUpdate?.invoke(fullResponseText.toString(), false)
+                            }
+                        }
+                    }
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "LLM Provider processing failed", e)
+                currentState = PipelineState.ERROR
+                withContext(Dispatchers.Main) {
+                    onError?.invoke("Processing failed: ${e.message}")
+                }
+                delay(1000)
+                restartListening()
+            }
+        }
+    }
+    
+    /**
+     * Process with legacy InferenceQueue (backward compatibility)
+     */
+    private fun processWithLegacyQueue(transcription: String) {
         scope.launch {
             try {
                 // Clear previous response text when NEW user query starts
@@ -804,7 +983,7 @@ class VoicePipelineManager(
                     transcription
                 }
                 
-                Log.i(TAG, "Sending to LLM with memory context: ${memoryContext.isNotBlank()}")
+                Log.i(TAG, "Sending to LLM (legacy queue) with memory context: ${memoryContext.isNotBlank()}")
                 if (memoryContext.isNotBlank()) {
                     Log.d(TAG, "Memory context: ${memoryContext.take(100)}...")
                 }

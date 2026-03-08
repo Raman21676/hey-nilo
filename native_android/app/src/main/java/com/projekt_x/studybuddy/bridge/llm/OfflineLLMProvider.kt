@@ -36,6 +36,7 @@ class OfflineLLMProvider(
     override val displayName: String = "TinyLlama (Offline)"
     
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+    private var currentGenerationJob: Job? = null
     
     /**
      * Check if model is loaded and ready
@@ -69,6 +70,8 @@ class OfflineLLMProvider(
      * Release resources
      */
     override fun release() {
+        currentGenerationJob?.cancel()
+        currentGenerationJob = null
         scope.cancel()
     }
     
@@ -159,37 +162,53 @@ class OfflineLLMProvider(
         val startTime = System.currentTimeMillis()
         val prompt = formatPrompt(request)
         val fullResponse = StringBuilder()
-        var hasError = false
+        
+        // Create channels for token and error communication
+        val tokenChannel = Channel<String>(Channel.UNLIMITED)
+        val errorChannel = Channel<String?>(1)
         
         try {
-            // Create a channel to collect tokens
-            val channel = kotlinx.coroutines.channels.Channel<String>(Channel.UNLIMITED)
-            
             // Start generation in background
-            scope.launch(Dispatchers.IO) {
+            currentGenerationJob = scope.launch(Dispatchers.IO) {
                 try {
                     llamaBridge?.generate(prompt, object : StreamingCallback {
                         override fun onToken(token: String) {
-                            channel.trySend(token)
+                            tokenChannel.trySend(token)
                         }
                         
                         override fun onComplete(fullText: String) {
-                            channel.close()
+                            errorChannel.trySend(null)  // No error
+                            tokenChannel.close()
+                            errorChannel.close()
                         }
                         
                         override fun onError(errorMsg: String) {
-                            hasError = true
-                            channel.close()
+                            errorChannel.trySend(errorMsg)
+                            tokenChannel.close()
+                            errorChannel.close()
                         }
                     })
                 } catch (e: Exception) {
-                    hasError = true
-                    channel.close()
+                    errorChannel.trySend(e.message ?: "Generation error")
+                    tokenChannel.close()
+                    errorChannel.close()
                 }
             }
             
+            // Wait for error or completion signal
+            val error = errorChannel.receiveCatching().getOrNull()
+            if (error != null) {
+                emit(LLMResponse(
+                    error = error,
+                    isComplete = true,
+                    provider = provider,
+                    latencyMs = System.currentTimeMillis() - startTime
+                ))
+                return@flow
+            }
+            
             // Emit tokens as they arrive
-            for (token in channel) {
+            for (token in tokenChannel) {
                 fullResponse.append(token)
                 emit(LLMResponse(
                     text = fullResponse.toString(),
@@ -212,6 +231,9 @@ class OfflineLLMProvider(
                 tokensUsed = estimateTokens(prompt) + estimateTokens(fullResponse.toString())
             ))
             
+        } catch (e: CancellationException) {
+            // Normal cancellation, don't emit error
+            throw e
         } catch (e: Exception) {
             Log.e(TAG, "Streaming failed", e)
             emit(LLMResponse(
@@ -220,6 +242,8 @@ class OfflineLLMProvider(
                 provider = provider,
                 latencyMs = System.currentTimeMillis() - startTime
             ))
+        } finally {
+            currentGenerationJob = null
         }
     }.flowOn(Dispatchers.IO)
     

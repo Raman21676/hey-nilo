@@ -931,7 +931,16 @@ class VoicePipelineManager(
                             
                             // Append token to response
                             val newText = response.text
-                            val token = newText.removePrefix(fullResponseText.toString())
+                            // FIX: Handle case where text doesn't start with previous
+                            val token = if (newText.length > fullResponseText.length && 
+                                          newText.startsWith(fullResponseText.toString())) {
+                                newText.substring(fullResponseText.length)
+                            } else if (newText.length > fullResponseText.length) {
+                                // Text changed unexpectedly, use diff
+                                newText.removePrefix(fullResponseText.toString())
+                            } else {
+                                "" // No new content
+                            }
                             fullResponseText.append(token)
                             
                             // Add to TTS buffer

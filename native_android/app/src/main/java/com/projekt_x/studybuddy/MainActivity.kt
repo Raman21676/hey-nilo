@@ -49,11 +49,11 @@ import androidx.lifecycle.lifecycleScope
 import com.projekt_x.studybuddy.bridge.BridgeConfig
 import com.projekt_x.studybuddy.bridge.BridgeManager
 import com.projekt_x.studybuddy.bridge.LlamaBridge
+import com.projekt_x.studybuddy.bridge.MemoryManager
 import com.projekt_x.studybuddy.bridge.MockVADBridge
 import com.projekt_x.studybuddy.bridge.VoicePipelineManager
+import com.projekt_x.studybuddy.bridge.FileSystemManager
 import com.projekt_x.studybuddy.model.ModelInfo
-import com.projekt_x.studybuddy.service.WakeWordManager
-import com.projekt_x.studybuddy.service.OpenSourceWakeWordService
 import com.projekt_x.studybuddy.ui.components.PerformanceStatusBar
 import com.projekt_x.studybuddy.ui.components.RamOptimizerButton
 import com.projekt_x.studybuddy.ui.components.RamOptimizerDialog
@@ -72,6 +72,7 @@ class MainActivity : ComponentActivity() {
     
     private var bridge: LlamaBridge? = null
     private var queue: InferenceQueue? = null
+    private var memoryManager: MemoryManager? = null
     private val mainHandler = Handler(Looper.getMainLooper())
     private val metricsState = PerformanceMetricsState()
     private val bridgeManager = BridgeManager.getInstance()
@@ -110,6 +111,13 @@ class MainActivity : ComponentActivity() {
                 val config = bridge!!.detectDeviceConfig()
                 Log.i(TAG, "Device config: $config")
                 
+                // Initialize memory system
+                val fileSystemManager = FileSystemManager(this@MainActivity)
+                fileSystemManager.initialize()
+                memoryManager = MemoryManager(this@MainActivity, fileSystemManager)
+                memoryManager?.initialize()
+                Log.i(TAG, "Memory system initialized")
+                
                 // Initialize queue
                 queue = InferenceQueue.getInstance(bridge!!)
                 
@@ -122,11 +130,8 @@ class MainActivity : ComponentActivity() {
                     contextSize = config.contextSize
                 )
                 
-                // Check if launched from wake word
-                val launchFromWakeWord = intent?.getBooleanExtra(OpenSourceWakeWordService.EXTRA_LAUNCH_FROM_WAKE, false) ?: false
-                if (launchFromWakeWord) {
-                    Log.i(TAG, "🎯 App launched from wake word!")
-                }
+                // Capture memoryManager in local variable for composable access
+                val memManager = memoryManager
                 
                 // Switch to UI thread to update content
                 withContext(Dispatchers.Main) {
@@ -135,8 +140,8 @@ class MainActivity : ComponentActivity() {
                             MiniApp(
                                 bridge = bridge!!,
                                 queue = queue!!,
-                                metricsState = metricsState,
-                                launchFromWakeWord = launchFromWakeWord
+                                memoryManager = memManager,
+                                metricsState = metricsState
                             )
                         }
                     }
@@ -285,8 +290,8 @@ fun InitializingView() {
 fun MiniApp(
     bridge: com.projekt_x.studybuddy.bridge.LlamaBridge,
     queue: InferenceQueue,
-    metricsState: PerformanceMetricsState,
-    launchFromWakeWord: Boolean = false
+    memoryManager: MemoryManager?,
+    metricsState: PerformanceMetricsState
 ) {
     // Sync with bridge's actual loaded state
     var isModelLoaded by remember { mutableStateOf(bridge.isLoaded()) }
@@ -294,7 +299,7 @@ fun MiniApp(
     var errorMessage by remember { mutableStateOf<String?>(null) }
     
     // Voice mode states
-    var isVoiceModeActive by remember { mutableStateOf(launchFromWakeWord) }
+    var isVoiceModeActive by remember { mutableStateOf(false) }
     
     // Periodically sync model loaded state from bridge
     LaunchedEffect(Unit) {
@@ -312,10 +317,6 @@ fun MiniApp(
     var showOptimizerDialog by remember { mutableStateOf(false) }
     var optimizationProgress by remember { mutableFloatStateOf(0f) }
     var optimizationResult by remember { mutableStateOf<OptimizationResult?>(null) }
-    
-    // Wake Word settings state
-    var showWakeWordSettings by remember { mutableStateOf(false) }
-    val wakeWordManager = remember { WakeWordManager(context) }
     
     val scope = rememberCoroutineScope()
     val metrics by remember { derivedStateOf { metricsState.metrics } }
@@ -388,9 +389,6 @@ fun MiniApp(
                             onOptimize = { performOptimization() },
                             isOptimizing = isOptimizing
                         )
-                        IconButton(onClick = { showWakeWordSettings = true }) {
-                            Icon(Icons.Default.Settings, contentDescription = "Wake Word Settings")
-                        }
                     }
                 )
                 // Performance status bar below the app bar
@@ -431,10 +429,10 @@ fun MiniApp(
                 else -> UnifiedChatView(
                     bridge = bridge,
                     queue = queue,
+                    memoryManager = memoryManager,
                     metricsState = metricsState,
                     isVoiceModeActive = isVoiceModeActive,
-                    onVoiceModeChange = { isVoiceModeActive = it },
-                    launchFromWakeWord = launchFromWakeWord
+                    onVoiceModeChange = { isVoiceModeActive = it }
                 )
             }
             
@@ -447,126 +445,8 @@ fun MiniApp(
                 onDismiss = { showOptimizerDialog = false }
             )
             
-            // Wake Word Settings Dialog
-            WakeWordSettingsDialog(
-                isVisible = showWakeWordSettings,
-                onDismiss = { showWakeWordSettings = false },
-                wakeWordManager = wakeWordManager
-            )
         }
     }
-}
-
-@Composable
-fun WakeWordSettingsDialog(
-    isVisible: Boolean,
-    onDismiss: () -> Unit,
-    wakeWordManager: WakeWordManager
-) {
-    if (!isVisible) return
-    
-    val context = LocalContext.current
-    var wakeWordEnabled by remember { mutableStateOf(wakeWordManager.isEnabled()) }
-    var isServiceRunning by remember { mutableStateOf(wakeWordManager.isServiceRunning()) }
-    
-    // Main Settings Dialog
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("Wake Word Settings") },
-        text = {
-            Column(
-                verticalArrangement = Arrangement.spacedBy(16.dp)
-            ) {
-                // Status
-                Card(
-                    modifier = Modifier.fillMaxWidth(),
-                    colors = CardDefaults.cardColors(
-                        containerColor = if (isServiceRunning) 
-                            MaterialTheme.colorScheme.primaryContainer 
-                        else 
-                            MaterialTheme.colorScheme.surfaceVariant
-                    )
-                ) {
-                    Column(
-                        modifier = Modifier.padding(16.dp),
-                        verticalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        Text(
-                            text = if (isServiceRunning) "🎙️ Listening for 'Hey Nilo'" else "⏸️ Wake word disabled",
-                            style = MaterialTheme.typography.titleSmall
-                        )
-                        Text(
-                            text = if (isServiceRunning) 
-                                "Service is running in background" 
-                            else 
-                                "Enable to use voice activation",
-                            style = MaterialTheme.typography.bodySmall
-                        )
-                    }
-                }
-                
-                // Enable/Disable Toggle
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Column {
-                        Text("Enable Wake Word")
-                        Text(
-                            "Listen for 'Hey Nilo'",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                    Switch(
-                        checked = wakeWordEnabled,
-                        onCheckedChange = { enabled ->
-                            wakeWordEnabled = enabled
-                            wakeWordManager.setEnabled(enabled)
-                            isServiceRunning = wakeWordManager.isServiceRunning()
-                        }
-                    )
-                }
-                
-                // Open Source Info
-                Card(
-                    modifier = Modifier.fillMaxWidth(),
-                    colors = CardDefaults.cardColors(
-                        containerColor = MaterialTheme.colorScheme.secondaryContainer
-                    )
-                ) {
-                    Column(
-                        modifier = Modifier.padding(12.dp),
-                        verticalArrangement = Arrangement.spacedBy(4.dp)
-                    ) {
-                        Text(
-                            text = "🆓 100% Open Source",
-                            style = MaterialTheme.typography.labelMedium,
-                            color = MaterialTheme.colorScheme.onSecondaryContainer
-                        )
-                        Text(
-                            text = "Uses Sherpa-ONNX - no third-party services, no API keys, completely free!",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSecondaryContainer
-                        )
-                    }
-                }
-                
-                // Instructions
-                Text(
-                    text = "Note: Wake word model files required.\n\nDownload from:\ngithub.com/k2-fsa/sherpa-onnx/releases\n\nPlace files in:\nAndroid/data/com.projekt_x.studybuddy/files/models/wake_word/",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-        },
-        confirmButton = {
-            TextButton(onClick = onDismiss) {
-                Text("Close")
-            }
-        }
-    )
 }
 
 @Composable
@@ -937,10 +817,10 @@ data class Message(
 fun UnifiedChatView(
     bridge: LlamaBridge,
     queue: InferenceQueue,
+    memoryManager: MemoryManager?,
     metricsState: PerformanceMetricsState,
     isVoiceModeActive: Boolean,
-    onVoiceModeChange: (Boolean) -> Unit,
-    launchFromWakeWord: Boolean = false
+    onVoiceModeChange: (Boolean) -> Unit
 ) {
     val context = LocalContext.current
     val focusManager = LocalFocusManager.current
@@ -960,9 +840,6 @@ fun UnifiedChatView(
     var isRecording by remember { mutableStateOf(false) }
     var audioLevel by remember { mutableFloatStateOf(0f) }
     
-    // Wake word greeting state
-    var hasPlayedWakeGreeting by remember { mutableStateOf(false) }
-    
     // Permission launcher
     val permissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission()
@@ -977,7 +854,7 @@ fun UnifiedChatView(
     
     // Initialize voice pipeline
     LaunchedEffect(Unit) {
-        val vpm = VoicePipelineManager(context, bridge, queue)
+        val vpm = VoicePipelineManager(context, bridge, queue, memoryManager)
         vpm.onStateChange = { state ->
             pipelineState = state
             isRecording = state == VoicePipelineManager.Companion.PipelineState.LISTENING
@@ -1038,17 +915,6 @@ fun UnifiedChatView(
             voicePipelineManager?.startVoiceConversation()
         } else if (!isVoiceModeActive) {
             voicePipelineManager?.stopConversation()
-        }
-    }
-    
-    // Play greeting when launched from wake word
-    LaunchedEffect(isVoiceModeActive, isVoiceReady, hasPlayedWakeGreeting) {
-        if (launchFromWakeWord && isVoiceModeActive && isVoiceReady && !hasPlayedWakeGreeting) {
-            hasPlayedWakeGreeting = true
-            // Small delay to ensure TTS is fully ready
-            delay(500)
-            Log.i(TAG, "🎯 Playing wake word greeting...")
-            voicePipelineManager?.playGreeting("Hey there! How can I help you?")
         }
     }
     

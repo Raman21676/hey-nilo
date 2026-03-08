@@ -26,7 +26,8 @@ import java.util.concurrent.atomic.AtomicBoolean
 class VoicePipelineManager(
     private val context: Context,
     private val llmBridge: LlamaBridge? = null,
-    private val queue: InferenceQueue? = null
+    private val queue: InferenceQueue? = null,
+    private val memoryManager: MemoryManager? = null
 ) {
     
     companion object {
@@ -783,6 +784,9 @@ class VoicePipelineManager(
     
     /**
      * Send transcription to LLM for processing
+     * 
+     * MEMORY INTEGRATION: Injects memory context block into the prompt
+     * Format: [MEMORY] User: {name}. Facts: ... People: ... Pending: ... [/MEMORY]\n\nUser: {message}
      */
     private fun processWithLLM(transcription: String) {
         scope.launch {
@@ -790,10 +794,25 @@ class VoicePipelineManager(
                 // Clear previous response text when NEW user query starts
                 fullResponseText.clear()
                 
+                // Build memory-enhanced prompt with context block
+                val memoryContext = memoryManager?.buildContextBlock(maxTokens = 300) ?: ""
+                val enhancedPrompt = if (memoryContext.isNotBlank()) {
+                    // Inject memory context before the user message
+                    // Format: [MEMORY]...[/MEMORY]\n\nUser: {transcription}
+                    "$memoryContext\n\nUser: $transcription"
+                } else {
+                    transcription
+                }
+                
+                Log.i(TAG, "Sending to LLM with memory context: ${memoryContext.isNotBlank()}")
+                if (memoryContext.isNotBlank()) {
+                    Log.d(TAG, "Memory context: ${memoryContext.take(100)}...")
+                }
+                
                 val requestId = System.currentTimeMillis().toString()
                 val request = InferenceQueue.Request(
                     id = requestId,
-                    prompt = transcription,
+                    prompt = enhancedPrompt,
                     maxTokens = 256,
                     priority = InferenceQueue.Priority.HIGH
                 )
@@ -843,6 +862,20 @@ class VoicePipelineManager(
                                 withContext(Dispatchers.Main) {
                                     onResponseUpdate?.invoke(finalResponse, true)
                                 }
+                                
+                                // MEMORY INTEGRATION: Save conversation to memory
+                                scope.launch(Dispatchers.IO) {
+                                    try {
+                                        memoryManager?.saveConversationExchange(
+                                            userMessage = transcription,
+                                            assistantMessage = finalResponse
+                                        )
+                                        Log.d(TAG, "Conversation exchange saved to memory")
+                                    } catch (e: Exception) {
+                                        Log.w(TAG, "Failed to save conversation: ${e.message}")
+                                    }
+                                }
+                                
                                 // NOTE: Don't clear fullResponseText here - it's cleared when NEW user speech starts
                             }
                             response.token != null && !response.isComplete -> {
@@ -1137,30 +1170,6 @@ class VoicePipelineManager(
             }
         }
         return false
-    }
-    
-    /**
-     * Play a greeting message via TTS
-     * Used when app is launched from wake word
-     */
-    fun playGreeting(text: String) {
-        scope.launch {
-            try {
-                if (kokoroTTS?.isReady == true) {
-                    Log.i(TAG, "Playing greeting: '$text'")
-                    kokoroTTS?.speak(text)
-                    
-                    // Add greeting to UI
-                    withContext(Dispatchers.Main) {
-                        onResponseUpdate?.invoke(text, true)
-                    }
-                } else {
-                    Log.w(TAG, "TTS not ready, cannot play greeting")
-                }
-            } catch (e: Exception) {
-                Log.e(TAG, "Error playing greeting", e)
-            }
-        }
     }
     
     /**

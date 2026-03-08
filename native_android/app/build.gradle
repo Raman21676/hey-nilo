@@ -151,6 +151,9 @@ dependencies {
     
     // Sherpa-ONNX for TTS, STT, VAD, and Keyword Spotting (local AAR)
     implementation(files("libs/sherpa-onnx.aar"))
+    
+    // Gson for JSON serialization
+    implementation("com.google.code.gson:gson:2.10.1")
 
     // Testing
     testImplementation("junit:junit:4.13.2")

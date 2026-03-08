@@ -7,11 +7,6 @@
 
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
-    <uses-permission android:name="android.permission.WAKE_LOCK" />
-    <uses-permission android:name="android.permission.VIBRATE" />
-    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" 
         android:maxSdkVersion="32" />
     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE"
@@ -41,24 +36,6 @@
             </intent-filter>
         </activity>
         
-        <!-- Open Source Wake Word Detection Service -->
-        <service
-            android:name=".service.OpenSourceWakeWordService"
-            android:enabled="true"
-            android:exported="false"
-            android:foregroundServiceType="microphone"
-            android:label="Hey Nilo Wake Word" />
-        
-        <!-- Boot Receiver to auto-start wake word service -->
-        <receiver
-            android:name=".service.BootReceiver"
-            android:enabled="true"
-            android:exported="true"
-            android:permission="android.permission.RECEIVE_BOOT_COMPLETED">
-            <intent-filter>
-                <action android:name="android.intent.action.BOOT_COMPLETED" />
-            </intent-filter>
-        </receiver>
     </application>
 
 </manifest>

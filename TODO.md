@@ -141,25 +141,26 @@
 **Goal**: Create provider interface and offline implementation  
 **Dependencies**: Phase 1 complete  
 
-### Job 2.1: LLMProvider Interface ⏱️ 2h
-- [ ] Define `LLMProvider` interface with all methods
-- [ ] Define `ChatMessage` data class
-- [ ] Define `LLMResponse` data class with error handling
-- [ ] Define `AppMode` sealed class
-- [ ] Define `ApiProvider` enum
+### Job 2.1: LLMProvider Interface ✅ COMPLETE ⏱️ 2h
+- [x] Define `LLMProvider` interface with all methods
+- [x] Define `ChatMessage` data class
+- [x] Define `LLMResponse` data class with error handling
+- [x] Define `AppMode` sealed class
+- [x] Define `ApiProvider` enum
 
-**Files to create:**
-- `bridge/LLMProvider.kt`
+**Files created:**
+- `bridge/llm/LLMModels.kt` - Data classes (ChatMessage, LLMResponse, CompletionRequest, etc.)
+- `bridge/llm/LLMProvider.kt` - Interface, factory, and manager
 
-### Job 2.2: OfflineLLMProvider ⏱️ 4h
-- [ ] Create `OfflineLLMProvider` implementing `LLMProvider`
-- [ ] Wrap existing `LlamaBridge` functionality
-- [ ] Implement TinyLlama chat template formatting
-- [ ] Map `LLMProvider.complete()` to existing inference method
-- [ ] Handle streaming callbacks
-- [ ] Add availability check (model loaded)
+### Job 2.2: OfflineLLMProvider ✅ COMPLETE ⏱️ 4h
+- [x] Create `OfflineLLMProvider` implementing `LLMProvider`
+- [x] Wrap existing `LlamaBridge` functionality
+- [x] Implement TinyLlama chat template formatting
+- [x] Map `LLMProvider.complete()` to existing inference method
+- [x] Handle streaming callbacks
+- [x] Add availability check (model loaded)
 
-**Template format:**
+**Template format implemented:**
 ```
 <|system|>
 {systemPrompt}</s>
@@ -168,8 +169,8 @@
 <|assistant|>
 ```
 
-**Files to create:**
-- `bridge/OfflineLLMProvider.kt`
+**Files created:**
+- `bridge/llm/OfflineLLMProvider.kt`
 
 ### Job 2.3: Modify LlamaBridge ⏱️ 3h
 - [ ] Update inference method to accept dynamic system prompt

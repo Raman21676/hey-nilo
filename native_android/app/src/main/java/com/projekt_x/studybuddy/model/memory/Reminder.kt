@@ -1,6 +1,9 @@
 package com.projekt_x.studybuddy.model.memory
 
 import com.google.gson.annotations.SerializedName
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 /**
  * Reminders container - stores all tasks and reminders
@@ -141,17 +144,18 @@ data class Reminders(
     }
     
     companion object {
+        private val isoFormat = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", Locale.getDefault())
+        
         fun default(): Reminders = Reminders()
         
         private fun getCurrentTimestamp(): String {
-            return java.time.Instant.now().toString()
+            return isoFormat.format(Date())
         }
         
         private fun isPastDue(dueDate: String): Boolean {
-            // Simplified - in production, use proper date parsing
             return try {
-                val due = java.time.Instant.parse(dueDate)
-                due.isBefore(java.time.Instant.now())
+                val due = isoFormat.parse(dueDate)
+                due != null && due.before(Date())
             } catch (e: Exception) {
                 false
             }
@@ -214,8 +218,9 @@ data class Reminder(
         if (dueDate == null) return false
         
         return try {
-            val due = java.time.Instant.parse(dueDate)
-            due.isBefore(java.time.Instant.now())
+            val format = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", Locale.getDefault())
+            val due = format.parse(dueDate)
+            due != null && due.before(Date())
         } catch (e: Exception) {
             false
         }

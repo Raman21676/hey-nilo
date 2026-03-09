@@ -133,19 +133,18 @@ data class Conversation(
             mode: String,
             summary: String = ""
         ): Conversation {
-            val now = java.time.Instant.now()
-            val dateTime = java.time.LocalDateTime.ofInstant(
-                now, 
-                java.time.ZoneId.systemDefault()
-            )
+            val now = java.util.Date()
+            val dateFormat = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.getDefault())
+            val timeFormat = java.text.SimpleDateFormat("HH-mm", java.util.Locale.getDefault())
+            val isoFormat = java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", java.util.Locale.getDefault())
             
-            val date = dateTime.toLocalDate().toString()
-            val time = String.format("%02d-%02d", dateTime.hour, dateTime.minute)
+            val date = dateFormat.format(now)
+            val time = timeFormat.format(now)
             
             return Conversation(
                 date = date,
                 time = time,
-                timestampIso = now.toString(),
+                timestampIso = isoFormat.format(now),
                 mode = mode,
                 summary = summary
             )

@@ -1,9 +1,8 @@
 package com.projekt_x.studybuddy.model.memory
 
-import java.time.Instant
-import java.time.LocalDateTime
-import java.time.ZoneId
-import java.time.format.DateTimeFormatter
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import java.util.UUID
 
 /**
@@ -50,37 +49,41 @@ object MemoryDefaults {
         return "${prefix}_${UUID.randomUUID().toString().substring(0, 8)}"
     }
     
+    // Date formatters (reusable)
+    private val isoFormat = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", Locale.getDefault())
+    private val dateFormat = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault())
+    private val timeFormat = SimpleDateFormat("HH-mm", Locale.getDefault())
+    private val readableFormat = SimpleDateFormat("MMM dd, yyyy", Locale.getDefault())
+    
     /**
      * Get current timestamp in ISO format
      */
     fun getCurrentTimestamp(): String {
-        return Instant.now().toString()
+        return isoFormat.format(Date())
     }
     
     /**
      * Get current date in YYYY-MM-DD format
      */
     fun getCurrentDate(): String {
-        return LocalDateTime.now(ZoneId.systemDefault()).toLocalDate().toString()
+        return dateFormat.format(Date())
     }
     
     /**
      * Get current time in HH-mm format
      */
     fun getCurrentTime(): String {
-        val now = LocalDateTime.now(ZoneId.systemDefault())
-        return String.format("%02d-%02d", now.hour, now.minute)
+        return timeFormat.format(Date())
     }
     
     /**
-     * Format Instant to human-readable date
+     * Format ISO timestamp to human-readable date
      */
     fun formatDate(isoString: String?): String? {
         if (isoString == null) return null
         return try {
-            val instant = Instant.parse(isoString)
-            val dateTime = LocalDateTime.ofInstant(instant, ZoneId.systemDefault())
-            dateTime.format(DateTimeFormatter.ofPattern("MMM dd, yyyy"))
+            val date = isoFormat.parse(isoString)
+            date?.let { readableFormat.format(it) }
         } catch (e: Exception) {
             null
         }

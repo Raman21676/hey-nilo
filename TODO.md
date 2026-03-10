@@ -17,8 +17,8 @@
 | Phase | Status | Progress | Estimated Completion |
 |-------|--------|----------|---------------------|
 | Phase 1: Memory Foundation | ✅ Complete | 100% | Week 1-2 |
-| Phase 2: LLM Abstraction | ⏸️ Blocked | 0% | Week 3-4 |
-| Phase 3: Online Mode | ⏸️ Blocked | 0% | Week 5-6 |
+| Phase 2: LLM Abstraction | ✅ Complete | 100% | Week 3-4 |
+| Phase 3: Online Mode | 🔄 In Progress | 60% | Week 5-6 |
 | Phase 4: Memory Extraction | ⏸️ Blocked | 0% | Week 7-8 |
 | Phase 5: Compaction | ⏸️ Blocked | 0% | Week 9-10 |
 | Phase 6: UI Polish | ⏸️ Blocked | 0% | Week 11-12 |
@@ -271,10 +271,13 @@
 - [ ] Add to provider selector
 
 ### Job 3.5: DeepSeek & Kimi Providers ⏱️ 3h
-- [ ] Add DeepSeek configuration (OpenAI-compatible)
-- [ ] Add Kimi configuration (OpenAI-compatible)
-- [ ] Test both providers
+- [x] Add DeepSeek configuration (OpenAI-compatible)
+- [x] Add Kimi configuration (Anthropic format)
+- [ ] Test DeepSeek provider (need API key)
+- [ ] Test Kimi provider (need Moonshot platform key, NOT kimi.com/code key)
 - [ ] Document pricing differences
+
+**Note**: Kimi Code keys (`sk-kimi-...` from kimi.com/code/console) are IDE-only and don't work with the public API. Use keys from platform.moonshot.cn instead.
 
 ### Job 3.6: Mode Switch UI ⏱️ 4h
 - [ ] Create mode indicator component (top bar)
@@ -572,7 +575,8 @@
 
 | ID | Description | Severity | Phase | Status |
 |----|-------------|----------|-------|--------|
-| - | - | - | - | - |
+| BUG-1 | Kimi Code keys (`sk-kimi-...`) return 401 | Medium | Phase 3 | ✅ Identified - Not a bug, expected behavior |
+| | Keys from kimi.com/code/console are IDE-only | | | Use platform.moonshot.cn keys instead |
 
 ---
 
@@ -584,6 +588,7 @@
 | 2025-03-08 | 300 token context limit | Conservative for TinyLlama 2048 window |
 | 2025-03-08 | No vector DB | 3GB RAM constraint |
 | 2025-03-08 | OkHttp not Retrofit | Simpler, already available |
+| 2025-03-08 | Kimi Code keys incompatible | `sk-kimi-...` keys are IDE-only, use `platform.moonshot.cn` keys |
 
 ---
 

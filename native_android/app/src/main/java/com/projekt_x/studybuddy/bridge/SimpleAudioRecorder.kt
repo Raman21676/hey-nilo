@@ -6,6 +6,9 @@ import android.content.pm.PackageManager
 import android.media.AudioFormat
 import android.media.AudioRecord
 import android.media.MediaRecorder
+import android.media.audiofx.AcousticEchoCanceler
+import android.media.audiofx.AutomaticGainControl
+import android.media.audiofx.NoiseSuppressor
 import android.util.Log
 import kotlinx.coroutines.*
 
@@ -32,6 +35,23 @@ class SimpleAudioRecorder(
     private var recordingJob: Job? = null
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private var isRecording = false
+    
+    // Audio effects for echo cancellation and noise suppression
+    private var acousticEchoCanceler: AcousticEchoCanceler? = null
+    private var automaticGainControl: AutomaticGainControl? = null
+    private var noiseSuppressor: NoiseSuppressor? = null
+    
+    // Barge-in detection - MUCH LESS AGGRESSIVE
+    // Only triggers on CLEAR, SUSTAINED human speech - ignores typing, horns, rain, animals
+    private var isTTSSpeaking = false
+    // INCREASED: 2500 energy threshold - ignores typing (short spikes) and light rain
+    private var ttsEnergyThreshold = 2500
+    private var consecutiveHighEnergyFrames = 0
+    private var consecutiveLowEnergyFrames = 0
+    // INCREASED: 20 frames = ~640ms of sustained high energy required
+    // Human speech is sustained; horns/typing are brief spikes
+    private val HIGH_ENERGY_THRESHOLD = 20
+    private val LOW_ENERGY_THRESHOLD = 5  // Frames to confirm TTS stopped
     
     interface AudioCallback {
         fun onAudioData(audioData: ShortArray)
@@ -102,7 +122,12 @@ class SimpleAudioRecorder(
             return false
         }
         
-        Log.i(TAG, "AudioRecord initialized successfully")
+        Log.i(TAG, "AudioRecord initialized successfully (sessionId: ${audioRecord?.audioSessionId})")
+        
+        // Initialize audio effects for echo cancellation
+        audioRecord?.audioSessionId?.let { sessionId ->
+            initAudioEffects(sessionId)
+        }
         
         // Start recording
         try {
@@ -196,6 +221,9 @@ class SimpleAudioRecorder(
         audioRecord?.release()
         audioRecord = null
         
+        // Release audio effects
+        releaseAudioEffects()
+        
         Log.i(TAG, "Recording stopped")
     }
     
@@ -205,11 +233,112 @@ class SimpleAudioRecorder(
     fun isRecording(): Boolean = isRecording
     
     /**
+     * Set TTS speaking state for barge-in detection
+     */
+    fun setTTSSpeaking(speaking: Boolean) {
+        isTTSSpeaking = speaking
+        if (speaking) {
+            consecutiveHighEnergyFrames = 0
+            consecutiveLowEnergyFrames = 0
+        }
+    }
+    
+    /**
+     * Check if user is trying to interrupt (barge-in detection)
+     * Returns true if user speech detected during TTS
+     */
+    fun detectBargeIn(audioData: ShortArray): Boolean {
+        if (!isTTSSpeaking) return false
+        
+        // Calculate RMS energy
+        var sum = 0.0
+        for (sample in audioData) {
+            sum += sample * sample
+        }
+        val rms = Math.sqrt(sum / audioData.size)
+        
+        // During TTS, if we detect high energy, it's likely user interrupting
+        // (AEC should filter out most of TTS, but residual + user speech = higher energy)
+        if (rms > ttsEnergyThreshold) {
+            consecutiveHighEnergyFrames++
+            consecutiveLowEnergyFrames = 0
+            if (consecutiveHighEnergyFrames >= HIGH_ENERGY_THRESHOLD) {
+                Log.d(TAG, "Barge-in detected! RMS: $rms")
+                return true
+            }
+        } else {
+            consecutiveLowEnergyFrames++
+            if (consecutiveLowEnergyFrames >= LOW_ENERGY_THRESHOLD) {
+                consecutiveHighEnergyFrames = 0
+            }
+        }
+        return false
+    }
+    
+    /**
+     * Check if audio effects are available on this device
+     */
+    fun areAudioEffectsAvailable(): Boolean {
+        return AcousticEchoCanceler.isAvailable() || 
+               AutomaticGainControl.isAvailable() || 
+               NoiseSuppressor.isAvailable()
+    }
+    
+    /**
+     * Initialize audio effects (AEC, AGC, NS)
+     */
+    private fun initAudioEffects(audioSessionId: Int) {
+        try {
+            // Acoustic Echo Canceler - removes speaker output from mic input
+            if (AcousticEchoCanceler.isAvailable()) {
+                acousticEchoCanceler = AcousticEchoCanceler.create(audioSessionId)
+                acousticEchoCanceler?.enabled = true
+                Log.i(TAG, "✓ AcousticEchoCanceler enabled")
+            } else {
+                Log.w(TAG, "AcousticEchoCanceler not available on this device")
+            }
+            
+            // Automatic Gain Control
+            if (AutomaticGainControl.isAvailable()) {
+                automaticGainControl = AutomaticGainControl.create(audioSessionId)
+                automaticGainControl?.enabled = true
+                Log.i(TAG, "✓ AutomaticGainControl enabled")
+            }
+            
+            // Noise Suppressor
+            if (NoiseSuppressor.isAvailable()) {
+                noiseSuppressor = NoiseSuppressor.create(audioSessionId)
+                noiseSuppressor?.enabled = true
+                Log.i(TAG, "✓ NoiseSuppressor enabled")
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error initializing audio effects: ${e.message}")
+        }
+    }
+    
+    /**
+     * Release audio effects
+     */
+    private fun releaseAudioEffects() {
+        try {
+            acousticEchoCanceler?.release()
+            acousticEchoCanceler = null
+            automaticGainControl?.release()
+            automaticGainControl = null
+            noiseSuppressor?.release()
+            noiseSuppressor = null
+        } catch (e: Exception) {
+            Log.w(TAG, "Error releasing audio effects: ${e.message}")
+        }
+    }
+    
+    /**
      * Release all resources
      */
     fun release() {
         Log.i(TAG, "Releasing SimpleAudioRecorder...")
         stopRecording()
+        releaseAudioEffects()
         scope.cancel()
         Log.i(TAG, "SimpleAudioRecorder released")
     }

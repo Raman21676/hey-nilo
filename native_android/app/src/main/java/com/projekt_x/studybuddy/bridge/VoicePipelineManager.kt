@@ -7,6 +7,7 @@ import android.speech.tts.TextToSpeech
 import android.util.Log
 import com.projekt_x.studybuddy.InferenceQueue
 import com.projekt_x.studybuddy.bridge.llm.*
+import com.projekt_x.studybuddy.bridge.llm.SystemPromptBuilder
 import com.projekt_x.studybuddy.util.CopyAssetToExternal
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
@@ -45,15 +46,20 @@ class VoicePipelineManager(
         private const val FRAME_SIZE = 512     // 32ms at 16kHz
         private const val MAX_BUFFER_SIZE = SAMPLE_RATE * 10  // 10 seconds max
         
-        // VAD Configuration
-        private const val VAD_THRESHOLD = 0.6f       // INCREASED to 0.6 - less sensitive to background noise (was 0.5)
+        // OPTIMIZED: Balance between fast response and not cutting off speech
+        // Reduced from 1.2s to 700ms - fast enough for good UX, long enough for natural pauses
+        private const val VAD_THRESHOLD = 0.65f       // Less sensitive to background noise
         private const val MIN_SPEECH_MS = 300L        // Minimum speech to process
-        private const val MIN_SILENCE_MS = 800L       // REDUCED to 800ms - faster response after speech ends (was 1200)
+        private const val MIN_SILENCE_MS = 700L       // OPTIMIZED: 700ms silence (was 1.2s too slow)
         private const val PRE_SPEECH_BUFFER_MS = 800L // Pre-speech capture buffer
-        private const val MAX_SPEECH_MS = 8000L       // Maximum 8 seconds for faster processing (was 15s)
-        // INCREASED: Allows natural pauses between sentences
-        // 25 frames * 32ms = ~800ms - won't cut off "Who are you? [pause] Can you..."
-        private const val TRAILING_SILENCE_FRAMES = 25  // Was 8 (~256ms) - too short
+        private const val MAX_SPEECH_MS = 8000L       // Maximum 8 seconds
+        // OPTIMIZED: 22 frames * 32ms = ~700ms of confirmed silence
+        private const val TRAILING_SILENCE_FRAMES = 22
+        
+        // BUG FIX 2: Barge-in detection - requires sustained human speech
+        // Motorbike horn (~200ms) won't trigger, human speech (~960ms+) will
+        private const val BARGE_IN_ENERGY_THRESHOLD = 3500f   // High energy threshold
+        private const val BARGE_IN_CONFIRM_FRAMES = 30        // ~960ms sustained detection
         
         // NO SOFTWARE GAIN — hardware AGC via VOICE_RECOGNITION handles this
         // Previous AGC code removed per professor's guidance: gain causes clipping/distortion
@@ -88,6 +94,7 @@ class VoicePipelineManager(
     private var isProcessingSTT = false  // Prevent multiple simultaneous STT processing
     private var speechStartTime: Long = 0
     private var consecutiveSilenceFrames = 0  // Count consecutive silence frames for trailing silence detection
+    private var bargeInConfirmFrames = 0      // BUG FIX 2: Count frames for barge-in confirmation
     
     // Bridges
     private var vadBridge: VADBridge? = null
@@ -106,6 +113,9 @@ class VoicePipelineManager(
     private var lastWordSentTime: Long = 0  // Track when we last sent text to TTS
     @Volatile
     private var isLLMResponseComplete = false  // NEW: Signal when LLM is done
+    
+    // LLM Provider job (for cancellation during barge-in)
+    private var llmProviderJob: Job? = null
     
     // Callbacks for UI
     var onStateChange: ((PipelineState) -> Unit)? = null
@@ -206,8 +216,10 @@ class VoicePipelineManager(
                 audioRecorder = SimpleAudioRecorder(context)
                 if (!audioRecorder!!.hasPermission()) {
                     Log.e(TAG, "✗ RECORD_AUDIO permission not granted!")
-                    onInitialized?.invoke(false)
-                    onError?.invoke("Microphone permission required")
+                    withContext(Dispatchers.Main) {
+                        onError?.invoke("Microphone permission required")
+                        onInitialized?.invoke(false)
+                    }
                     return@launch
                 }
                 Log.i(TAG, "✓ Audio recorder created ($SAMPLE_RATE Hz)")
@@ -513,6 +525,40 @@ class VoicePipelineManager(
         onAudioLevel?.invoke(audioLevel)
         
         // ========================================================================
+        // BUG FIX 2: BARGE-IN DETECTION - Requires BOTH VAD + Energy + Sustained duration
+        // Motorbike horn (~200ms) will NOT trigger, human speech (~960ms+) WILL trigger
+        // ========================================================================
+        if (currentState == PipelineState.SPEAKING) {
+            // Calculate audio energy (RMS)
+            val audioEnergy = calculateAudioEnergy(audioData)
+            // Check if VAD agrees it's speech (neural model classification)
+            val vadSaysSpeech = vadBridge?.detectVoice(audioData) == true
+            val isHighEnergy = audioEnergy > BARGE_IN_ENERGY_THRESHOLD
+            
+            // ALL THREE conditions must be true to increment counter
+            if (vadSaysSpeech && isHighEnergy) {
+                bargeInConfirmFrames++
+                Log.v(TAG, "BUG FIX 2: Barge-in frame $bargeInConfirmFrames/$BARGE_IN_CONFIRM_FRAMES (energy=$audioEnergy)")
+            } else {
+                // Reset on ANY frame that fails either check
+                if (bargeInConfirmFrames > 0) {
+                    Log.v(TAG, "BUG FIX 2: Barge-in reset (vad=$vadSaysSpeech, energy=$audioEnergy)")
+                }
+                bargeInConfirmFrames = 0
+            }
+            
+            // Only trigger after sustained detection (30 frames = ~960ms)
+            if (bargeInConfirmFrames >= BARGE_IN_CONFIRM_FRAMES) {
+                Log.i(TAG, "🎤 BUG FIX 2: BARGE-IN CONFIRMED after $bargeInConfirmFrames frames (~960ms)")
+                bargeInConfirmFrames = 0
+                handleBargeIn()
+                return
+            }
+            // Still speaking, skip normal VAD processing to prevent self-feedback
+            return
+        }
+        
+        // ========================================================================
         // FIX: SKIP VAD/STT processing during non-listening states
         // This prevents TTS audio feedback loop:
         //   TTS speaks → mic picks it up → VAD detects → STT transcribes → garbage
@@ -646,6 +692,58 @@ class VoicePipelineManager(
     }
     
     /**
+     * Handle barge-in (user interrupting during TTS) - BUG FIX 1
+     * Cancels TTS/LLM but PRESERVES chat history
+     */
+    private fun handleBargeIn() {
+        Log.i(TAG, "=".repeat(50))
+        Log.i(TAG, "BARGE-IN: Cancelling TTS, preserving chat history")
+        Log.i(TAG, "=".repeat(50))
+        
+        // Cancel streaming TTS job
+        streamingTTSJob?.cancel()
+        streamingTTSJob = null
+        
+        // Stop current TTS immediately
+        kokoroTTS?.stop()
+        
+        // Cancel any ongoing LLM generation
+        llmProviderJob?.cancel()
+        llmProviderJob = null
+        
+        // Reset TTS state
+        isStreamingTTSActive = false
+        isLLMResponseComplete = false
+        lastSpokenPosition = 0
+        ttsTextBuffer.clear()
+        
+        // BUG FIX 1: DO NOT clear previous response text!
+        // fullResponseText.clear() <- REMOVED
+        
+        // Reset speech collection state for new input
+        speechBuffer.clear()
+        preSpeechBuffer.clear()
+        isCollectingSpeech = false
+        consecutiveSilenceFrames = 0
+        bargeInConfirmFrames = 0  // BUG FIX 2: Reset barge-in counter
+        
+        // Reset VAD for clean state
+        vadProcessor?.reset()
+        
+        // Notify UI that we were interrupted (but keep previous message)
+        val currentResponse = fullResponseText.toString()
+        scope.launch(Dispatchers.Main) {
+            // Keep the previous response, just show we're listening again
+            onResponseUpdate?.invoke(currentResponse + "\n\n(interrupted - listening...)", false)
+        }
+        
+        // Switch back to listening state immediately
+        currentState = PipelineState.LISTENING
+        
+        Log.i(TAG, "✓ Barge-in handled - chat history preserved, listening for new input")
+    }
+    
+    /**
      * Calculate RMS audio level for visualization - UI ONLY, does NOT affect STT audio
      */
     private fun calculateAudioLevel(audioData: ShortArray): Float {
@@ -658,6 +756,20 @@ class VoicePipelineManager(
         val rms = kotlin.math.sqrt(sumSquares / audioData.size)
         // UI boost only: makes quiet audio visible in the bar (does NOT affect STT)
         return (rms / 32768.0f * 10f).toFloat().coerceIn(0f, 1f)
+    }
+    
+    /**
+     * BUG FIX 2: Calculate raw audio energy (RMS) for barge-in detection
+     * Returns raw RMS value (not normalized)
+     */
+    private fun calculateAudioEnergy(audioData: ShortArray): Float {
+        if (audioData.isEmpty()) return 0f
+        
+        var sumSquares = 0.0
+        for (sample in audioData) {
+            sumSquares += (sample * sample)
+        }
+        return kotlin.math.sqrt(sumSquares / audioData.size).toFloat()
     }
     
     /**
@@ -829,6 +941,7 @@ class VoicePipelineManager(
         isCollectingSpeech = false
         isProcessingSTT = false
         consecutiveSilenceFrames = 0
+        bargeInConfirmFrames = 0       // BUG FIX 2: Reset barge-in counter
         isLLMResponseComplete = false  // Reset for next conversation
         
         pipelineJob?.cancel()
@@ -859,16 +972,16 @@ class VoicePipelineManager(
      * Process with new LLMProvider (streaming, memory context)
      */
     private fun processWithLLMProvider(transcription: String) {
-        scope.launch {
+        llmProviderJob = scope.launch {
             try {
                 // Clear previous response text when NEW user query starts
                 fullResponseText.clear()
                 
-                // Build memory context
-                val memoryContext = memoryManager?.buildContextBlock(maxTokens = 300) ?: ""
+                // BUG FIX 5: Use shared system prompt builder for consistent identity + memory
+                val fullSystemPrompt = SystemPromptBuilder.buildSystemPrompt(memoryManager, maxTokens = 300)
                 
                 Log.i(TAG, "Sending to LLM Provider: '$transcription'")
-                Log.i(TAG, "Memory context: ${if (memoryContext.isNotBlank()) "present" else "none"}")
+                Log.i(TAG, "System prompt length: ${fullSystemPrompt.length} chars")
                 
                 // Prepare streaming TTS
                 ttsTextBuffer.clear()
@@ -879,8 +992,8 @@ class VoicePipelineManager(
                 // Build completion request
                 val request = CompletionRequest(
                     messages = listOf(ChatMessage.user(transcription)),
-                    systemPrompt = LlamaBridge.DEFAULT_SYSTEM_PROMPT,
-                    memoryContext = memoryContext.ifBlank { null },
+                    systemPrompt = fullSystemPrompt,
+                    memoryContext = null, // Already included in systemPrompt via SystemPromptBuilder
                     maxTokens = 256,
                     stream = true
                 )
@@ -912,7 +1025,7 @@ class VoicePipelineManager(
                                 onResponseUpdate?.invoke(finalResponse, true)
                             }
                             
-                            // Save conversation to memory
+                            // BUG FIX 4: Save conversation AND extract memories
                             scope.launch(Dispatchers.IO) {
                                 try {
                                     memoryManager?.saveConversationExchange(
@@ -920,8 +1033,16 @@ class VoicePipelineManager(
                                         assistantMessage = finalResponse
                                     )
                                     Log.d(TAG, "Conversation exchange saved to memory")
+                                    
+                                    // BUG FIX 4: Extract and save memory-worthy facts
+                                    memoryManager?.extractAndSave(
+                                        userMessage = transcription,
+                                        llmResponse = finalResponse,
+                                        mode = llmProvider?.displayName ?: "Offline"
+                                    )
+                                    Log.d(TAG, "Memory extraction completed")
                                 } catch (e: Exception) {
-                                    Log.w(TAG, "Failed to save conversation: ${e.message}")
+                                    Log.w(TAG, "Failed to save conversation or extract memory: ${e.message}")
                                 }
                             }
                         }
@@ -969,6 +1090,8 @@ class VoicePipelineManager(
                 }
                 delay(1000)
                 restartListening()
+            } finally {
+                llmProviderJob = null
             }
         }
     }
@@ -982,25 +1105,16 @@ class VoicePipelineManager(
                 // Clear previous response text when NEW user query starts
                 fullResponseText.clear()
                 
-                // Build memory-enhanced prompt with context block
-                val memoryContext = memoryManager?.buildContextBlock(maxTokens = 300) ?: ""
-                val enhancedPrompt = if (memoryContext.isNotBlank()) {
-                    // Inject memory context before the user message
-                    // Format: [MEMORY]...[/MEMORY]\n\nUser: {transcription}
-                    "$memoryContext\n\nUser: $transcription"
-                } else {
-                    transcription
-                }
+                // BUG FIX 5: Use shared system prompt builder for consistent identity + memory
+                val fullSystemPrompt = SystemPromptBuilder.buildSystemPrompt(memoryManager, maxTokens = 300)
                 
-                Log.i(TAG, "Sending to LLM (legacy queue) with memory context: ${memoryContext.isNotBlank()}")
-                if (memoryContext.isNotBlank()) {
-                    Log.d(TAG, "Memory context: ${memoryContext.take(100)}...")
-                }
+                Log.i(TAG, "Sending to LLM (legacy queue) with system prompt length: ${fullSystemPrompt.length}")
                 
                 val requestId = System.currentTimeMillis().toString()
                 val request = InferenceQueue.Request(
                     id = requestId,
-                    prompt = enhancedPrompt,
+                    prompt = transcription, // User message only
+                    systemPrompt = fullSystemPrompt, // BUG FIX 3 & 5: Include identity + memory
                     maxTokens = 256,
                     priority = InferenceQueue.Priority.HIGH
                 )
@@ -1051,7 +1165,7 @@ class VoicePipelineManager(
                                     onResponseUpdate?.invoke(finalResponse, true)
                                 }
                                 
-                                // MEMORY INTEGRATION: Save conversation to memory
+                                // BUG FIX 4: Save conversation AND extract memories
                                 scope.launch(Dispatchers.IO) {
                                     try {
                                         memoryManager?.saveConversationExchange(
@@ -1059,8 +1173,16 @@ class VoicePipelineManager(
                                             assistantMessage = finalResponse
                                         )
                                         Log.d(TAG, "Conversation exchange saved to memory")
+                                        
+                                        // BUG FIX 4: Extract and save memory-worthy facts
+                                        memoryManager?.extractAndSave(
+                                            userMessage = transcription,
+                                            llmResponse = finalResponse,
+                                            mode = "Offline"
+                                        )
+                                        Log.d(TAG, "Memory extraction completed")
                                     } catch (e: Exception) {
-                                        Log.w(TAG, "Failed to save conversation: ${e.message}")
+                                        Log.w(TAG, "Failed to save conversation or extract memory: ${e.message}")
                                     }
                                 }
                                 
@@ -1171,6 +1293,9 @@ class VoicePipelineManager(
         // Don't stop recording! Just change state to SPEAKING to pause VAD processing
         currentState = PipelineState.SPEAKING
         
+        // Notify audio recorder that TTS is speaking (for barge-in detection)
+        audioRecorder?.setTTSSpeaking(true)
+        
         // FLUSH any previous TTS
         kokoroTTS?.stop()
         
@@ -1260,6 +1385,9 @@ class VoicePipelineManager(
                 isStreamingTTSActive = false
                 lastSpokenPosition = 0
                 isLLMResponseComplete = false  // Reset for next utterance
+                
+                // Notify audio recorder that TTS stopped
+                audioRecorder?.setTTSSpeaking(false)
                 
                 Log.i(TAG, "TTS finished - preparing for next utterance")
                 

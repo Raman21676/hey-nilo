@@ -39,7 +39,7 @@ class VADBridge(private val context: Context) : BaseBridge(), VADBridgeInterface
 
     companion object {
         private const val TAG = "VADBridge"
-        private const val DEFAULT_THRESHOLD = 0.25f  // Lower threshold for better speech detection
+        private const val DEFAULT_THRESHOLD = 0.65f  // INCREASED: Less sensitive to typing/rain/horns
         private const val SAMPLE_RATE = 16000 // 16kHz
     }
 
@@ -319,9 +319,9 @@ data class VADConfig(
     val sampleRate: Int = 16000,
     val frameDurationMs: Int = 30,  // 30ms frames
     val minSpeechDurationMs: Int = 250,  // Minimum speech to confirm (ms)
-    // INCREASED to 1200ms: allows natural pauses between sentences like "Who are you? [pause] Can you..."
-    // Don't go below 1000ms or it will cut off multi-sentence speech
-    val minSilenceDurationMs: Int = 1200  // Was 400ms - too short, caused cutoffs
+    // OPTIMIZED: 700ms - Balance between fast response and not cutting off
+    // 700ms is enough for natural pauses but doesn't feel slow
+    val minSilenceDurationMs: Int = 700
 )
 
 /**

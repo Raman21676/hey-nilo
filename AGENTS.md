@@ -494,6 +494,8 @@ Before ending your session, verify:
 **Solution**:
 - Check key is saved in EncryptedSharedPreferences
 - Verify key format (some need "Bearer " prefix)
+- **IMPORTANT**: Kimi keys from `kimi.com/code/console` (format: `sk-kimi-...`) are IDE-only and won't work with the app
+- For Kimi, get a key from `platform.moonshot.cn` (format: `sk-...`)
 - Check API provider status page
 
 ---
@@ -503,8 +505,8 @@ Before ending your session, verify:
 ### API Documentation
 - OpenAI: https://platform.openai.com/docs
 - Claude: https://docs.anthropic.com/
-- DeepSeek: https://platform.deepseek.com/
-- Kimi: https://platform.moonshot.cn/
+- DeepSeek: https://platform.deepseek.com/ (Free tier available)
+- Kimi: https://platform.moonshot.cn/ (NOT kimi.com/code/console)
 
 ### Android References
 - Coroutines: https://developer.android.com/kotlin/coroutines

@@ -97,13 +97,19 @@ Java_com_projekt_1x_studybuddy_bridge_RealSTTBridge_nativeLoadModel(
     context->params.translate = false;
     context->params.language = "en";
     // Use optimal thread count for device (Samsung Tab A7 Lite has 8 cores)
-    // Use 6 threads for better performance while leaving headroom
-    context->params.n_threads = 6;
+    // BUG FIX 2: Speed optimization
+    context->params.n_threads = 6;  // Use 6 threads for better performance
     context->params.offset_ms = 0;
     context->params.duration_ms = 0;
-    context->params.single_segment = true;  // Force single segment for short audio
+    context->params.single_segment = true;  // Faster processing for short audio
+    context->params.no_context = true;  // BUG FIX 2: Disable context for speed
+    context->params.max_len = 0;  // Disable max length limit for faster processing
     
-    // ADD THESE TWO LINES — prevents hallucinations on silence/noise:
+    // BUG FIX 3: Accuracy improvements
+    context->params.language = "en";  // Force English for consistency
+    context->params.initial_prompt = "User is speaking to an AI assistant.";  // Bias toward conversation
+    
+    // Prevents hallucinations on silence/noise:
     context->params.no_speech_thold = 0.6f;  // skip if confidence < 60%
     context->params.logprob_thold = -1.0f;   // skip low-probability results
     

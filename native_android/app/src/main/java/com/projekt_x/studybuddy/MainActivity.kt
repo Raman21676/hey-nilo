@@ -21,7 +21,12 @@ import androidx.compose.animation.core.*
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
 import androidx.compose.foundation.lazy.LazyColumn
@@ -34,6 +39,12 @@ import androidx.compose.material.icons.filled.Send
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.Warning
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Home
+import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -53,11 +64,17 @@ import com.projekt_x.studybuddy.bridge.MemoryManager
 import com.projekt_x.studybuddy.bridge.MockVADBridge
 import com.projekt_x.studybuddy.bridge.VoicePipelineManager
 import com.projekt_x.studybuddy.bridge.FileSystemManager
+import com.projekt_x.studybuddy.bridge.ApiKeyStore
+import com.projekt_x.studybuddy.bridge.llm.*
 import com.projekt_x.studybuddy.model.ModelInfo
+import com.projekt_x.studybuddy.model.OfflineModelConfig
+import com.projekt_x.studybuddy.ui.OfflineModelPickerScreen
+import com.projekt_x.studybuddy.ui.ModelSetupView
 import com.projekt_x.studybuddy.ui.components.PerformanceStatusBar
 import com.projekt_x.studybuddy.ui.components.RamOptimizerButton
 import com.projekt_x.studybuddy.ui.components.RamOptimizerDialog
 import com.projekt_x.studybuddy.ui.components.OptimizationResult
+import com.projekt_x.studybuddy.bridge.llm.SystemPromptBuilder
 import com.projekt_x.studybuddy.ui.theme.HeyNiloTheme
 import kotlinx.coroutines.*
 import kotlin.coroutines.coroutineContext
@@ -318,6 +335,10 @@ fun HeyNiloApp(
     var optimizationProgress by remember { mutableFloatStateOf(0f) }
     var optimizationResult by remember { mutableStateOf<OptimizationResult?>(null) }
     
+    // Online/Offline mode state
+    var currentMode by remember { mutableStateOf<AppMode>(AppMode.Offline) }
+    var activeOnlineConfig by remember { mutableStateOf<ProviderConfig?>(null) }
+    
     val scope = rememberCoroutineScope()
     val metrics by remember { derivedStateOf { metricsState.metrics } }
     
@@ -410,10 +431,11 @@ fun HeyNiloApp(
                     message = errorMessage!!,
                     onRetry = { errorMessage = null }
                 )
-                !isModelLoaded -> ModelSetupView(
+                !isModelLoaded && activeOnlineConfig == null -> ModelSetupView(
                     bridge = bridge,
                     onModelLoaded = { 
                         isModelLoaded = true
+                        currentMode = AppMode.Offline
                         // Update metrics with config
                         metricsState.updateSystemStats(
                             temperature = bridge.getCurrentTemperature(),
@@ -423,6 +445,11 @@ fun HeyNiloApp(
                             contextSize = 1024
                         )
                     },
+                    onOnlineConfigured = { config ->
+                        activeOnlineConfig = config
+                        currentMode = AppMode.Online(config.provider)
+                        isModelLoaded = true  // Skip model loading for online
+                    },
                     onError = { errorMessage = it },
                     onLoading = { isLoading = it }
                 )
@@ -431,6 +458,7 @@ fun HeyNiloApp(
                     queue = queue,
                     memoryManager = memoryManager,
                     metricsState = metricsState,
+                    onlineConfig = activeOnlineConfig,
                     isVoiceModeActive = isVoiceModeActive,
                     onVoiceModeChange = { isVoiceModeActive = it }
                 )
@@ -492,315 +520,6 @@ fun ErrorView(message: String, onRetry: () -> Unit) {
     }
 }
 
-@Composable
-fun ModelSetupView(
-    bridge: LlamaBridge,
-    onModelLoaded: () -> Unit,
-    onError: (String) -> Unit,
-    onLoading: (Boolean) -> Unit
-) {
-    val context = LocalContext.current
-    val scope = rememberCoroutineScope()
-    val config = remember { bridge.detectDeviceConfig() }
-    var customPath by remember { mutableStateOf("") }
-    var showCustomPath by remember { mutableStateOf(false) }
-    
-    // Model downloader
-    val downloader = remember { ModelDownloader(context) }
-    val downloadState by downloader.state.collectAsState()
-    
-    // Auto-scan for model files - re-scan when download completes
-    var foundModels by remember { mutableStateOf(listOf<String>()) }
-    var hasAutoLoaded by remember { mutableStateOf(false) }
-    
-    fun scanForModels(): List<String> {
-        val possiblePaths = listOf(
-            File(context.getExternalFilesDir(null), "models/tinyllama-1.1b-chat-v1.0.Q4_0.gguf"),
-            File(context.filesDir, "models/tinyllama-1.1b-chat-v1.0.Q4_0.gguf"),
-            File(context.getExternalFilesDir(null), "tinyllama-1.1b-chat-v1.0.Q4_0.gguf"),
-            File(Environment.getExternalStorageDirectory(), "Download/tinyllama-1.1b-chat-v1.0.Q4_0.gguf"),
-            File("/sdcard/Download/tinyllama-1.1b-chat-v1.0.Q4_0.gguf"),
-            File("/storage/emulated/0/Download/tinyllama-1.1b-chat-v1.0.Q4_0.gguf")
-        )
-        return possiblePaths.filter { it.exists() && it.canRead() }.map { it.absolutePath }
-    }
-    
-    // Initial scan
-    LaunchedEffect(Unit) {
-        foundModels = scanForModels()
-    }
-    
-    // Auto-load model when download completes
-    LaunchedEffect(downloadState.isComplete) {
-        if (downloadState.isComplete && !hasAutoLoaded) {
-            hasAutoLoaded = true
-            // Re-scan for models
-            val models = scanForModels()
-            foundModels = models
-            
-            if (models.isNotEmpty()) {
-                // Auto-load the model
-                val modelPath = models.first()
-                Log.i(TAG, "Auto-loading model from: $modelPath")
-                onLoading(true)
-                try {
-                    val success = bridge.loadModel(modelPath, config)
-                    if (success) {
-                        bridge.setSystemPrompt(
-                            "You are a helpful study assistant. Answer questions clearly and concisely."
-                        )
-                        onModelLoaded()
-                    } else {
-                        onError("Failed to load model automatically")
-                    }
-                } catch (e: Exception) {
-                    Log.e(TAG, "Auto-load error", e)
-                    onError("Error loading model: ${e.message}")
-                } finally {
-                    onLoading(false)
-                }
-            }
-        }
-    }
-    
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(24.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.Center
-    ) {
-        Image(
-            painter = painterResource(id = R.drawable.panda_logo),
-            contentDescription = "Hey-Nilo Logo",
-            modifier = Modifier.size(120.dp)
-        )
-        
-        Spacer(modifier = Modifier.height(24.dp))
-        
-        Text(
-            text = "Hey-Nilo",
-            style = MaterialTheme.typography.headlineSmall
-        )
-        
-        Text(
-            text = "Fast & Efficient AI",
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
-        
-        Spacer(modifier = Modifier.height(32.dp))
-        
-        // Device config card
-        Card(
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            Column(
-                modifier = Modifier.padding(16.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                Text(
-                    text = "Device Configuration",
-                    style = MaterialTheme.typography.titleSmall
-                )
-                ConfigRow("CPU Threads", config.threads.toString())
-                ConfigRow("Context Size", config.contextSize.toString())
-                ConfigRow("Batch Size", config.batchSize.toString())
-                ConfigRow("Memory Map", if (config.useMmap) "Enabled" else "Disabled")
-            }
-        }
-        
-        Spacer(modifier = Modifier.height(24.dp))
-        
-        // Show found models or message
-        if (foundModels.isNotEmpty()) {
-            Text(
-                text = "Found ${foundModels.size} model file(s)",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.primary
-            )
-            Spacer(modifier = Modifier.height(8.dp))
-        } else {
-            Text(
-                text = "⚠️ No model file found",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.error
-            )
-            val recommendedModel = downloader.getRecommendedModel()
-            Text(
-                text = "Recommended: ${recommendedModel.name}",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.primary
-            )
-            Text(
-                text = "Size: ${downloader.formatBytes(recommendedModel.size)} | ${recommendedModel.description}",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-            Spacer(modifier = Modifier.height(16.dp))
-            
-            // Download UI
-            when {
-                downloadState.isDownloading -> {
-                    Column(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalAlignment = Alignment.CenterHorizontally
-                    ) {
-                        LinearProgressIndicator(
-                            progress = { downloadState.progress / 100f },
-                            modifier = Modifier.fillMaxWidth(0.8f)
-                        )
-                        Spacer(modifier = Modifier.height(8.dp))
-                        Text(
-                            text = "${downloadState.progress}% - ${downloader.formatBytes(downloadState.downloadedBytes)}/${downloader.formatBytes(downloadState.totalBytes)}",
-                            style = MaterialTheme.typography.bodySmall
-                        )
-                        if (downloadState.speed > 0) {
-                            Text(
-                                text = "${downloader.formatSpeed(downloadState.speed)}",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.primary
-                            )
-                        }
-                    }
-                }
-                downloadState.error != null -> {
-                    Column(
-                        horizontalAlignment = Alignment.CenterHorizontally
-                    ) {
-                        Text(
-                            text = "❌ ${downloadState.error}",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.error
-                        )
-                        Spacer(modifier = Modifier.height(8.dp))
-                        OutlinedButton(
-                            onClick = { downloader.startDownload(downloader.getRecommendedModel()) }
-                        ) {
-                            Icon(Icons.Default.Add, contentDescription = null)
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text("Retry Download")
-                        }
-                    }
-                }
-                downloadState.isComplete -> {
-                    Text(
-                        text = "✅ ${downloadState.modelName} downloaded! Loading...",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.primary
-                    )
-                }
-                else -> {
-                    Button(
-                        onClick = { downloader.startDownload(downloader.getRecommendedModel()) },
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = MaterialTheme.colorScheme.primary
-                        )
-                    ) {
-                        Icon(Icons.Default.Add, contentDescription = null)
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text("Download the Brain")
-                    }
-                }
-            }
-            Spacer(modifier = Modifier.height(16.dp))
-        }
-        
-        // Custom path input
-        if (showCustomPath) {
-            OutlinedTextField(
-                value = customPath,
-                onValueChange = { customPath = it },
-                label = { Text("Model file path") },
-                modifier = Modifier.fillMaxWidth()
-            )
-            Spacer(modifier = Modifier.height(8.dp))
-        }
-        
-        Button(
-            onClick = {
-                Log.i(TAG, "=====================================")
-                Log.i(TAG, "Load Model button clicked!")
-                Log.i(TAG, "foundModels: ${foundModels.size}, customPath: $customPath")
-                Log.i(TAG, "Button enabled state: ${foundModels.isNotEmpty() || (customPath.isNotBlank() && File(customPath).exists())}")
-                // Show toast for immediate feedback
-                android.widget.Toast.makeText(context, "Loading model...", android.widget.Toast.LENGTH_SHORT).show()
-                scope.launch {
-                    try {
-                        onLoading(true)
-                        
-                        // Determine which path to use
-                        val modelPath = when {
-                            customPath.isNotBlank() && File(customPath).exists() -> customPath
-                            foundModels.isNotEmpty() -> foundModels.first()
-                            else -> {
-                                onError("Brain not found. Please download the Brain first.")
-                                onLoading(false)
-                                return@launch
-                            }
-                        }
-                        
-                        Log.i(TAG, "Starting model load from: $modelPath")
-                        val file = File(modelPath)
-                        Log.i(TAG, "File exists: ${file.exists()}, Size: ${file.length() / (1024*1024)}MB")
-                        
-                        val success = bridge.loadModel(modelPath, config)
-                        
-                        if (success) {
-                            Log.i(TAG, "Model loaded, setting system prompt...")
-                            val promptSuccess = bridge.setSystemPrompt(
-                                "You are a helpful study assistant. Answer questions clearly and concisely."
-                            )
-                            if (promptSuccess) {
-                                Log.i(TAG, "System prompt set, transitioning to chat...")
-                                onModelLoaded()
-                            } else {
-                                onError("Model loaded but failed to set system prompt.")
-                            }
-                        } else {
-                            onError("Failed to load model. The file may be corrupted or incompatible.")
-                        }
-                    } catch (e: Exception) {
-                        Log.e(TAG, "Error during model loading", e)
-                        onError("Error: ${e.message}")
-                    } finally {
-                        onLoading(false)
-                    }
-                }
-            },
-            modifier = Modifier.fillMaxWidth(),
-            enabled = foundModels.isNotEmpty() || (customPath.isNotBlank() && File(customPath).exists())
-        ) {
-            Text("Load Model")
-        }
-        
-        Spacer(modifier = Modifier.height(8.dp))
-        
-        TextButton(
-            onClick = { showCustomPath = !showCustomPath }
-        ) {
-            Text(if (showCustomPath) "Hide custom path" else "Enter custom path")
-        }
-    }
-}
-
-@Composable
-fun ConfigRow(label: String, value: String) {
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.SpaceBetween
-    ) {
-        Text(
-            text = label,
-            style = MaterialTheme.typography.bodyMedium
-        )
-        Text(
-            text = value,
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.primary
-        )
-    }
-}
 
 data class Message(
     val id: String = UUID.randomUUID().toString(),
@@ -819,6 +538,7 @@ fun UnifiedChatView(
     queue: InferenceQueue,
     memoryManager: MemoryManager?,
     metricsState: PerformanceMetricsState,
+    onlineConfig: ProviderConfig?,
     isVoiceModeActive: Boolean,
     onVoiceModeChange: (Boolean) -> Unit
 ) {
@@ -853,8 +573,21 @@ fun UnifiedChatView(
     }
     
     // Initialize voice pipeline
-    LaunchedEffect(Unit) {
-        val vpm = VoicePipelineManager(context, bridge, queue, memoryManager)
+    LaunchedEffect(onlineConfig) {
+        // Create provider based on mode
+        val llmProvider: LLMProvider? = onlineConfig?.let { config ->
+            val provider = OnlineLLMProvider(context, config.provider, config)
+            provider.initialize()
+            provider
+        }
+        
+        val vpm = VoicePipelineManager(
+            context = context,
+            llmBridge = bridge,
+            queue = queue,
+            memoryManager = memoryManager,
+            llmProvider = llmProvider
+        )
         vpm.onStateChange = { state ->
             pipelineState = state
             isRecording = state == VoicePipelineManager.Companion.PipelineState.LISTENING
@@ -899,22 +632,28 @@ fun UnifiedChatView(
         voicePipelineManager = vpm
     }
     
-    // Cleanup
-    DisposableEffect(Unit) {
+    // BUG FIX 1: Properly stop voice pipeline when leaving voice mode
+    // This DisposableEffect triggers when isVoiceModeActive OR isVoiceReady changes,
+    // and cleans up (stops voice) when it becomes false or composable leaves
+    DisposableEffect(isVoiceModeActive, isVoiceReady) {
+        if (isVoiceModeActive && isVoiceReady) {
+            Log.d(TAG, "BUG FIX 1: Starting voice conversation")
+            voicePipelineManager?.startVoiceConversation()
+        }
+        
         onDispose {
-            voicePipelineManager?.release()
+            if (isVoiceModeActive) {
+                // CRITICAL: Stop voice conversation when mode is deactivated
+                Log.d(TAG, "BUG FIX 1: Stopping voice conversation on dispose")
+                voicePipelineManager?.stopConversation()
+            }
         }
     }
     
-    // Handle voice mode activation
-    // FIX: Also depend on isVoiceReady to handle race condition
-    // When user opens voice mode before initialization completes,
-    // this will trigger again once isVoiceReady becomes true
-    LaunchedEffect(isVoiceModeActive, isVoiceReady) {
-        if (isVoiceModeActive && isVoiceReady) {
-            voicePipelineManager?.startVoiceConversation()
-        } else if (!isVoiceModeActive) {
-            voicePipelineManager?.stopConversation()
+    // Cleanup when entire composable leaves (app close)
+    DisposableEffect(Unit) {
+        onDispose {
+            voicePipelineManager?.release()
         }
     }
     
@@ -987,8 +726,10 @@ fun UnifiedChatView(
                     isRecording = isRecording,
                     audioLevel = audioLevel,
                     onStop = {
-                        onVoiceModeChange(false)
+                        // BUG FIX 1: Stop voice BEFORE changing state to ensure it actually stops
+                        Log.d(TAG, "BUG FIX 1: VoiceModeOverlay onStop - stopping conversation")
                         voicePipelineManager?.stopConversation()
+                        onVoiceModeChange(false)
                     }
                 )
             }
@@ -1059,7 +800,10 @@ fun UnifiedChatView(
                                         metricsState = metricsState,
                                         currentMessages = messages,
                                         updateMessages = { messages = it },
-                                        updateGenerating = { isGenerating = it }
+                                        updateGenerating = { isGenerating = it },
+                                        context = context,
+                                        onlineConfig = onlineConfig,
+                                        memoryManager = memoryManager
                                     )
                                     inputText = ""
                                     focusManager.clearFocus()
@@ -1092,7 +836,10 @@ fun UnifiedChatView(
                                         metricsState = metricsState,
                                         currentMessages = messages,
                                         updateMessages = { messages = it },
-                                        updateGenerating = { isGenerating = it }
+                                        updateGenerating = { isGenerating = it },
+                                        context = context,
+                                        onlineConfig = onlineConfig,
+                                        memoryManager = memoryManager
                                     )
                                     inputText = ""
                                     focusManager.clearFocus()
@@ -1287,7 +1034,10 @@ private fun sendTextMessage(
     metricsState: PerformanceMetricsState,
     currentMessages: List<Message>,
     updateMessages: (List<Message>) -> Unit,
-    updateGenerating: (Boolean) -> Unit
+    updateGenerating: (Boolean) -> Unit,
+    context: Context,
+    onlineConfig: ProviderConfig?,
+    memoryManager: MemoryManager? = null  // BUG FIX 5: Added for shared system prompt
 ) {
     // Add user message
     val userMessage = Message(content = text, isUser = true)
@@ -1308,15 +1058,68 @@ private fun sendTextMessage(
         contextSize = 1024
     )
     
-    // Enqueue request
-    queue.enqueue(
-        InferenceQueue.Request(
-            id = aiMessage.id,
-            prompt = text,
-            maxTokens = 256,
-            priority = InferenceQueue.Priority.HIGH
+    if (onlineConfig != null) {
+        // Online mode
+        GlobalScope.launch(Dispatchers.IO) {
+            try {
+                val provider = OnlineLLMProvider(context, onlineConfig.provider, onlineConfig)
+                provider.initialize()
+                
+                // BUG FIX 5: Use shared system prompt builder
+                val fullSystemPrompt = SystemPromptBuilder.buildSystemPrompt(memoryManager, maxTokens = 300)
+                
+                val request = CompletionRequest(
+                    messages = listOf(ChatMessage.user(text)),
+                    systemPrompt = fullSystemPrompt, // BUG FIX 3 & 5: Identity + memory
+                    maxTokens = 256,
+                    stream = true
+                )
+                
+                var fullResponse = ""
+                provider.stream(request).collect { response ->
+                    withContext(Dispatchers.Main) {
+                        if (response.isComplete) {
+                            fullResponse = response.text
+                            updateMessages(currentMessages + userMessage + aiMessage.copy(
+                                content = fullResponse,
+                                isStreaming = false
+                            ))
+                            updateGenerating(false)
+                            metricsState.stopGeneration()
+                        } else if (!response.isError) {
+                            fullResponse = response.text
+                            updateMessages(currentMessages + userMessage + aiMessage.copy(
+                                content = fullResponse
+                            ))
+                        }
+                    }
+                }
+            } catch (e: Exception) {
+                withContext(Dispatchers.Main) {
+                    updateMessages(currentMessages + userMessage + aiMessage.copy(
+                        content = "Error: ${e.message}",
+                        isStreaming = false
+                    ))
+                    updateGenerating(false)
+                    metricsState.stopGeneration()
+                }
+            }
+        }
+    } else {
+        // Offline mode
+        // BUG FIX 5: Use shared system prompt builder
+        val fullSystemPrompt = SystemPromptBuilder.buildSystemPrompt(memoryManager, maxTokens = 300)
+        
+        queue.enqueue(
+            InferenceQueue.Request(
+                id = aiMessage.id,
+                prompt = text,
+                systemPrompt = fullSystemPrompt, // BUG FIX 3 & 5: Identity + memory
+                maxTokens = 256,
+                priority = InferenceQueue.Priority.HIGH
+            )
         )
-    )
+    }
 }
 
 @Composable
@@ -1391,4 +1194,4 @@ fun MessageBubble(message: Message) {
             }
         }
     }
-}
+    }

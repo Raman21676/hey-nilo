@@ -103,6 +103,14 @@ data class CompletionRequest(
 }
 
 /**
+ * API format types
+ */
+enum class ApiFormat {
+    OPENAI,     // OpenAI-compatible format
+    ANTHROPIC   // Anthropic Claude format
+}
+
+/**
  * Supported API providers
  */
 enum class ApiProvider {
@@ -110,7 +118,7 @@ enum class ApiProvider {
     OPENAI,         // OpenAI GPT-4/GPT-3.5
     CLAUDE,         // Anthropic Claude
     DEEPSEEK,       // DeepSeek
-    KIMI            // Moonshot AI Kimi
+    KIMI            // Moonshot AI Kimi (uses Anthropic format)
 }
 
 /**
@@ -153,7 +161,8 @@ data class ProviderConfig(
     val apiKey: String = "",
     val baseUrl: String = "",
     val modelName: String = "",
-    val enabled: Boolean = false
+    val enabled: Boolean = false,
+    val apiFormat: ApiFormat = ApiFormat.OPENAI
 ) {
     companion object {
         // Default model names for each provider
@@ -163,7 +172,7 @@ data class ProviderConfig(
                 ApiProvider.OPENAI -> "gpt-4o-mini"
                 ApiProvider.CLAUDE -> "claude-3-haiku-20240307"
                 ApiProvider.DEEPSEEK -> "deepseek-chat"
-                ApiProvider.KIMI -> "kimi-moonshot-v1-8k"
+                ApiProvider.KIMI -> "moonshot-v1-8k"
             }
         }
         
@@ -174,7 +183,7 @@ data class ProviderConfig(
                 ApiProvider.OPENAI -> "https://api.openai.com/v1"
                 ApiProvider.CLAUDE -> "https://api.anthropic.com/v1"
                 ApiProvider.DEEPSEEK -> "https://api.deepseek.com/v1"
-                ApiProvider.KIMI -> "https://api.moonshot.cn/v1"
+                ApiProvider.KIMI -> "https://api.moonshot.cn/anthropic/v1"
             }
         }
     }

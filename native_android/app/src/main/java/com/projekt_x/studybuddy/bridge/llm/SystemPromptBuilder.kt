@@ -1,0 +1,69 @@
+package com.projekt_x.studybuddy.bridge.llm
+
+import com.projekt_x.studybuddy.bridge.LlamaBridge
+import com.projekt_x.studybuddy.bridge.MemoryManager
+
+/**
+ * BUG FIX 5: Shared system prompt builder for ALL providers
+ * Ensures every model (TinyLlama, OpenAI, Claude, DeepSeek, Kimi) gets:
+ * 1. Identity prompt ("You are Nilo...")
+ * 2. Memory context block (user info, relationships, reminders)
+ * 
+ * This guarantees consistent behavior across all modes (offline/online).
+ */
+object SystemPromptBuilder {
+    
+    /**
+     * Build complete system prompt with identity and memory context
+     * 
+     * @param memoryManager Memory manager to get context from (can be null)
+     * @param maxTokens Maximum tokens for memory block (default 300)
+     * @return Complete system prompt string
+     */
+    fun buildSystemPrompt(memoryManager: MemoryManager?, maxTokens: Int = 300): String {
+        val identity = """You are Nilo, a friendly personal AI assistant built into the Hey-Nilo app.
+Your name is Nilo. Always refer to yourself as Nilo.
+You are helpful, concise, and conversational.
+Keep responses short and natural — they will be spoken aloud via text-to-speech."""
+        
+        // Get memory context block
+        val memoryBlock = try {
+            memoryManager?.buildContextBlock(maxTokens) ?: ""
+        } catch (e: Exception) {
+            // If memory fails, continue without it
+            ""
+        }
+        
+        return if (memoryBlock.isBlank()) {
+            // No memory context, just return identity
+            identity
+        } else {
+            // Combine identity with memory context
+            "$identity\n\n$memoryBlock"
+        }
+    }
+    
+    /**
+     * Build system prompt for offline TinyLlama model
+     * Same as buildSystemPrompt but with optional custom identity
+     */
+    fun buildOfflineSystemPrompt(
+        memoryManager: MemoryManager?,
+        customSystemPrompt: String? = null,
+        maxTokens: Int = 300
+    ): String {
+        val identity = customSystemPrompt ?: LlamaBridge.DEFAULT_SYSTEM_PROMPT
+        
+        val memoryBlock = try {
+            memoryManager?.buildContextBlock(maxTokens) ?: ""
+        } catch (e: Exception) {
+            ""
+        }
+        
+        return if (memoryBlock.isBlank()) {
+            identity
+        } else {
+            "$identity\n\n$memoryBlock"
+        }
+    }
+}

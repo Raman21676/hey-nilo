@@ -223,7 +223,7 @@ class MainActivity : ComponentActivity() {
 }
 
 /**
- * Animated Panda Loading Screen
+ * Animated Nilo Loading Screen
  */
 @Composable
 fun InitializingView() {
@@ -256,7 +256,7 @@ fun InitializingView() {
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.spacedBy(24.dp)
         ) {
-            // Animated Panda Logo
+            // Animated Nilo Logo
             Box(
                 modifier = Modifier
                     .size(180.dp)
@@ -746,7 +746,7 @@ fun UnifiedChatView(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    // Voice button (circular) with Panda head
+                    // Voice button (circular) with Nilo head
                     IconButton(
                         onClick = {
                             if (isVoiceModeActive) {
@@ -775,7 +775,7 @@ fun UnifiedChatView(
                                 shape = CircleShape
                             )
                     ) {
-                        // Panda head icon
+                        // Nilo head icon
                         Image(
                             painter = painterResource(id = R.drawable.panda_logo),
                             contentDescription = if (isVoiceModeActive) "Stop voice" else "Voice input",
@@ -861,6 +861,10 @@ fun UnifiedChatView(
  * Displays listening status, waveform, and transcript
  * PANDA THEME: Uses animated panda logo for all states
  */
+/**
+ * Voice Mode Overlay - Siri-style minimal indicator at bottom center
+ * Shows small animated Nilo orb with status text above
+ */
 @Composable
 fun VoiceModeOverlay(
     pipelineState: VoicePipelineManager.Companion.PipelineState,
@@ -869,160 +873,104 @@ fun VoiceModeOverlay(
     audioLevel: Float,
     onStop: () -> Unit
 ) {
-    // Pulse animation for active states (listening, speaking)
+    // Pulse animation for active states
     val pulseAnim = rememberInfiniteTransition(label = "pulse")
     val pulseScale by pulseAnim.animateFloat(
         initialValue = 1f,
-        targetValue = 1.15f,
+        targetValue = 1.3f,
         animationSpec = infiniteRepeatable(
-            animation = tween(600, easing = FastOutSlowInEasing),
+            animation = tween(800, easing = FastOutSlowInEasing),
             repeatMode = RepeatMode.Reverse
         ),
         label = "scale"
     )
     
-    // Animate audio level bar
+    // Animate audio level
     val animatedAudioLevel by animateFloatAsState(
         targetValue = audioLevel,
         animationSpec = tween(50),
         label = "audioLevel"
     )
     
-    // Panda breathing animation when listening
-    val pandaScale = if (pipelineState == VoicePipelineManager.Companion.PipelineState.LISTENING ||
-                         pipelineState == VoicePipelineManager.Companion.PipelineState.SPEECH_DETECTED) {
-        0.85f + (animatedAudioLevel * 0.3f)
+    // Status text based on state
+    val statusText = when (pipelineState) {
+        VoicePipelineManager.Companion.PipelineState.LISTENING -> "Nilo is listening..."
+        VoicePipelineManager.Companion.PipelineState.SPEECH_DETECTED -> "Nilo hears you!"
+        VoicePipelineManager.Companion.PipelineState.TRANSCRIBING -> "Nilo is writing..."
+        VoicePipelineManager.Companion.PipelineState.THINKING -> "Nilo is thinking..."
+        VoicePipelineManager.Companion.PipelineState.SPEAKING -> "Nilo is speaking..."
+        else -> ""
+    }
+    
+    // Determine orb color based on state
+    val orbColor = when (pipelineState) {
+        VoicePipelineManager.Companion.PipelineState.LISTENING -> 
+            MaterialTheme.colorScheme.primary
+        VoicePipelineManager.Companion.PipelineState.SPEECH_DETECTED -> 
+            MaterialTheme.colorScheme.error
+        VoicePipelineManager.Companion.PipelineState.TRANSCRIBING, 
+        VoicePipelineManager.Companion.PipelineState.THINKING -> 
+            MaterialTheme.colorScheme.secondary
+        VoicePipelineManager.Companion.PipelineState.SPEAKING -> 
+            MaterialTheme.colorScheme.tertiary
+        else -> MaterialTheme.colorScheme.primary
+    }
+    
+    // Breathing scale based on audio level when listening
+    val breathingScale = if (pipelineState == VoicePipelineManager.Companion.PipelineState.LISTENING ||
+                            pipelineState == VoicePipelineManager.Companion.PipelineState.SPEECH_DETECTED) {
+        1f + (animatedAudioLevel * 0.4f)
     } else 1f
     
-    Surface(
-        modifier = Modifier.fillMaxWidth(),
-        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.95f),
-        tonalElevation = 8.dp
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(bottom = 8.dp), // Small padding from bottom
+        horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(16.dp),
-            horizontalAlignment = Alignment.CenterHorizontally
-        ) {
-            // Status text with panda theme
+        // Status text first (above the orb)
+        if (statusText.isNotBlank()) {
             Text(
-                text = when (pipelineState) {
-                    VoicePipelineManager.Companion.PipelineState.LISTENING -> "Panda is listening..."
-                    VoicePipelineManager.Companion.PipelineState.SPEECH_DETECTED -> "Panda hears you!"
-                    VoicePipelineManager.Companion.PipelineState.TRANSCRIBING -> "Panda is writing..."
-                    VoicePipelineManager.Companion.PipelineState.THINKING -> "Panda is thinking..."
-                    VoicePipelineManager.Companion.PipelineState.SPEAKING -> "Panda is speaking..."
-                    else -> "Voice Mode Active"
-                },
-                style = MaterialTheme.typography.titleMedium,
-                color = MaterialTheme.colorScheme.primary
+                text = statusText,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(bottom = 8.dp)
             )
-            
-            Spacer(modifier = Modifier.height(16.dp))
-            
-            // Audio level indicator (only show when listening)
-            if (pipelineState == VoicePipelineManager.Companion.PipelineState.LISTENING ||
-                pipelineState == VoicePipelineManager.Companion.PipelineState.SPEECH_DETECTED) {
+        }
+        
+        // Nilo orb container
+        Box(
+            contentAlignment = Alignment.Center
+        ) {
+            // Outer glow ring for active states
+            if (pipelineState != VoicePipelineManager.Companion.PipelineState.IDLE) {
                 Box(
                     modifier = Modifier
-                        .fillMaxWidth(0.6f)
-                        .height(4.dp)
-                        .background(
-                            MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.3f),
-                            CircleShape
-                        )
-                ) {
-                    Box(
-                        modifier = Modifier
-                            .fillMaxHeight()
-                            .fillMaxWidth(animatedAudioLevel.coerceIn(0f, 1f))
-                            .background(
-                                when {
-                                    animatedAudioLevel > 0.5f -> MaterialTheme.colorScheme.error
-                                    animatedAudioLevel > 0.2f -> MaterialTheme.colorScheme.primary
-                                    else -> MaterialTheme.colorScheme.secondary
-                                },
-                                CircleShape
-                            )
-                    )
-                }
-                Spacer(modifier = Modifier.height(12.dp))
+                        .size(56.dp)
+                        .scale(pulseScale)
+                        .clip(CircleShape)
+                        .background(orbColor.copy(alpha = 0.3f))
+                )
             }
             
-            // Animated Panda Avatar
+            // Main Nilo orb - small size
             Box(
-                modifier = Modifier.size(100.dp),
+                modifier = Modifier
+                    .size(44.dp)
+                    .scale(breathingScale)
+                    .clip(CircleShape)
+                    .background(orbColor)
+                    .pointerInput(Unit) {
+                        detectTapGestures(onTap = { onStop() })
+                    },
                 contentAlignment = Alignment.Center
             ) {
-                // Background ring animation for active states
-                if (pipelineState == VoicePipelineManager.Companion.PipelineState.LISTENING ||
-                    pipelineState == VoicePipelineManager.Companion.PipelineState.SPEECH_DETECTED ||
-                    pipelineState == VoicePipelineManager.Companion.PipelineState.SPEAKING) {
-                    Box(
-                        modifier = Modifier
-                            .size(90.dp)
-                            .scale(pulseScale)
-                            .clip(CircleShape)
-                            .background(
-                                when (pipelineState) {
-                                    VoicePipelineManager.Companion.PipelineState.SPEECH_DETECTED -> 
-                                        MaterialTheme.colorScheme.error.copy(alpha = 0.2f)
-                                    VoicePipelineManager.Companion.PipelineState.SPEAKING -> 
-                                        MaterialTheme.colorScheme.tertiary.copy(alpha = 0.2f)
-                                    else -> MaterialTheme.colorScheme.primary.copy(alpha = 0.2f)
-                                }
-                        )
-                    )
-                }
-                
-                // Main panda circle with background
-                Box(
-                    modifier = Modifier
-                        .size(70.dp)
-                        .clip(CircleShape)
-                        .background(MaterialTheme.colorScheme.primaryContainer),
-                    contentAlignment = Alignment.Center
-                ) {
-                    // Panda image with different animations per state
-                    Image(
-                        painter = painterResource(id = R.drawable.panda_logo),
-                        contentDescription = "Panda",
-                        modifier = Modifier
-                            .size(50.dp)
-                            .then(
-                                when (pipelineState) {
-                                    VoicePipelineManager.Companion.PipelineState.THINKING -> 
-                                        Modifier.offset(y = (-5).dp)
-                                    else -> Modifier
-                                }
-                            )
-                    )
-                }
-            }
-            
-            Spacer(modifier = Modifier.height(16.dp))
-            
-            // Transcript preview
-            if (transcript.isNotBlank()) {
-                Text(
-                    text = "\"$transcript\"",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 2
+                // Small Nilo icon inside orb
+                Image(
+                    painter = painterResource(id = R.drawable.panda_logo),
+                    contentDescription = "Nilo",
+                    modifier = Modifier.size(28.dp)
                 )
-            }
-            
-            Spacer(modifier = Modifier.height(8.dp))
-            
-            // Stop button
-            TextButton(
-                onClick = onStop,
-                colors = ButtonDefaults.textButtonColors(
-                    contentColor = MaterialTheme.colorScheme.error
-                )
-            ) {
-                Text("Stop Voice Mode")
             }
         }
     }

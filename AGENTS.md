@@ -2,7 +2,7 @@
 
 **For**: AI Agents working on the Hey-Nilo project  
 **Purpose**: Complete project context and working guidelines  
-**Last Updated**: March 8, 2025  
+**Last Updated**: March 10, 2025  
 
 > **⚠️ IMPORTANT**: Read this entire document before writing any code. This is your source of truth for the project.
 
@@ -34,6 +34,27 @@ cat TODO.md | grep -A 5 "Project Status Overview"
 - Find the first incomplete task in `TODO.md`
 - Start working on it
 - **Document everything** in the session log (see below)
+
+---
+
+## 🆕 Recent Changes (March 10, 2025)
+
+### UI Redesign: Compact Siri-style Overlay
+- **Before**: Large overlay taking 50% of screen with "Panda" branding
+- **After**: Minimal 44dp orb at bottom-center with "Nilo" branding
+- **Status text**: "Nilo is listening/speaking..." displayed below orb
+- **Colors**: Blue (listening), Red (speech detected), Purple (speaking), Yellow (thinking)
+- **Interaction**: Tap orb to stop voice mode
+
+### TTS Fixes
+- **Fixed**: TTS completion tracking (was hanging in SPEAKING state)
+- **Fixed**: Fragmented speech (now speaks full sentences)
+- **Implementation**: Added `pendingUtterances` set in `KokoroTTSBridge.kt`
+
+### Voice Pipeline Improvements
+- **Reduced delays**: VAD silence detection 1200ms → 500ms
+- **Faster response**: ~5s → ~1-2s after speech ends
+- **Better barge-in**: Energy threshold 1500 → 2500 (ignores typing/horns)
 
 ---
 
@@ -224,15 +245,19 @@ scope.launch(Dispatchers.Main) {
 }
 ```
 
-### 5. Don't Touch Existing Code
-**NEVER modify these working components:**
+### 5. Don't Touch Existing Code (Unless Fixing Bugs)
+**Avoid modifying these working components unless fixing specific bugs:**
 - `VADBridge.kt` / `VADProcessor` (Silero VAD)
 - `whisper_jni.cpp` / `RealSTTBridge.kt` (Speech-to-text)
-- `KokoroTTSBridge.kt` / `SherpaTTSBridge.kt` (Text-to-speech)
 - `CMakeLists.txt` (Build config)
 - `SimpleAudioRecorder.kt` (Audio recording)
 
-**Why**: They work perfectly. Memory system is a NEW LAYER on top.
+**Recently Fixed:**
+- `KokoroTTSBridge.kt` - Fixed TTS completion tracking with pending utterance set
+- `VoicePipelineManager.kt` - Reduced VAD delays, fixed TTS streaming
+- `MainActivity.kt` - Compact Siri-style UI overlay
+
+**Why**: Core pipeline is now stable. Prefer configuration changes over code changes.
 
 ---
 

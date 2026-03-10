@@ -46,15 +46,14 @@ class VoicePipelineManager(
         private const val FRAME_SIZE = 512     // 32ms at 16kHz
         private const val MAX_BUFFER_SIZE = SAMPLE_RATE * 10  // 10 seconds max
         
-        // OPTIMIZED: Balance between fast response and not cutting off speech
-        // Reduced from 1.2s to 700ms - fast enough for good UX, long enough for natural pauses
-        private const val VAD_THRESHOLD = 0.65f       // Less sensitive to background noise
-        private const val MIN_SPEECH_MS = 300L        // Minimum speech to process
-        private const val MIN_SILENCE_MS = 700L       // OPTIMIZED: 700ms silence (was 1.2s too slow)
-        private const val PRE_SPEECH_BUFFER_MS = 800L // Pre-speech capture buffer
-        private const val MAX_SPEECH_MS = 8000L       // Maximum 8 seconds
-        // OPTIMIZED: 22 frames * 32ms = ~700ms of confirmed silence
-        private const val TRAILING_SILENCE_FRAMES = 22
+        // WORKING CONFIG FROM MINI PROJECT - Fast response (2 seconds)
+        private const val VAD_THRESHOLD = 0.5f       // Balanced - ignores ambient, catches speech
+        private const val MIN_SPEECH_MS = 250L       // Ignore very short sounds
+        private const val MIN_SILENCE_MS = 600L      // WORKING: 600ms - end speech after 600ms silence
+        private const val PRE_SPEECH_BUFFER_MS = 800L // Capture word beginnings
+        private const val MAX_SPEECH_MS = 8000L      // Force stop after 8 seconds (was 15s)
+        // WORKING: 10 frames * 32ms = ~320ms trailing silence (was 22 - too slow)
+        private const val TRAILING_SILENCE_FRAMES = 10
         
         // BUG FIX 2: Barge-in detection - requires sustained human speech
         // Motorbike horn (~200ms) won't trigger, human speech (~960ms+) will
@@ -638,6 +637,7 @@ class VoicePipelineManager(
                 speechEndDetectedTime = System.currentTimeMillis()
                 val silenceDuration = speechEndDetectedTime - lastSpeechDetectedTime
                 Log.i(TAG, "VAD: SPEECH_END detected (silence wait: ${silenceDuration}ms), buffer size: ${speechBuffer.size}")
+                Log.d("TIMING", "1. VAD speech end detected at: ${System.currentTimeMillis()}")
                 
                 if (isCollectingSpeech) {
                     // Include the final frame
@@ -852,10 +852,12 @@ class VoicePipelineManager(
         // Process with STT
         scope.launch {
             try {
+                Log.d("TIMING", "2. STT start at: ${System.currentTimeMillis()}")
                 val sttProcessingStart = System.currentTimeMillis()
                 val transcription = sttBridge?.transcribe(speechArray) ?: ""
                 val sttProcessingEnd = System.currentTimeMillis()
                 Log.i(TAG, "STT processing took ${sttProcessingEnd - sttProcessingStart}ms")
+                Log.d("TIMING", "3. STT done at: ${System.currentTimeMillis()}, result: $transcription")
                 
                 if (transcription.isNotBlank()) {
                     Log.i(TAG, "STT Result: \"$transcription\"")
@@ -951,6 +953,18 @@ class VoicePipelineManager(
     }
     
     /**
+     * Stop TTS immediately - called when user closes voice mode
+     */
+    fun stopTTS() {
+        Log.i(TAG, "Stopping TTS")
+        kokoroTTS?.stop()
+        streamingTTSJob?.cancel()
+        streamingTTSJob = null
+        isStreamingTTSActive = false
+        ttsTextBuffer.clear()
+    }
+    
+    /**
      * Send transcription to LLM for processing
      * 
      * LLM PROVIDER INTEGRATION: Uses LLMProvider abstraction when available,
@@ -1000,8 +1014,14 @@ class VoicePipelineManager(
                 
                 // Stream response
                 var tokenCount = 0
+                var isFirstToken = true
+                Log.d("TIMING", "4. LLM request start at: ${System.currentTimeMillis()}")
                 llmProvider?.stream(request)?.collect { response ->
                     when {
+                        response.isStreaming && isFirstToken -> {
+                            Log.d("TIMING", "5. First response token at: ${System.currentTimeMillis()}")
+                            isFirstToken = false
+                        }
                         response.isError -> {
                             currentState = PipelineState.ERROR
                             withContext(Dispatchers.Main) {
@@ -1120,11 +1140,13 @@ class VoicePipelineManager(
                 )
                 
                 Log.i(TAG, "Sending to LLM: '$transcription' (requestId: $requestId)")
+                Log.d("TIMING", "4. LLM request start at: ${System.currentTimeMillis()}")
                 queue?.enqueue(request)
                 
                 // Collect response - filter by request ID and terminate when complete
                 var responseComplete = false
                 var tokenCount = 0
+                var isFirstToken = true
                 // fullResponseText was already cleared at function start
                 ttsTextBuffer.clear()  // Reset streaming TTS buffer
                 lastSpokenPosition = 0
@@ -1138,6 +1160,11 @@ class VoicePipelineManager(
                         // Only process responses for our request
                         if (response.requestId != requestId) return@collect
                         
+                        if (response.token != null && isFirstToken) {
+                            Log.d("TIMING", "5. First response token at: ${System.currentTimeMillis()}")
+                            isFirstToken = false
+                        }
+                        
                         when {
                             response.error != null -> {
                                 currentState = PipelineState.ERROR
@@ -1148,14 +1175,24 @@ class VoicePipelineManager(
                             }
                             response.isComplete -> {
                                 Log.i(TAG, "LLM response complete, tokens: $tokenCount")
+                                
+                                // BUG FIX: Process final token if present (might contain last part of response)
+                                if (response.token != null && response.token.isNotBlank()) {
+                                    Log.d(TAG, "Processing final token: '${response.token}'")
+                                    tokenCount++
+                                    fullResponseText.append(response.token)
+                                    ttsTextBuffer.append(response.token)
+                                }
+                                
                                 responseComplete = true
                                 isLLMResponseComplete = true  // Signal TTS loop to speak remaining text
                                 
                                 val finalResponse = fullResponseText.toString()
+                                Log.i(TAG, "Final response length: ${finalResponse.length}, TTS buffer: ${ttsTextBuffer.length}")
                                 
                                 // If TTS hasn't started yet (short response), start it now
                                 if (!isStreamingTTSActive && kokoroTTS?.isReady == true && ttsTextBuffer.isNotBlank()) {
-                                    Log.i(TAG, "LLM complete, starting TTS for short response")
+                                    Log.i(TAG, "LLM complete, starting TTS for short response (${ttsTextBuffer.length} chars)")
                                     startStreamingTTS()
                                 }
                                 // If TTS is already running, it will pick up remaining text via isLLMResponseComplete flag
@@ -1351,17 +1388,21 @@ class VoicePipelineManager(
                     } else if (isLLMResponseComplete && availableLength > 0) {
                         // LLM done but we have remaining text that didn't end with punctuation
                         val remaining = availableText.trim()
+                        Log.i(TAG, "TTS: LLM complete, speaking remainder (${availableLength} chars): '$remaining'")
                         if (remaining.isNotBlank()) {
-                            Log.d(TAG, "TTS speaking final remainder: '$remaining'")
+                            val queueMode = if (isFirstChunk) TextToSpeech.QUEUE_FLUSH else TextToSpeech.QUEUE_ADD
+                            Log.d(TAG, "TTS speaking final remainder with $queueMode: '$remaining'")
                             kokoroTTS?.speakQueued(
                                 text = remaining,
-                                queueMode = if (isFirstChunk) TextToSpeech.QUEUE_FLUSH else TextToSpeech.QUEUE_ADD
+                                queueMode = queueMode
                             )
                             lastSpokenPosition = ttsTextBuffer.length
+                            isFirstChunk = false
                             
                             // Wait for completion
-                            delay(200)
+                            delay(300)
                             kokoroTTS?.waitForCompletion()
+                            Log.i(TAG, "TTS: finished speaking remainder")
                         } else {
                             Log.d(TAG, "TTS: remaining text is blank, skipping")
                         }
@@ -1449,6 +1490,7 @@ class VoicePipelineManager(
                         breakPoint = i + 2  // Skip the space
                     }
                     val speakableText = availableText.substring(0, breakPoint).trim()
+                    Log.d(TAG, "findSpeakableChunk: found sentence at $i: '$speakableText'")
                     return Pair(speakableText, breakPoint)
                 }
             }
@@ -1460,11 +1502,13 @@ class VoicePipelineManager(
                 if (availableText[i] == ',' || availableText[i] == ';') {
                     val breakPoint = i + 1
                     val speakableText = availableText.substring(0, breakPoint).trim()
+                    Log.d(TAG, "findSpeakableChunk: forced break at comma: '$speakableText'")
                     return Pair(speakableText, breakPoint)
                 }
             }
         }
         
+        Log.v(TAG, "findSpeakableChunk: no chunk found in '${availableText.take(50)}...'")
         return Pair(null, 0)
     }
     

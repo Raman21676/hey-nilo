@@ -171,9 +171,9 @@ Java_com_projekt_1x_studybuddy_bridge_RealSTTBridge_nativeTranscribe(
         return env->NewStringUTF("");
     }
     
-    // Limit audio length to prevent memory issues (max 10 seconds at 16kHz)
-    // Reduced from 30s to 10s for faster processing
-    const int MAX_SAMPLES = 16000 * 10;
+    // Limit audio length to prevent memory issues (max 8 seconds at 16kHz)
+    // Reduced from 10s to 8s to match MAX_SPEECH_MS
+    const int MAX_SAMPLES = 16000 * 8;
     if (audioLength > MAX_SAMPLES) {
         LOGW("Audio too long (%d samples), truncating to %d", audioLength, MAX_SAMPLES);
         audioLength = MAX_SAMPLES;

@@ -26,6 +26,10 @@ class KokoroTTSBridge(private val context: Context) {
     var isReady: Boolean = false
         private set
     
+    // Track pending utterances for proper completion detection
+    private val pendingUtterances = mutableSetOf<String>()
+    private val utteranceLock = Object()
+    
     /**
      * Initialize Android System TTS
      * FIXED: Properly waits for async callback completion
@@ -174,6 +178,7 @@ class KokoroTTSBridge(private val context: Context) {
     /**
      * CLAUDE FIX: Fire-and-forget TTS with specified queue mode
      * Use QUEUE_FLUSH for first utterance, QUEUE_ADD for seamless continuation
+     * FIXED: Properly track all utterances with a single listener
      */
     fun speakQueued(text: String, queueMode: Int = TextToSpeech.QUEUE_ADD) {
         if (!isReady || androidTts == null) {
@@ -189,27 +194,44 @@ class KokoroTTSBridge(private val context: Context) {
         try {
             val utteranceId = UUID.randomUUID().toString()
             
-            // Set up listener to track completion
+            // Track this utterance
+            synchronized(utteranceLock) {
+                pendingUtterances.add(utteranceId)
+            }
+            
+            // Set up listener once (tracks all utterances)
             androidTts?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
                 override fun onStart(utteranceId: String?) {
                     Log.d(TAG, "TTS started: $utteranceId")
                 }
                 override fun onDone(utteranceId: String?) {
                     Log.d(TAG, "TTS completed: $utteranceId")
+                    synchronized(utteranceLock) {
+                        pendingUtterances.remove(utteranceId)
+                    }
                 }
                 override fun onError(utteranceId: String?) {
                     Log.e(TAG, "TTS error: $utteranceId")
+                    synchronized(utteranceLock) {
+                        pendingUtterances.remove(utteranceId)
+                    }
                 }
                 override fun onStop(utteranceId: String?, interrupted: Boolean) {
                     Log.d(TAG, "TTS stopped: $utteranceId (interrupted: $interrupted)")
+                    synchronized(utteranceLock) {
+                        pendingUtterances.remove(utteranceId)
+                    }
                 }
             })
             
             val result = androidTts?.speak(cleanText, queueMode, null, utteranceId)
             if (result == TextToSpeech.ERROR) {
                 Log.e(TAG, "TTS speak() returned ERROR")
+                synchronized(utteranceLock) {
+                    pendingUtterances.remove(utteranceId)
+                }
             } else {
-                Log.d(TAG, "TTS queued: '${cleanText.take(50)}...' (mode: ${if (queueMode == TextToSpeech.QUEUE_FLUSH) "FLUSH" else "ADD"})")
+                Log.d(TAG, "TTS queued: '${cleanText.take(50)}...' (mode: ${if (queueMode == TextToSpeech.QUEUE_FLUSH) "FLUSH" else "ADD"}, id: ${utteranceId.take(8)})")
             }
         } catch (e: Exception) {
             Log.e(TAG, "TTS speak error: ${e.message}")
@@ -217,28 +239,50 @@ class KokoroTTSBridge(private val context: Context) {
     }
     
     /**
-     * Wait for all TTS to complete (check if speaking)
+     * Wait for all TTS to complete (check pending utterances)
+     * FIXED: Also check isSpeaking as fallback
      */
     suspend fun waitForCompletion(timeoutMs: Long = 30000) {
         withTimeoutOrNull(timeoutMs) {
-            while (androidTts?.isSpeaking == true) {
-                delay(100)
+            var emptyCount = 0
+            while (true) {
+                val hasPending = synchronized(utteranceLock) { pendingUtterances.isNotEmpty() }
+                val isSpeaking = androidTts?.isSpeaking == true
+                
+                Log.d(TAG, "waitForCompletion: pending=${pendingUtterances.size}, isSpeaking=$isSpeaking")
+                
+                if (!hasPending && !isSpeaking) {
+                    emptyCount++
+                    // Wait a bit more to make sure nothing new started
+                    if (emptyCount >= 3) {
+                        Log.d(TAG, "TTS complete - no pending utterances")
+                        break
+                    }
+                } else {
+                    emptyCount = 0
+                }
+                delay(150)
             }
         }
+        // Clear any stale pending utterances
+        synchronized(utteranceLock) { pendingUtterances.clear() }
     }
     
     /**
      * Preprocess text for TTS
+     * Simple version - just remove markdown and emoji, keep text intact
      */
     fun preprocessText(raw: String): String {
         return raw
-            .replace(Regex("```[\\s\\S]*?```"), "")
-            .replace(Regex("[*_~`#]+"), "")
-            .replace(Regex("\\[(.*?)\\]\\(.*?\\)"), "$1")
-            .replace(Regex("<[^>]+>"), "")
-            .replace(Regex("\\s+"), " ")
+            .replace(Regex("```[\\s\\S]*?```"), "")  // Remove code blocks
+            .replace(Regex("[*_~`#>]+"), "")  // Remove markdown formatting
+            // Simple emoji removal (just common emoji range)
+            .replace(Regex("[\\x{1F600}-\\x{1F9FF}]"), "")
+            .replace(Regex("\\[(.*?)\\]\\(.*?\\)"), "$1")  // Convert links to text
+            .replace(Regex("<[^>]+>"), "")  // Remove HTML tags
+            .replace(Regex("https?://\\S+"), "")  // Remove URLs
+            .replace(Regex("\\s+"), " ")  // Collapse whitespace
             .trim()
-            .take(500)
     }
     
     /**
@@ -247,6 +291,8 @@ class KokoroTTSBridge(private val context: Context) {
     fun stop() {
         try {
             androidTts?.stop()
+            synchronized(utteranceLock) { pendingUtterances.clear() }
+            Log.d(TAG, "TTS stopped, cleared ${pendingUtterances.size} pending utterances")
         } catch (e: Exception) {
             Log.w(TAG, "Stop error: ${e.message}")
         }

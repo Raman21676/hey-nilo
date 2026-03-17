@@ -2,7 +2,7 @@
 
 **For**: AI Agents working on the Hey-Nilo project  
 **Purpose**: Complete project context and working guidelines  
-**Last Updated**: March 10, 2025  
+**Last Updated**: March 17, 2026  
 
 > **⚠️ IMPORTANT**: Read this entire document before writing any code. This is your source of truth for the project.
 
@@ -37,7 +37,32 @@ cat TODO.md | grep -A 5 "Project Status Overview"
 
 ---
 
-## 🆕 Recent Changes (March 10, 2025)
+## 🆕 Recent Changes (March 17, 2026)
+
+### Play Store Publication Ready
+- **Release APK/AAB**: Built and signed with release keystore
+- **APK Size**: 180 MB | **AAB Size**: 155 MB
+- **Package**: `com.projekt_x.studybuddy`
+- **Version**: 1.0 (versionCode 1)
+- **Assets**: Icons, screenshots, feature graphic, privacy policy all ready
+- **Location**: All assets in `/Users/kalikali/Desktop/hey-nilo-final/`
+
+### Memory System Completion
+- **MemoryExtractionHelper.kt**: Rule-based and LLM-based extraction from conversations
+- **MemoryCompaction.kt**: Automatic archiving of conversations older than 1 year
+- **MemoryManagerScreen.kt**: Full UI for viewing/editing profile, relationships, reminders
+- **extractAndSave()**: Extracts facts, relationships, reminders with confidence scoring
+- **Duplicate detection**: Prevents duplicate memory entries
+
+### Model Expansion (10 → 28 Models)
+- **Categories**: General, Coding, Creative, Multilingual, Reasoning, Ultra-Light
+- **RAM Tiers**: 3GB, 4GB, 6GB, 8GB, 12GB+ support
+- **New models**: Qwen, DeepSeek, Gemma, Phi, Mistral variants
+- **Smart filtering**: Models filtered by device RAM capability
+
+---
+
+## 📝 Previous Changes (March 10, 2025)
 
 ### UI Redesign: Compact Siri-style Overlay
 - **Before**: Large overlay taking 50% of screen with "Panda" branding

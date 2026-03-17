@@ -22,7 +22,10 @@ data class MemoryStats(
     val counts: MemoryCounts = MemoryCounts(),
     
     @SerializedName("compaction")
-    val compaction: CompactionInfo = CompactionInfo()
+    val compaction: CompactionInfo = CompactionInfo(),
+    
+    @SerializedName("extraction")
+    val extractionStats: ExtractionStats = ExtractionStats()
 ) {
     /**
      * Get total storage used in human-readable format
@@ -160,6 +163,26 @@ data class ConversationSummary(
         return "conversations/${date.substring(0, 4)}/${date.substring(5, 7)}-Month/$filename"
     }
 }
+
+/**
+ * Extraction statistics
+ */
+data class ExtractionStats(
+    @SerializedName("total_facts_extracted")
+    val totalFactsExtracted: Int = 0,
+    
+    @SerializedName("total_relationships_extracted")
+    val totalRelationshipsExtracted: Int = 0,
+    
+    @SerializedName("total_reminders_extracted")
+    val totalRemindersExtracted: Int = 0,
+    
+    @SerializedName("last_extraction_at")
+    val lastExtractionAt: String? = null,
+    
+    @SerializedName("extractions_today")
+    val extractionsToday: Int = 0
+)
 
 /**
  * Profile update data class (partial updates)

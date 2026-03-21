@@ -47,13 +47,14 @@ class VoicePipelineManager(
         private const val MAX_BUFFER_SIZE = SAMPLE_RATE * 10  // 10 seconds max
         
         // WORKING CONFIG FROM MINI PROJECT - Fast response (2 seconds)
-        private const val VAD_THRESHOLD = 0.5f       // Balanced - ignores ambient, catches speech
-        private const val MIN_SPEECH_MS = 250L       // Ignore very short sounds
-        private const val MIN_SILENCE_MS = 600L      // WORKING: 600ms - end speech after 600ms silence
+        // FIX: Lowered threshold from 0.5f to 0.35f for better speech detection on all devices
+        private const val VAD_THRESHOLD = 0.35f      // More sensitive - catches quieter speech
+        private const val MIN_SPEECH_MS = 200L       // Ignore very short sounds (slightly lower)
+        private const val MIN_SILENCE_MS = 500L      // Faster response - end speech after 500ms silence (was 600ms)
         private const val PRE_SPEECH_BUFFER_MS = 800L // Capture word beginnings
-        private const val MAX_SPEECH_MS = 8000L      // Force stop after 8 seconds (was 15s)
-        // WORKING: 10 frames * 32ms = ~320ms trailing silence (was 22 - too slow)
-        private const val TRAILING_SILENCE_FRAMES = 10
+        private const val MAX_SPEECH_MS = 8000L      // Force stop after 8 seconds
+        // FIX: Reduced to 8 frames * 32ms = ~256ms trailing silence for faster response
+        private const val TRAILING_SILENCE_FRAMES = 8
         
         // BUG FIX 2: Barge-in detection - requires sustained human speech
         // Motorbike horn (~200ms) won't trigger, human speech (~960ms+) will

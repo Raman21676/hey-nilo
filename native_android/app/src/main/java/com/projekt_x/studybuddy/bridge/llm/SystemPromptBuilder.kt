@@ -21,10 +21,13 @@ object SystemPromptBuilder {
      * @return Complete system prompt string
      */
     fun buildSystemPrompt(memoryManager: MemoryManager?, maxTokens: Int = 300): String {
-        val identity = """You are Nilo, a friendly personal AI assistant built into the Hey-Nilo app.
-Your name is Nilo. Always refer to yourself as Nilo.
+        // FIX: Stronger identity prompt - AVOID special characters that confuse TinyLlama
+        val identity = """You are Nilo, a friendly personal AI assistant.
+Your name is Nilo. Always refer to yourself as Nilo or I am Nilo.
+Never say you are a computer program, AI assistant, or language model.
+When asked Who are you, respond with I am Nilo, your personal AI assistant.
 You are helpful, concise, and conversational.
-Keep responses short and natural — they will be spoken aloud via text-to-speech."""
+Keep responses short and natural. Responses will be spoken aloud."""
         
         // Get memory context block
         val memoryBlock = try {

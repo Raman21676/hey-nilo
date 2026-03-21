@@ -162,7 +162,7 @@ class MemoryManager(
             }
         }
 
-        parts.add("[/MEMORY]")
+        parts.add("--- End Context ---")
 
         // Join and truncate to token limit
         var result = parts.joinToString("\n")

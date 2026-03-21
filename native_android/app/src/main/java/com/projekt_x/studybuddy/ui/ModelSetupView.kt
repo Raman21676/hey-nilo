@@ -12,6 +12,7 @@ import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Send
+import androidx.activity.compose.BackHandler
 
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -133,7 +134,7 @@ fun ModelSetupView(
                 modifier = Modifier.padding(top = 32.dp)
             ) {
                 Image(
-                    painter = painterResource(id = R.drawable.panda_logo),
+                    painter = painterResource(id = R.drawable.app_logo),
                     contentDescription = "Hey-Nilo Logo",
                     modifier = Modifier.size(100.dp)
                 )
@@ -273,6 +274,12 @@ fun ModelSetupView(
             hostState = snackbarHostState,
             modifier = Modifier.align(Alignment.BottomCenter)
         )
+    }
+    
+    // Handle system back button when picker is showing
+    BackHandler(enabled = showOfflinePicker) {
+        Log.i(TAG, "BackHandler: Closing OfflineModelPickerScreen")
+        showOfflinePicker = false
     }
     
     // Full screen picker overlay - shown instead of main UI

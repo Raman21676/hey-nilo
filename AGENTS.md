@@ -37,7 +37,24 @@ cat TODO.md | grep -A 5 "Project Status Overview"
 
 ---
 
-## 🆕 Recent Changes (March 17, 2026)
+## 🆕 Recent Changes (March 21, 2026)
+
+### Logo & UI Refresh
+- **New Logo**: Replaced panda with user's custom "Nilo" blue face logo
+  - Updated: Launcher icons, main screen, voice button, splash screen
+  - Deleted: Old panda assets
+- **3D Message Bubbles**: Added shadow elevation and depth effects
+- **Theme Toggle**: Light/dark mode button in top-right corner (🌙/☀️)
+- **Back Button Fix**: Intercepted back button in ModelSetupView to prevent app exit
+
+### System Prompt Tag Filtering
+- **Fixed**: AI responses no longer leak `[MEMORY]`, `[/MEMORY]`, `[/s]`, `</s>` tags
+- **Solution**: Added `filterAiResponse()` function + changed memory context format
+- **Files**: `MainActivity.kt`, `SystemPromptBuilder.kt`, `MemoryManager.kt`
+
+---
+
+## 📝 Previous Changes (March 17, 2026)
 
 ### Play Store Publication Ready
 - **Release APK/AAB**: Built and signed with release keystore
@@ -587,11 +604,12 @@ Before ending your session, verify:
 
 | Goal | Description | Status |
 |------|-------------|--------|
-| **Dual Mode** | Work offline (TinyLlama) or online (APIs) | 🔴 Not Started |
-| **Persistent Memory** | Remember 1 year of conversations | 🔴 Not Started |
-| **Smart Extraction** | Auto-extract facts from chats | 🔴 Not Started |
-| **Auto-Compaction** | Archive old memories | 🔴 Not Started |
-| **Voice Interface** | Natural voice conversations | ✅ Already Works |
+| **Dual Mode** | Work offline (TinyLlama) or online (APIs) | ✅ Complete |
+| **Persistent Memory** | Remember 1 year of conversations | ✅ Complete |
+| **Smart Extraction** | Auto-extract facts from chats | ✅ Complete |
+| **Auto-Compaction** | Archive old memories | ✅ Complete |
+| **Voice Interface** | Natural voice conversations | ✅ Complete |
+| **Branding** | Custom Nilo logo, theme toggle | ✅ Complete |
 
 ---
 

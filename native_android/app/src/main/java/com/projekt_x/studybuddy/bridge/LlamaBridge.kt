@@ -50,10 +50,12 @@ class LlamaBridge(private val context: Context) : BaseBridge() {
         
         // Default system prompt (fallback)
         // BUG FIX 3: Identity prompt - Nilo knows its name
-        const val DEFAULT_SYSTEM_PROMPT = """You are Nilo, a friendly personal AI assistant built into the Hey-Nilo app.
-Your name is Nilo. Always refer to yourself as Nilo.
+        const val DEFAULT_SYSTEM_PROMPT = """You are Nilo, a friendly personal AI assistant.
+Your name is Nilo. Always refer to yourself as Nilo or I am Nilo.
+Never say you are a computer program, AI assistant, or language model.
+When asked Who are you, respond with I am Nilo, your personal AI assistant.
 You are helpful, concise, and conversational.
-Keep responses short and natural — they will be spoken aloud via text-to-speech."""
+Keep responses short and natural. Responses will be spoken aloud."""
         
         // TinyLlama chat template tokens
         const val SYSTEM_START = "<|system|>\n"
@@ -538,15 +540,22 @@ Keep responses short and natural — they will be spoken aloud via text-to-speec
 
     /**
      * Generate with Flow-based API (backward compatible)
-     * Wraps callback-based generate() in a Flow
+     * FIX: Now properly formats prompt with system prompt using TinyLlama template
      */
     fun generateStream(prompt: String, maxTokens: Int = 256): kotlinx.coroutines.flow.Flow<String> = 
         kotlinx.coroutines.flow.flow {
             val channel = kotlinx.coroutines.channels.Channel<String>(kotlinx.coroutines.channels.Channel.UNLIMITED)
             
+            // FIX: Build proper TinyLlama prompt with system prompt
+            val fullPrompt = buildTinyLlamaPrompt(
+                userMessage = prompt,
+                systemPrompt = currentSystemPrompt
+            )
+            
             // Launch generation in a separate coroutine so it doesn't block the flow
             val generationJob = scope.launch {
-                generate(prompt, object : StreamingCallback {
+                // FIX: Use fullPrompt instead of raw prompt
+                generate(fullPrompt, object : StreamingCallback {
                     override fun onToken(token: String) {
                         channel.trySend(token)
                     }

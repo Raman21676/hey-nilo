@@ -76,6 +76,7 @@ import com.projekt_x.studybuddy.ui.components.RamOptimizerDialog
 import com.projekt_x.studybuddy.ui.components.OptimizationResult
 import com.projekt_x.studybuddy.bridge.llm.SystemPromptBuilder
 import com.projekt_x.studybuddy.ui.theme.HeyNiloTheme
+import com.projekt_x.studybuddy.ui.theme.ThemeManager
 import kotlinx.coroutines.*
 import kotlin.coroutines.coroutineContext
 import androidx.compose.runtime.mutableFloatStateOf
@@ -98,6 +99,9 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         
         Log.i(TAG, "Starting app initialization...")
+        
+        // Initialize theme manager
+        ThemeManager.init(this)
         
         // Show loading UI first
         enableEdgeToEdge()
@@ -266,7 +270,7 @@ fun InitializingView() {
                 contentAlignment = Alignment.Center
             ) {
                 Image(
-                    painter = painterResource(id = R.drawable.panda_logo),
+                    painter = painterResource(id = R.drawable.app_logo),
                     contentDescription = "Hey-Nilo Logo",
                     modifier = Modifier.size(140.dp)
                 )
@@ -288,7 +292,7 @@ fun InitializingView() {
             
             // Status text
             Text(
-                text = "Waking up the panda...",
+                text = "Waking up Nilo...",
                 style = MaterialTheme.typography.bodyLarge,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -399,12 +403,29 @@ fun HeyNiloApp(
         }
     }
     
+    // Theme toggle state
+    val isDarkTheme = ThemeManager.isDarkMode.value
+    val appContext = LocalContext.current
+    
     Scaffold(
         topBar = {
             Column {
                 TopAppBar(
                     title = { Text("Hey-Nilo") },
                     actions = {
+                        // Theme Toggle Button
+                        IconButton(
+                            onClick = { 
+                                ThemeManager.toggleTheme(appContext)
+                            }
+                        ) {
+                            // Sun icon for dark mode (tap to go light), Moon icon for light mode (tap to go dark)
+                            Text(
+                                text = if (isDarkTheme) "☀️" else "🌙",
+                                fontSize = 20.sp
+                            )
+                        }
+                        
                         // RAM Optimizer Button
                         RamOptimizerButton(
                             onOptimize = { performOptimization() },
@@ -529,6 +550,50 @@ data class Message(
 )
 
 /**
+ * Filter AI response to remove leaked memory tags and system prompt artifacts
+ * FIX: Removes [MEMORY], [/s], and other formatting that leaks into output
+ */
+fun filterAiResponse(text: String): String {
+    if (text.isBlank()) return text
+    
+    var filtered = text
+    
+    // Remove memory tags and special tokens
+    filtered = filtered.replace("[MEMORY]", "")
+    filtered = filtered.replace("[/MEMORY]", "")
+    filtered = filtered.replace("[-- Memory Context ---", "")
+    filtered = filtered.replace("--- End Context ---", "")
+    filtered = filtered.replace("</s>", "")
+    filtered = filtered.replace("<|system|>", "")
+    filtered = filtered.replace("<|user|>", "")
+    filtered = filtered.replace("<|assistant|>", "")
+    
+    // Remove [/s] or similar tags using regex
+    filtered = filtered.replace(Regex("""\[/s\]"""), "")
+    filtered = filtered.replace(Regex("""\[s\]"""), "")
+    
+    // Remove lines that look like memory context (start with specific keywords)
+    val lines = filtered.lines()
+    val cleanedLines = lines.filter { line ->
+        val trimmed = line.trim()
+        // Keep lines that don't look like memory context
+        !trimmed.startsWith("User:") &&
+        !trimmed.startsWith("Facts:") &&
+        !trimmed.startsWith("People:") &&
+        !trimmed.startsWith("Pending:") &&
+        !trimmed.startsWith("Last session:")
+    }
+    
+    // Rejoin and clean up
+    filtered = cleanedLines.joinToString("\n").trim()
+    
+    // Remove multiple consecutive newlines
+    filtered = filtered.replace(Regex("\n{3,}"), "\n\n")
+    
+    return filtered
+}
+
+/**
  * Unified Chat View - Like ChatGPT/Gemini
  * Combines text chat and voice mode in one interface
  */
@@ -560,13 +625,26 @@ fun UnifiedChatView(
     var isRecording by remember { mutableStateOf(false) }
     var audioLevel by remember { mutableFloatStateOf(0f) }
     
+    // FIX: Track permission state to re-initialize voice pipeline if needed
+    var hasRecordPermission by remember { 
+        mutableStateOf(
+            ContextCompat.checkSelfPermission(
+                context, Manifest.permission.RECORD_AUDIO
+            ) == PackageManager.PERMISSION_GRANTED
+        )
+    }
+    
     // Permission launcher
     val permissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission()
     ) { isGranted ->
         if (isGranted) {
-            // Permission granted, start voice mode
-            onVoiceModeChange(true)
+            hasRecordPermission = true
+            // FIX: Small delay to ensure permission is fully granted before starting voice
+            scope.launch {
+                delay(100)
+                onVoiceModeChange(true)
+            }
         } else {
             Toast.makeText(context, "Microphone permission required for voice mode", Toast.LENGTH_SHORT).show()
         }
@@ -604,10 +682,12 @@ fun UnifiedChatView(
             }
         }
         vpm.onResponseUpdate = { text, isComplete ->
+            // FIX: Filter out leaked memory tags and system prompt artifacts
+            val filteredText = filterAiResponse(text)
             // PROFESSOR FIX: Always REPLACE (not append) since we now get accumulated text
             messages = messages.mapIndexed { index, msg ->
                 if (index == messages.size - 1 && !msg.isUser) {
-                    msg.copy(content = text, isStreaming = !isComplete)
+                    msg.copy(content = filteredText, isStreaming = !isComplete)
                 } else {
                     msg
                 }
@@ -683,11 +763,15 @@ fun UnifiedChatView(
                 isGenerating = false
                 metricsState.stopGeneration()
             } else if (response.token != null) {
-                messages = messages.map { msg ->
-                    if (msg.isStreaming) {
-                        msg.copy(content = msg.content + response.token)
-                    } else {
-                        msg
+                // FIX: Filter each token to prevent memory tag leakage
+                val filteredToken = filterAiResponse(response.token)
+                if (filteredToken.isNotBlank()) {
+                    messages = messages.map { msg ->
+                        if (msg.isStreaming) {
+                            msg.copy(content = msg.content + filteredToken)
+                        } else {
+                            msg
+                        }
                     }
                 }
                 metricsState.onTokenGenerated()
@@ -777,7 +861,7 @@ fun UnifiedChatView(
                     ) {
                         // Nilo head icon
                         Image(
-                            painter = painterResource(id = R.drawable.panda_logo),
+                            painter = painterResource(id = R.drawable.app_logo),
                             contentDescription = if (isVoiceModeActive) "Stop voice" else "Voice input",
                             modifier = Modifier.size(32.dp)
                         )
@@ -859,7 +943,7 @@ fun UnifiedChatView(
 /**
  * Voice Mode Overlay - Shows when voice mode is active
  * Displays listening status, waveform, and transcript
- * PANDA THEME: Uses animated panda logo for all states
+ * Uses animated Nilo logo for all states
  */
 /**
  * Voice Mode Overlay - Siri-style minimal indicator at bottom center
@@ -967,7 +1051,7 @@ fun VoiceModeOverlay(
             ) {
                 // Small Nilo icon inside orb
                 Image(
-                    painter = painterResource(id = R.drawable.panda_logo),
+                    painter = painterResource(id = R.drawable.app_logo),
                     contentDescription = "Nilo",
                     modifier = Modifier.size(28.dp)
                 )
@@ -1027,7 +1111,7 @@ private fun sendTextMessage(
                 provider.stream(request).collect { response ->
                     withContext(Dispatchers.Main) {
                         if (response.isComplete) {
-                            fullResponse = response.text
+                            fullResponse = filterAiResponse(response.text)
                             updateMessages(currentMessages + userMessage + aiMessage.copy(
                                 content = fullResponse,
                                 isStreaming = false
@@ -1035,7 +1119,7 @@ private fun sendTextMessage(
                             updateGenerating(false)
                             metricsState.stopGeneration()
                         } else if (!response.isError) {
-                            fullResponse = response.text
+                            fullResponse = filterAiResponse(response.text)
                             updateMessages(currentMessages + userMessage + aiMessage.copy(
                                 content = fullResponse
                             ))
@@ -1086,26 +1170,49 @@ fun MessageBubble(message: Message) {
     
     var copied by remember { mutableStateOf(false) }
     
+    // 3D shadow colors
+    val shadowColor = if (message.isUser) 
+        MaterialTheme.colorScheme.primary.copy(alpha = 0.3f)
+    else 
+        MaterialTheme.colorScheme.secondary.copy(alpha = 0.3f)
+    
     Row(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = if (message.isUser) Arrangement.End else Arrangement.Start
     ) {
-        Surface(
-            color = backgroundColor,
-            shape = MaterialTheme.shapes.medium,
+        // 3D Bubble with shadow
+        androidx.compose.foundation.layout.Box(
             modifier = Modifier
-                .padding(4.dp)
-                .fillMaxWidth(0.85f)
+                .padding(horizontal = 8.dp, vertical = 4.dp)
+                .wrapContentWidth()
+                .widthIn(max = 280.dp)
         ) {
-            Column(modifier = Modifier.padding(12.dp)) {
+            // Shadow layer for 3D effect
+            Surface(
+                color = shadowColor,
+                shape = MaterialTheme.shapes.medium,
+                modifier = Modifier
+                    .matchParentSize()
+                    .offset(x = 3.dp, y = 3.dp)
+            ) {}
+            
+            // Main bubble
+            Surface(
+                color = backgroundColor,
+                shape = MaterialTheme.shapes.medium,
+                tonalElevation = 2.dp,
+                shadowElevation = 4.dp,
+                modifier = Modifier.wrapContentWidth()
+            ) {
+                Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
                 // Sender name at top
                 Text(
-                    text = if (message.isUser) "You" else "Mini",
+                    text = if (message.isUser) "You" else "Nilo",
                     style = MaterialTheme.typography.labelSmall,
                     color = textColor.copy(alpha = 0.7f)
                 )
                 
-                Spacer(modifier = Modifier.height(4.dp))
+                Spacer(modifier = Modifier.height(2.dp))
                 
                 // Message content
                 Text(
@@ -1143,3 +1250,5 @@ fun MessageBubble(message: Message) {
         }
     }
     }
+
+}

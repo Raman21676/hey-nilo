@@ -28,6 +28,65 @@ import java.io.File
 
 private const val TAG = "OfflineModelPicker"
 
+/**
+ * FIX: Global download state that persists across navigation using Compose-observable state
+ * This ensures downloads continue even when user navigates away, and UI updates properly
+ */
+object DownloadManager {
+    data class DownloadInfo(
+        val isDownloading: Boolean = false,
+        val progress: Float = 0f,
+        val bytesDownloaded: Long = 0,
+        val totalBytes: Long = 0,
+        val completed: Boolean = false,
+        val error: String? = null
+    )
+    
+    // FIX: Use SnapshotStateMap which is observable by Compose
+    val downloadStates = androidx.compose.runtime.mutableStateMapOf<String, DownloadInfo>()
+    
+    // FIX: Track completion callbacks so we can notify when screen reopens
+    private val completionCallbacks = mutableMapOf<String, (Boolean, String?) -> Unit>()
+    
+    fun updateProgress(modelId: String, progress: Float, bytesDownloaded: Long, totalBytes: Long) {
+        downloadStates[modelId] = DownloadInfo(
+            isDownloading = true,
+            progress = progress,
+            bytesDownloaded = bytesDownloaded,
+            totalBytes = totalBytes
+        )
+    }
+    
+    fun markComplete(modelId: String) {
+        downloadStates[modelId] = DownloadInfo(completed = true)
+        completionCallbacks[modelId]?.invoke(true, null)
+        completionCallbacks.remove(modelId)
+    }
+    
+    fun markError(modelId: String, error: String) {
+        downloadStates[modelId] = DownloadInfo(error = error)
+        completionCallbacks[modelId]?.invoke(false, error)
+        completionCallbacks.remove(modelId)
+    }
+    
+    fun clear(modelId: String) {
+        downloadStates.remove(modelId)
+        completionCallbacks.remove(modelId)
+    }
+    
+    fun isDownloading(modelId: String): Boolean {
+        return downloadStates[modelId]?.isDownloading == true
+    }
+    
+    fun registerCallback(modelId: String, callback: (Boolean, String?) -> Unit) {
+        completionCallbacks[modelId] = callback
+    }
+    
+    fun getState(modelId: String): DownloadInfo? {
+        return downloadStates[modelId]
+    }
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun OfflineModelPickerScreen(
@@ -46,11 +105,34 @@ fun OfflineModelPickerScreen(
     
     var selectedModelId by remember { mutableStateOf(currentModelId) }
     var downloadedModels by remember { mutableStateOf<Map<String, Boolean>>(emptyMap()) }
-    // Track download progress per model
-    var downloadProgress by remember { mutableStateOf<Map<String, DownloadState>>(emptyMap()) }
+    // FIX: Directly observe the global download manager's state - it's now a SnapshotStateMap
+    val downloadProgress by remember { 
+        derivedStateOf {
+            DownloadManager.downloadStates.mapValues { 
+                DownloadState(
+                    isDownloading = it.value.isDownloading,
+                    progress = it.value.progress,
+                    bytesDownloaded = it.value.bytesDownloaded,
+                    totalBytes = it.value.totalBytes
+                )
+            }
+        }
+    }
     var snackbarMessage by remember { mutableStateOf<String?>(null) }
     
     val snackbarHostState = remember { SnackbarHostState() }
+    
+    // FIX: Check for completed downloads that happened while we were away
+    LaunchedEffect(Unit) {
+        // Check if any downloads completed while screen was closed
+        DownloadManager.downloadStates.forEach { (modelId, info) ->
+            if (info.completed && !downloadedModels.containsKey(modelId)) {
+                // Download finished while we were away
+                downloadedModels = downloadedModels + (modelId to true)
+                Log.i(TAG, "Download completed while away: $modelId")
+            }
+        }
+    }
     
     // Show snackbar messages
     LaunchedEffect(snackbarMessage) {
@@ -120,29 +202,30 @@ fun OfflineModelPickerScreen(
                             }
                         },
                         onDownload = { model ->
-                            // Start download with progress tracking
-                            downloadProgress = downloadProgress + (model.id to DownloadState(isDownloading = true, progress = 0f))
+                            // FIX: Start download with global tracking - UI auto-updates via derivedStateOf
+                            DownloadManager.updateProgress(model.id, 0f, 0, 0)
                             
                             startDownload(
                                 context = context,
                                 model = model,
                                 onProgress = { progress, bytesDownloaded, totalBytes ->
-                                    downloadProgress = downloadProgress + (model.id to DownloadState(
-                                        isDownloading = true,
-                                        progress = progress,
-                                        bytesDownloaded = bytesDownloaded,
-                                        totalBytes = totalBytes
-                                    ))
+                                    // Just update global state - UI will auto-update
+                                    DownloadManager.updateProgress(model.id, progress, bytesDownloaded, totalBytes)
                                 },
                                 onComplete = { success, error ->
-                                    downloadProgress = downloadProgress - model.id
                                     if (success) {
+                                        DownloadManager.markComplete(model.id)
                                         downloadedModels = downloadedModels + (model.id to true)
                                         selectedModelId = model.id
                                         snackbarMessage = "${model.displayName} downloaded successfully!"
                                     } else {
+                                        DownloadManager.markError(model.id, error ?: "Unknown error")
                                         snackbarMessage = "Download failed: $error"
                                     }
+                                    // Clear from global state after a delay
+                                    android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+                                        DownloadManager.clear(model.id)
+                                    }, 5000)
                                 }
                             )
                         },
@@ -159,7 +242,7 @@ fun OfflineModelPickerScreen(
                         },
                         onCancelDownload = { model ->
                             cancelDownload(model.id)
-                            downloadProgress = downloadProgress - model.id
+                            DownloadManager.clear(model.id)
                             snackbarMessage = "Download cancelled"
                         }
                     )

@@ -737,9 +737,19 @@ fun UnifiedChatView(
         }
     }
     
-    // AUTO-SCROLL in voice mode: Scroll to latest message when messages change
-    LaunchedEffect(messages.size, isVoiceModeActive) {
-        if (isVoiceModeActive && messages.isNotEmpty()) {
+    // AUTO-SCROLL: Scroll to bottom when new messages added
+    LaunchedEffect(messages.size) {
+        if (messages.isNotEmpty()) {
+            scope.launch {
+                listState.animateScrollToItem(messages.size - 1)
+            }
+        }
+    }
+    
+    // AUTO-SCROLL during streaming: Track last message content changes
+    val lastMessageContent = messages.lastOrNull()?.content ?: ""
+    LaunchedEffect(lastMessageContent) {
+        if (messages.isNotEmpty() && messages.lastOrNull()?.isStreaming == true) {
             scope.launch {
                 listState.animateScrollToItem(messages.size - 1)
             }
@@ -776,12 +786,7 @@ fun UnifiedChatView(
                 }
                 metricsState.onTokenGenerated()
             }
-            
-            if (messages.isNotEmpty()) {
-                scope.launch {
-                    listState.animateScrollToItem(messages.size - 1)
-                }
-            }
+            // Auto-scroll handled by LaunchedEffect on lastMessageContent
         }
     }
     
@@ -810,10 +815,17 @@ fun UnifiedChatView(
                     isRecording = isRecording,
                     audioLevel = audioLevel,
                     onStop = {
-                        // BUG FIX 1: Stop voice BEFORE changing state to ensure it actually stops
-                        Log.d(TAG, "BUG FIX 1: VoiceModeOverlay onStop - stopping conversation")
-                        voicePipelineManager?.stopConversation()
-                        onVoiceModeChange(false)
+                        // If listening or speech detected, force process the audio
+                        // Otherwise just stop normally
+                        if (pipelineState == VoicePipelineManager.Companion.PipelineState.LISTENING ||
+                            pipelineState == VoicePipelineManager.Companion.PipelineState.SPEECH_DETECTED) {
+                            Log.d(TAG, "User tapped orb during listening - forcing speech processing")
+                            voicePipelineManager?.forceStopAndProcess()
+                        } else {
+                            Log.d(TAG, "User tapped orb - stopping voice mode")
+                            voicePipelineManager?.stopConversation()
+                            onVoiceModeChange(false)
+                        }
                     }
                 )
             }

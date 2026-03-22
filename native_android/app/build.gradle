@@ -4,6 +4,13 @@ plugins {
     id 'org.jetbrains.kotlin.plugin.compose'
 }
 
+// Load keystore credentials from local.properties (not committed to git)
+def localProperties = new Properties()
+def localPropertiesFile = rootProject.file('local.properties')
+if (localPropertiesFile.exists()) {
+    localPropertiesFile.withInputStream { localProperties.load(it) }
+}
+
 android {
     namespace = "com.projekt_x.studybuddy"
     compileSdk = 35
@@ -61,15 +68,17 @@ android {
 
     signingConfigs {
         create("release") {
-            storeFile = file("/Users/kalikali/Desktop/hey-nilo-final/keystore/heynilo-release.keystore")
-            storePassword = "heynilo123"
-            keyAlias = "heynilo"
-            keyPassword = "heynilo123"
+            storeFile = file(localProperties.getProperty("RELEASE_STORE_FILE", "/Users/kalikali/Desktop/hey-nilo-final/keystore/heynilo-release.keystore"))
+            storePassword = localProperties.getProperty("RELEASE_STORE_PASSWORD", "")
+            keyAlias = localProperties.getProperty("RELEASE_KEY_ALIAS", "")
+            keyPassword = localProperties.getProperty("RELEASE_KEY_PASSWORD", "")
         }
     }
 
     buildTypes {
         release {
+            // Disabled minification due to Sherpa-ONNX compatibility issues
+            // Enable in future after testing with -dontwarn rules
             minifyEnabled = false
             shrinkResources = false
             proguardFiles(

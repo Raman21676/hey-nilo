@@ -23,3 +23,6 @@ local.properties
 *.bin
 *.gguf
 app/src/main/assets/models/
+
+# OS
+.DS_Store

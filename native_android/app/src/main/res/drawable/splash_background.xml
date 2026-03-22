@@ -3,7 +3,7 @@
     <!-- White background -->
     <item android:drawable="@android:color/white" />
     
-    <!-- Panda logo centered -->
+    <!-- Robot logo centered -->
     <item
         android:width="120dp"
         android:height="120dp"

@@ -7,6 +7,37 @@
 
 #include "whisper.h"
 
+// UTF-8 sanitization helper
+static std::string sanitizeForJNI(const std::string& input) {
+    std::string output;
+    output.reserve(input.length());
+    
+    for (size_t i = 0; i < input.length(); ) {
+        unsigned char c = input[i];
+        
+        if (c == 0) { i++; continue; } // Skip null bytes
+        
+        if (c < 0x80) { output += c; i++; }
+        else if ((c & 0xE0) == 0xC0) {
+            if (i + 1 < input.length() && (input[i + 1] & 0xC0) == 0x80) {
+                output += c; output += input[i + 1]; i += 2;
+            } else { i++; }
+        }
+        else if ((c & 0xF0) == 0xE0) {
+            if (i + 2 < input.length() && (input[i + 1] & 0xC0) == 0x80 && (input[i + 2] & 0xC0) == 0x80) {
+                output += c; output += input[i + 1]; output += input[i + 2]; i += 3;
+            } else { i++; }
+        }
+        else if ((c & 0xF8) == 0xF0) {
+            if (i + 3 < input.length() && (input[i + 1] & 0xC0) == 0x80 && (input[i + 2] & 0xC0) == 0x80 && (input[i + 3] & 0xC0) == 0x80) {
+                output += c; output += input[i + 1]; output += input[i + 2]; output += input[i + 3]; i += 4;
+            } else { i++; }
+        }
+        else { i++; }
+    }
+    return output;
+}
+
 #define LOG_TAG "WhisperJNI"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
@@ -247,9 +278,11 @@ Java_com_projekt_1x_studybuddy_bridge_RealSTTBridge_nativeTranscribe(
         result_text = "";
     }
     
-    LOGI("Transcription: \"%s\"", result_text.c_str());
+    // Sanitize result for JNI
+    std::string sanitized = sanitizeForJNI(result_text);
+    LOGI("Transcription: \"%s\"", sanitized.c_str());
     
-    return env->NewStringUTF(result_text.c_str());
+    return env->NewStringUTF(sanitized.c_str());
 }
 
 } // extern "C"

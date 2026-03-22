@@ -39,7 +39,7 @@ class VADBridge(private val context: Context) : BaseBridge(), VADBridgeInterface
 
     companion object {
         private const val TAG = "VADBridge"
-        private const val DEFAULT_THRESHOLD = 0.35f  // FIXED: Was 0.5f - lowered for better speech detection
+        private const val DEFAULT_THRESHOLD = 0.25f  // FIXED: Lowered for Samsung Tab A7 Lite
         private const val SAMPLE_RATE = 16000 // 16kHz
     }
 
@@ -315,13 +315,13 @@ class VADBridge(private val context: Context) : BaseBridge(), VADBridgeInterface
  * Configuration for VAD processing
  */
 data class VADConfig(
-    // FIX: Lowered threshold to match VADBridge - more sensitive speech detection
-    val threshold: Float = 0.35f,
+    // FIX: Balanced threshold for Samsung Tab A7 Lite
+    val threshold: Float = 0.30f,
     val sampleRate: Int = 16000,
     val frameDurationMs: Int = 30,  // 30ms frames
-    val minSpeechDurationMs: Int = 200,  // Minimum speech to confirm (ms) - slightly lower
-    // FIX: Reduced to 500ms for faster response (was 600ms)
-    val minSilenceDurationMs: Int = 500
+    val minSpeechDurationMs: Int = 200,  // Minimum speech to confirm (ms)
+    // INCREASED: Wait longer for user to finish speaking (prevents cutting off mid-sentence)
+    val minSilenceDurationMs: Int = 800
 )
 
 /**

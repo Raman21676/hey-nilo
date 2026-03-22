@@ -47,19 +47,23 @@ class VoicePipelineManager(
         private const val MAX_BUFFER_SIZE = SAMPLE_RATE * 10  // 10 seconds max
         
         // WORKING CONFIG FROM MINI PROJECT - Fast response (2 seconds)
-        // FIX: Lowered threshold from 0.5f to 0.35f for better speech detection on all devices
-        private const val VAD_THRESHOLD = 0.35f      // More sensitive - catches quieter speech
-        private const val MIN_SPEECH_MS = 200L       // Ignore very short sounds (slightly lower)
-        private const val MIN_SILENCE_MS = 500L      // Faster response - end speech after 500ms silence (was 600ms)
+        // FIX: Balanced threshold for Samsung Tab A7 Lite
+        private const val VAD_THRESHOLD = 0.30f      // Moderate sensitivity
+        private const val MIN_SPEECH_MS = 200L       // Minimum speech duration
+        // INCREASED: Wait longer for user to finish speaking (prevents cutting off mid-sentence)
+        private const val MIN_SILENCE_MS = 800L      // Wait 800ms silence before ending (was 350ms)
         private const val PRE_SPEECH_BUFFER_MS = 800L // Capture word beginnings
-        private const val MAX_SPEECH_MS = 8000L      // Force stop after 8 seconds
-        // FIX: Reduced to 8 frames * 32ms = ~256ms trailing silence for faster response
-        private const val TRAILING_SILENCE_FRAMES = 8
+        private const val MAX_SPEECH_MS = 10000L     // Force stop after 10 seconds
+        // INCREASED: More trailing silence tolerance for natural pauses
+        private const val TRAILING_SILENCE_FRAMES = 15
         
         // BUG FIX 2: Barge-in detection - requires sustained human speech
         // Motorbike horn (~200ms) won't trigger, human speech (~960ms+) will
         private const val BARGE_IN_ENERGY_THRESHOLD = 3500f   // High energy threshold
         private const val BARGE_IN_CONFIRM_FRAMES = 30        // ~960ms sustained detection
+        
+        // MAX LISTENING TIME: Force stop if user doesn't speak or tap within 15 seconds
+        private const val MAX_LISTENING_TIME_MS = 15000L
         
         // NO SOFTWARE GAIN — hardware AGC via VOICE_RECOGNITION handles this
         // Previous AGC code removed per professor's guidance: gain causes clipping/distortion
@@ -95,6 +99,7 @@ class VoicePipelineManager(
     private var speechStartTime: Long = 0
     private var consecutiveSilenceFrames = 0  // Count consecutive silence frames for trailing silence detection
     private var bargeInConfirmFrames = 0      // BUG FIX 2: Count frames for barge-in confirmation
+    private var listeningStartTime: Long = 0  // Track when listening started for timeout
     
     // Bridges
     private var vadBridge: VADBridge? = null
@@ -444,6 +449,7 @@ class VoicePipelineManager(
         
         isRunning.set(true)
         currentState = PipelineState.LISTENING
+        listeningStartTime = System.currentTimeMillis()  // Track listening start for timeout
         
         // Start recording
         startRecording()
@@ -523,6 +529,18 @@ class VoicePipelineManager(
         }
         
         onAudioLevel?.invoke(audioLevel)
+        
+        // ========================================================================
+        // TIMEOUT CHECK: Auto-stop if listening too long without speech
+        // ========================================================================
+        if (currentState == PipelineState.LISTENING && !isCollectingSpeech) {
+            val listeningDuration = System.currentTimeMillis() - listeningStartTime
+            if (listeningDuration > MAX_LISTENING_TIME_MS) {
+                Log.w(TAG, "Listening timeout after ${listeningDuration}ms - no speech detected, stopping")
+                stopConversation()
+                return
+            }
+        }
         
         // ========================================================================
         // BUG FIX 2: BARGE-IN DETECTION - Requires BOTH VAD + Energy + Sustained duration
@@ -913,6 +931,33 @@ class VoicePipelineManager(
             rms > 500 -> "What can I help you with?"
             rms > 200 -> "Tell me more about that."
             else -> "I heard you speaking."
+        }
+    }
+    
+    /**
+     * Force stop listening and process current audio immediately
+     * Called when user taps the orb during listening
+     */
+    fun forceStopAndProcess() {
+        Log.i(TAG, "Force stop requested by user tap")
+        
+        // If we have collected speech, process it
+        if (isCollectingSpeech && speechBuffer.size >= FRAME_SIZE) {
+            Log.i(TAG, "Processing collected speech on user tap: ${speechBuffer.size} samples")
+            forceEndSpeechSegment()
+        } 
+        // If we have pre-speech buffer but VAD never triggered, use that
+        else if (preSpeechBuffer.size >= FRAME_SIZE) {
+            Log.i(TAG, "Using pre-speech buffer on user tap: ${preSpeechBuffer.size} samples")
+            // Move pre-speech buffer to speech buffer
+            speechBuffer.clear()
+            speechBuffer.addAll(preSpeechBuffer)
+            processSpeechSegment()
+        }
+        // Otherwise just stop normally
+        else {
+            Log.w(TAG, "No audio collected, stopping normally")
+            stopConversation()
         }
     }
     

@@ -21,7 +21,8 @@ class RealSTTBridge(private val context: Context) : BaseBridge(), STTBridgeInter
         private val HALLUCINATIONS = setOf(
             "bye bye", "bye-bye", "thank you", "thanks for watching",
             "you", ".", " ", "the", "and", "um", "uh", "a", "an",
-            "sorry", "sorry jen", "excuse me", "jen", "i'm sorry"
+            "sorry", "sorry jen", "excuse me", "jen", "i'm sorry",
+            "blank_audio", "[blank_audio]", "BLANK_AUDIO", "[BLANK_AUDIO]"
         )
         
         init {

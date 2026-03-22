@@ -170,6 +170,77 @@ static int getAdaptiveThreadCount(int base_threads) {
 }
 
 // ============================================
+// UTF-8 SANITIZATION
+// ============================================
+
+// Helper to sanitize UTF-8 strings for JNI
+// Removes null bytes and invalid UTF-8 sequences
+static std::string sanitizeForJNI(const std::string& input) {
+    std::string output;
+    output.reserve(input.length());
+    
+    for (size_t i = 0; i < input.length(); ) {
+        unsigned char c = input[i];
+        
+        // Skip null bytes
+        if (c == 0) {
+            i++;
+            continue;
+        }
+        
+        // Single byte ASCII (0x01-0x7F)
+        if (c < 0x80) {
+            output += c;
+            i++;
+        }
+        // 2-byte UTF-8
+        else if ((c & 0xE0) == 0xC0) {
+            if (i + 1 < input.length() && (input[i + 1] & 0xC0) == 0x80) {
+                output += c;
+                output += input[i + 1];
+                i += 2;
+            } else {
+                i++; // Skip invalid
+            }
+        }
+        // 3-byte UTF-8
+        else if ((c & 0xF0) == 0xE0) {
+            if (i + 2 < input.length() && 
+                (input[i + 1] & 0xC0) == 0x80 &&
+                (input[i + 2] & 0xC0) == 0x80) {
+                output += c;
+                output += input[i + 1];
+                output += input[i + 2];
+                i += 3;
+            } else {
+                i++; // Skip invalid
+            }
+        }
+        // 4-byte UTF-8
+        else if ((c & 0xF8) == 0xF0) {
+            if (i + 3 < input.length() && 
+                (input[i + 1] & 0xC0) == 0x80 &&
+                (input[i + 2] & 0xC0) == 0x80 &&
+                (input[i + 3] & 0xC0) == 0x80) {
+                output += c;
+                output += input[i + 1];
+                output += input[i + 2];
+                output += input[i + 3];
+                i += 4;
+            } else {
+                i++; // Skip invalid
+            }
+        }
+        // Invalid start byte
+        else {
+            i++;
+        }
+    }
+    
+    return output;
+}
+
+// ============================================
 // RAM OPTIMIZATION FUNCTIONS
 // ============================================
 
@@ -620,10 +691,16 @@ Java_com_projekt_1x_studybuddy_LlamaBridge_nativeGenerateStream(
             std::string to_emit = pending + token_str;
             pending.clear();
             
-            jstring jTokenStr = env->NewStringUTF(to_emit.c_str());
-            env->CallVoidMethod(callback, onTokenMethod, jTokenStr);
-            env->DeleteLocalRef(jTokenStr);
-            response.append(to_emit);
+            // Sanitize string for JNI (remove null bytes and invalid UTF-8)
+            std::string sanitized = sanitizeForJNI(to_emit);
+            if (!sanitized.empty()) {
+                jstring jTokenStr = env->NewStringUTF(sanitized.c_str());
+                if (jTokenStr) {
+                    env->CallVoidMethod(callback, onTokenMethod, jTokenStr);
+                    env->DeleteLocalRef(jTokenStr);
+                }
+                response.append(sanitized);
+            }
         }
         
         g_state->batch.n_tokens = 0;
@@ -647,7 +724,9 @@ Java_com_projekt_1x_studybuddy_LlamaBridge_nativeGenerateStream(
     
     env->CallVoidMethod(callback, onCompleteMethod);
     
-    return env->NewStringUTF(response.c_str());
+    // Sanitize final response
+    std::string sanitizedResponse = sanitizeForJNI(response);
+    return env->NewStringUTF(sanitizedResponse.c_str());
 }
 
 extern "C" JNIEXPORT void JNICALL

@@ -948,28 +948,28 @@ class VoicePipelineManager(
             return
         } 
         
-        // If we have pre-speech buffer, use it even if smaller than FRAME_SIZE
+        // Combine pre-speech and speech buffers
+        val combinedBuffer = mutableListOf<Short>()
+        
+        // Add pre-speech buffer first (contains audio before VAD trigger)
         if (preSpeechBuffer.isNotEmpty()) {
-            val usableSize = minOf(preSpeechBuffer.size, SAMPLE_RATE * 3) // Max 3 seconds
-            Log.i(TAG, "Using pre-speech buffer on user tap: $usableSize samples")
-            speechBuffer.clear()
-            speechBuffer.addAll(preSpeechBuffer.takeLast(usableSize))
-            
-            // Pad to FRAME_SIZE if needed
-            while (speechBuffer.size < FRAME_SIZE && speechBuffer.isNotEmpty()) {
-                speechBuffer.addAll(speechBuffer) // Duplicate until we have enough
-                if (speechBuffer.size > FRAME_SIZE * 2) break
-            }
-            
-            if (speechBuffer.size >= FRAME_SIZE) {
-                processSpeechSegment()
-                return
-            }
+            val preSpeechSize = minOf(preSpeechBuffer.size, SAMPLE_RATE * 2) // Max 2 seconds of pre-speech
+            combinedBuffer.addAll(preSpeechBuffer.takeLast(preSpeechSize))
+            Log.i(TAG, "Added $preSpeechSize pre-speech samples")
         }
         
-        // If we have any accumulated audio in the recorder buffer
+        // Add any collected speech buffer
         if (speechBuffer.isNotEmpty()) {
-            Log.i(TAG, "Using partial speech buffer: ${speechBuffer.size} samples")
+            combinedBuffer.addAll(speechBuffer)
+            Log.i(TAG, "Added ${speechBuffer.size} speech samples")
+        }
+        
+        // Process if we have enough audio (at least 0.5 seconds)
+        val minSamples = SAMPLE_RATE / 2 // 0.5 seconds minimum
+        if (combinedBuffer.size >= minSamples) {
+            Log.i(TAG, "Processing combined buffer: ${combinedBuffer.size} samples (${combinedBuffer.size * 1000 / SAMPLE_RATE}ms)")
+            speechBuffer.clear()
+            speechBuffer.addAll(combinedBuffer)
             processSpeechSegment()
             return
         }

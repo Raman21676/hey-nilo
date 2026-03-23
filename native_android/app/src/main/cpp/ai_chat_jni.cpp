@@ -564,13 +564,15 @@ Java_com_projekt_1x_studybuddy_LlamaBridge_nativeGenerateStream(
     g_state->history.push_back({"user", std::string(prompt)});
     env->ReleaseStringUTFChars(userPrompt, prompt);
     
-    // Limit history to last 2 exchanges (4 messages max) to keep prompt short
+    // Limit history to last 3 exchanges (6 messages max) to keep prompt short
     // This prevents the prompt from growing forever and slowing down generation
-    const size_t MAX_HISTORY_PAIRS = 2;  // Keep only last 2 back-and-forths
+    const size_t MAX_HISTORY_PAIRS = 3;  // Keep only last 3 back-and-forths
     const size_t MAX_HISTORY_SIZE = MAX_HISTORY_PAIRS * 2;  // user + assistant each
     while (g_state->history.size() > MAX_HISTORY_SIZE) {
         g_state->history.erase(g_state->history.begin());
     }
+    
+    LOGI("History size: %zu messages (max %zu)", g_state->history.size(), MAX_HISTORY_SIZE);
     
     // Use Qwen2.5 chat template format
     std::string formatted;

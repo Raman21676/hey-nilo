@@ -48,7 +48,7 @@ class VoicePipelineManager(
         
         // WORKING CONFIG FROM MINI PROJECT - Fast response (2 seconds)
         // FIX: Balanced threshold for Samsung Tab A7 Lite
-        private const val VAD_THRESHOLD = 0.30f      // Moderate sensitivity
+        private const val VAD_THRESHOLD = 0.20f      // Balanced for Samsung Tab A7 Lite
         private const val MIN_SPEECH_MS = 200L       // Minimum speech duration
         // INCREASED: Wait longer for user to finish speaking (prevents cutting off mid-sentence)
         private const val MIN_SILENCE_MS = 800L      // Wait 800ms silence before ending (was 350ms)

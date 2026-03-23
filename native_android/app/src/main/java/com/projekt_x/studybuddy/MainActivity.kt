@@ -1239,6 +1239,17 @@ fun VoiceModeOverlay(
                 )
             }
         }
+        
+        // Tap hint text below orb (only when listening)
+        if (pipelineState == VoicePipelineManager.Companion.PipelineState.LISTENING ||
+            pipelineState == VoicePipelineManager.Companion.PipelineState.SPEECH_DETECTED) {
+            Text(
+                text = "Tap to stop",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.padding(top = 8.dp)
+            )
+        }
     }
 }
 

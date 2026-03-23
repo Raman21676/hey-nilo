@@ -1116,18 +1116,6 @@ fun UnifiedChatView(
                     }
                     
                     }
-                    // Warning for low-tier devices
-                    if (bridge.getDeviceConfig().isLowTierDevice) {
-                        Text(
-                            text = "⚠️ Low memory: Long responses may be cut short. Use Online mode for complex tasks.",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.error,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = 12.dp)
-                                .padding(bottom = 8.dp)
-                        )
-                    }
                 }
             }
         }

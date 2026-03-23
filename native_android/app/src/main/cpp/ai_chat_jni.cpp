@@ -686,6 +686,7 @@ Java_com_projekt_1x_studybuddy_LlamaBridge_nativeGenerateStream(
         
         std::string test_str = pending + token_str;
         
+        // Check for complete stop sequences
         bool should_stop = false;
         if (test_str.find(STOP_IM_END) != std::string::npos ||
             test_str.find(STOP_IM_START) != std::string::npos ||
@@ -695,32 +696,44 @@ Java_com_projekt_1x_studybuddy_LlamaBridge_nativeGenerateStream(
             test_str.find(STOP_END_CONV) != std::string::npos ||
             test_str.find(STOP_END_CTX) != std::string::npos ||
             test_str.find(STOP_INST) != std::string::npos ||
-            test_str.find(STOP_END_GEN) != std::string::npos) {
-            should_stop = true;
-        } else if (test_str.find(STOP_USER) != std::string::npos ||
-                   test_str.find(STOP_USER_LOWER) != std::string::npos) {
+            test_str.find(STOP_END_GEN) != std::string::npos ||
+            test_str.find(STOP_USER) != std::string::npos ||
+            test_str.find(STOP_USER_LOWER) != std::string::npos) {
             should_stop = true;
         }
         
         if (should_stop) {
-            LOGI("Stopping at role marker");
+            LOGI("STOP DETECTED in: '%s' (pending was: '%s')", test_str.c_str(), pending.c_str());
             break;
         }
         
+        // Check for potential stop sequence start (buffer if might be partial)
         bool potential_stop = false;
-        for (int i = 1; i <= (int)strlen(STOP_USER) && i <= (int)test_str.length(); i++) {
-            std::string suffix = test_str.substr(test_str.length() - i);
-            if (strncmp(STOP_USER, suffix.c_str(), i) == 0 ||
-                strncmp(STOP_USER_LOWER, suffix.c_str(), i) == 0) {
-                potential_stop = true;
-                break;
+        const char* stop_patterns[] = {
+            STOP_IM_END, STOP_IM_START, STOP_USER, STOP_USER_LOWER, 
+            STOP_SYSTEM, STOP_ASSISTANT, STOP_END
+        };
+        const int num_patterns = 7;
+        
+        for (int p = 0; p < num_patterns && !potential_stop; p++) {
+            const char* pattern = stop_patterns[p];
+            int pattern_len = strlen(pattern);
+            for (int i = 1; i <= pattern_len && i <= (int)test_str.length(); i++) {
+                std::string suffix = test_str.substr(test_str.length() - i);
+                if (strncmp(pattern, suffix.c_str(), i) == 0) {
+                    potential_stop = true;
+                    break;
+                }
             }
         }
         
         if (potential_stop) {
+            // Buffer this token - might be part of a stop sequence
+            LOGI("Buffering potential stop: '%s' + '%s' = '%s'", pending.c_str(), token_str.c_str(), test_str.c_str());
             pending = test_str;
         } else {
-            // Use display_str (with proper spaces) for emission
+            // Safe to emit - no stop sequence detected
+            LOGI("Emitting: pending='%s' display='%s'", pending.c_str(), display_str.c_str());
             std::string to_emit = pending + display_str;
             pending.clear();
             

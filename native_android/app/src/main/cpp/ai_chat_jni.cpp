@@ -804,6 +804,14 @@ Java_com_projekt_1x_studybuddy_LlamaBridge_nativeAddToHistory(
     g_state->history.push_back({std::string(roleStr), std::string(contentStr)});
     LOGI("Added to history: %s - %.50s...", roleStr, contentStr);
     
+    // Apply same trimming logic as nativeGenerateStream
+    const size_t MAX_HISTORY_PAIRS = 3;
+    const size_t MAX_HISTORY_SIZE = MAX_HISTORY_PAIRS * 2;
+    while (g_state->history.size() > MAX_HISTORY_SIZE) {
+        g_state->history.erase(g_state->history.begin());
+    }
+    LOGI("History size after add: %zu messages (max %zu)", g_state->history.size(), MAX_HISTORY_SIZE);
+    
     env->ReleaseStringUTFChars(role, roleStr);
     env->ReleaseStringUTFChars(content, contentStr);
 }

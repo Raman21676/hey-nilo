@@ -574,6 +574,21 @@ fun filterStreamingToken(text: String): String {
     filtered = filtered.replace("<|assistant|>", " ")
     filtered = filtered.replace(Regex("""<\\|[^|]+\\|>"""), " ")
     
+    // AGGRESSIVE: Remove partial/imcomplete special tokens that may leak during streaming
+    filtered = filtered.replace("<|im_end|>", " ")
+    filtered = filtered.replace("<|im_start|>", " ")
+    filtered = filtered.replace("|im_end|>", " ")
+    filtered = filtered.replace("|im_start|>", " ")
+    filtered = filtered.replace("<|im_end", " ")
+    filtered = filtered.replace("<|im_start", " ")
+    filtered = filtered.replace("im_end|>", " ")
+    filtered = filtered.replace("im_start|>", " ")
+    filtered = filtered.replace("<|", " ")
+    filtered = filtered.replace("|>", " ")
+    filtered = filtered.replace(Regex("(?i)system\\s*$"), "")
+    filtered = filtered.replace(Regex("(?i)assistant\\s*$"), "")
+    filtered = filtered.replace(Regex("(?i)user\\s*$"), "")
+    
     // AGGRESSIVE word spacing fix
     filtered = filtered.replace(Regex("([a-z])([A-Z])"), "$1 $2")
     filtered = filtered.replace(Regex("([,!?])([a-zA-Z])"), "$1 $2")
@@ -659,6 +674,22 @@ fun filterAiResponse(text: String): String {
     filtered = filtered.replace(Regex("""<\\|[^|]+\\|>"""), " ")
     filtered = filtered.replace(Regex("""\\[/s\\]"""), " ")
     filtered = filtered.replace(Regex("""\\[s\\]"""), " ")
+    
+    // AGGRESSIVE: Remove partial/imcomplete special tokens
+    filtered = filtered.replace("<|im_end|>", " ")
+    filtered = filtered.replace("<|im_start|>", " ")
+    filtered = filtered.replace("|im_end|>", " ")
+    filtered = filtered.replace("|im_start|>", " ")
+    filtered = filtered.replace("<|im_end", " ")
+    filtered = filtered.replace("<|im_start", " ")
+    filtered = filtered.replace("im_end|>", " ")
+    filtered = filtered.replace("im_start|>", " ")
+    filtered = filtered.replace("<|", " ")
+    filtered = filtered.replace("|>", " ")
+    filtered = filtered.replace("<", " ")
+    filtered = filtered.replace(Regex("(?i)^\\s*system\\s*"), "")
+    filtered = filtered.replace(Regex("(?i)^\\s*assistant\\s*"), "")
+    filtered = filtered.replace(Regex("(?i)^\\s*user\\s*"), "")
     
     // STEP 3: AGGRESSIVE word spacing fix
     // Pattern 1: lowercase followed by UPPERCASE -> add space
@@ -862,22 +893,26 @@ fun UnifiedChatView(
     }
     
     // AUTO-SCROLL: Keep chat at bottom during streaming
-    // Track last message content for continuous scroll during generation
-    val lastMessage = messages.lastOrNull()
-    val lastContent = lastMessage?.content ?: ""
+    val isLastMessageStreaming by remember { derivedStateOf { 
+        messages.lastOrNull()?.isStreaming == true 
+    }}
     
-    // Scroll when new message added
+    // Scroll when new messages added
     LaunchedEffect(messages.size) {
         if (messages.isNotEmpty()) {
             listState.animateScrollToItem(messages.size - 1)
         }
     }
     
-    // Continuous scroll during streaming - scroll on every content change
-    LaunchedEffect(lastContent) {
-        if (lastMessage?.isStreaming == true && messages.isNotEmpty()) {
-            // Use scrollToItem for immediate jump (faster than animate during streaming)
-            listState.scrollToItem(messages.size - 1)
+    // AGGRESSIVE auto-scroll during streaming - scroll every 100ms
+    LaunchedEffect(isLastMessageStreaming) {
+        if (isLastMessageStreaming) {
+            while (true) {
+                if (messages.isNotEmpty()) {
+                    listState.scrollToItem(messages.size - 1, scrollOffset = Int.MAX_VALUE)
+                }
+                kotlinx.coroutines.delay(100)
+            }
         }
     }
     

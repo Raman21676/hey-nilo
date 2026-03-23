@@ -2,7 +2,9 @@
 
 **For**: AI Agents working on the Hey-Nilo project  
 **Purpose**: Complete project context and working guidelines  
-**Last Updated**: March 17, 2026  
+**Last Updated**: March 23, 2026
+
+> **📋 RECENT SESSION**: See `SESSION_SUMMARY.md` for today's work (March 23, 2026) - includes history trimming, auto-scroll, token filtering, and voice mode fixes.  
 
 > **⚠️ IMPORTANT**: Read this entire document before writing any code. This is your source of truth for the project.
 

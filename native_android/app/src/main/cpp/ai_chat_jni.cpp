@@ -620,15 +620,20 @@ Java_com_projekt_1x_studybuddy_LlamaBridge_nativeGenerateStream(
     int n_gen = 0;
     std::string response;
     
-    // Get Qwen special token IDs by tokenizing the special strings
+    // Find special token IDs by scanning vocabulary
     llama_token token_im_end = -1, token_im_start = -1;
-    std::vector<llama_token> im_end_tokens(4), im_start_tokens(4);
-    int n_im_end = llama_tokenize(vocab, "<|im_end|>", 10, im_end_tokens.data(), im_end_tokens.size(), false, false);
-    int n_im_start = llama_tokenize(vocab, "<|im_start|>", 12, im_start_tokens.data(), im_start_tokens.size(), false, false);
-    if (n_im_end == 1) token_im_end = im_end_tokens[0];
-    if (n_im_start == 1) token_im_start = im_start_tokens[0];
+    const int vocab_size = llama_vocab_n_tokens(vocab);
+    for (int i = 0; i < vocab_size && (token_im_end == -1 || token_im_start == -1); i++) {
+        char token_text[256];
+        int n = llama_token_to_piece(vocab, i, token_text, sizeof(token_text), 0, false);
+        if (n > 0) {
+            std::string text(token_text, n);
+            if (text == "<|im_end|>") token_im_end = i;
+            if (text == "<|im_start|>") token_im_start = i;
+        }
+    }
     
-    LOGI("Special token IDs - im_end: %d, im_start: %d", (int)token_im_end, (int)token_im_start);
+    LOGI("Found special tokens - im_end: %d, im_start: %d", (int)token_im_end, (int)token_im_start);
     
     llama_token last_token = -1;
     int repeat_count = 0;

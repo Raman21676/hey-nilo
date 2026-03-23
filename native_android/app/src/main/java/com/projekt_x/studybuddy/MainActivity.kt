@@ -634,7 +634,7 @@ fun filterAiResponse(text: String): String {
         "---EndConversation---", "--- End Conversation ---",
         "---End Context---", "--- End Context ---",
         "[/s]", "</s>", "</s", "<|system|>", "<|assistant|>", "<|user|>",
-        "|im_end|>", "<|im_end|>", "<|im_start|>assistant", "I am Nilo, a friendly"
+        "|im_end|>", "<|im_end|>", "<|im_start|>assistant"
     )
     for (marker in endMarkers) {
         val index = filtered.indexOf(marker, ignoreCase = true)
@@ -906,23 +906,10 @@ fun UnifiedChatView(
                 isGenerating = false
                 metricsState.stopGeneration()
             } else if (response.token != null) {
-                // Accumulate with filtering to remove special tokens during streaming
+                // Simple accumulation during streaming - C++ stops at right token now
                 messages = messages.map { msg ->
                     if (msg.isStreaming) {
-                        val newContent = msg.content + response.token
-                        // Truncate if system prompt starts echoing
-                        val truncated = if (newContent.contains("I am Nilo, a friendly")) {
-                            newContent.substring(0, newContent.indexOf("I am Nilo, a friendly"))
-                        } else newContent
-                        // Apply lightweight filter during streaming
-                        val filtered = truncated
-                            .replace("<|im_end|>", "")
-                            .replace("|im_end|>", "")
-                            .replace("<|im_start|>assistant", " ")
-                            .replace("<|im_start|>", " ")
-                            .replace(Regex("assistant\\s*$"), "")
-                            .trim()
-                        msg.copy(content = filtered)
+                        msg.copy(content = msg.content + response.token)
                     } else {
                         msg
                     }

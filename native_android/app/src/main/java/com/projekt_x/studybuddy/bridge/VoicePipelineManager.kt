@@ -945,20 +945,38 @@ class VoicePipelineManager(
         if (isCollectingSpeech && speechBuffer.size >= FRAME_SIZE) {
             Log.i(TAG, "Processing collected speech on user tap: ${speechBuffer.size} samples")
             forceEndSpeechSegment()
+            return
         } 
-        // If we have pre-speech buffer but VAD never triggered, use that
-        else if (preSpeechBuffer.size >= FRAME_SIZE) {
-            Log.i(TAG, "Using pre-speech buffer on user tap: ${preSpeechBuffer.size} samples")
-            // Move pre-speech buffer to speech buffer
+        
+        // If we have pre-speech buffer, use it even if smaller than FRAME_SIZE
+        if (preSpeechBuffer.isNotEmpty()) {
+            val usableSize = minOf(preSpeechBuffer.size, SAMPLE_RATE * 3) // Max 3 seconds
+            Log.i(TAG, "Using pre-speech buffer on user tap: $usableSize samples")
             speechBuffer.clear()
-            speechBuffer.addAll(preSpeechBuffer)
+            speechBuffer.addAll(preSpeechBuffer.takeLast(usableSize))
+            
+            // Pad to FRAME_SIZE if needed
+            while (speechBuffer.size < FRAME_SIZE && speechBuffer.isNotEmpty()) {
+                speechBuffer.addAll(speechBuffer) // Duplicate until we have enough
+                if (speechBuffer.size > FRAME_SIZE * 2) break
+            }
+            
+            if (speechBuffer.size >= FRAME_SIZE) {
+                processSpeechSegment()
+                return
+            }
+        }
+        
+        // If we have any accumulated audio in the recorder buffer
+        if (speechBuffer.isNotEmpty()) {
+            Log.i(TAG, "Using partial speech buffer: ${speechBuffer.size} samples")
             processSpeechSegment()
+            return
         }
+        
         // Otherwise just stop normally
-        else {
-            Log.w(TAG, "No audio collected, stopping normally")
-            stopConversation()
-        }
+        Log.w(TAG, "No audio collected, stopping normally")
+        stopConversation()
     }
     
     /**

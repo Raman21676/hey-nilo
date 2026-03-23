@@ -910,13 +910,18 @@ fun UnifiedChatView(
                 messages = messages.map { msg ->
                     if (msg.isStreaming) {
                         val newContent = msg.content + response.token
+                        // Truncate if system prompt starts echoing
+                        val truncated = if (newContent.contains("I am Nilo, a friendly")) {
+                            newContent.substring(0, newContent.indexOf("I am Nilo, a friendly"))
+                        } else newContent
                         // Apply lightweight filter during streaming
-                        val filtered = newContent
+                        val filtered = truncated
                             .replace("<|im_end|>", "")
                             .replace("|im_end|>", "")
                             .replace("<|im_start|>assistant", " ")
                             .replace("<|im_start|>", " ")
                             .replace(Regex("assistant\\s*$"), "")
+                            .trim()
                         msg.copy(content = filtered)
                     } else {
                         msg

@@ -1587,10 +1587,11 @@ class VoicePipelineManager(
         filtered = filtered.replace("<|", " ")
         filtered = filtered.replace("|>", " ")
         
-        // Remove role markers
-        filtered = filtered.replace(Regex("(?i)^\\s*system\\s*"), "")
-        filtered = filtered.replace(Regex("(?i)^\\s*assistant\\s*"), "")
-        filtered = filtered.replace(Regex("(?i)^\\s*user\\s*"), "")
+        // Remove role markers (only at start of string, followed by newline or space)
+        // Use word boundary to avoid removing "assistant" when it's part of normal text
+        filtered = filtered.replace(Regex("(?i)^\\s*system\\s*\n?"), "")
+        filtered = filtered.replace(Regex("(?i)^\\s*assistant\\s*\n?"), "")
+        filtered = filtered.replace(Regex("(?i)^\\s*user\\s*\n?"), "")
         
         // Remove other special tokens
         filtered = filtered.replace("</s>", "")

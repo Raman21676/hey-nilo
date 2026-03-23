@@ -755,14 +755,20 @@ private fun startDownload(
 ) {
     Log.i(TAG, "Starting download for ${model.displayName} from ${model.downloadUrl}")
     
+    // FIX: Create OkHttp client with redirect following enabled
     val client = okhttp3.OkHttpClient.Builder()
         .connectTimeout(60, java.util.concurrent.TimeUnit.SECONDS)
         .readTimeout(120, java.util.concurrent.TimeUnit.SECONDS)
+        .writeTimeout(120, java.util.concurrent.TimeUnit.SECONDS)
+        .followRedirects(true)
+        .followSslRedirects(true)
+        .retryOnConnectionFailure(true)
         .build()
     
     val request = okhttp3.Request.Builder()
         .url(model.downloadUrl)
-        .header("User-Agent", "Hey-Nilo/1.0")
+        .header("User-Agent", "Hey-Nilo/1.0 (Android)")
+        .header("Accept", "*/*")
         .build()
     
     val call = client.newCall(request)
@@ -770,33 +776,61 @@ private fun startDownload(
     
     call.enqueue(object : okhttp3.Callback {
         override fun onFailure(call: okhttp3.Call, e: java.io.IOException) {
-            Log.e(TAG, "Download failed for ${model.displayName}", e)
+            val errorMsg = e.message ?: e.javaClass.simpleName
+            Log.e(TAG, "Download failed for ${model.displayName}: $errorMsg", e)
             activeDownloads.remove(model.id)
             android.os.Handler(android.os.Looper.getMainLooper()).post {
-                onComplete(false, e.message)
+                onComplete(false, "Network error: $errorMsg")
             }
         }
         
         override fun onResponse(call: okhttp3.Call, response: okhttp3.Response) {
+            // FIX: Log the response for debugging
+            Log.d(TAG, "Download response for ${model.displayName}: HTTP ${response.code}, " +
+                      "content-length: ${response.body?.contentLength()}, " +
+                      "redirected: ${response.isRedirect}, " +
+                      "final-url: ${response.request.url}")
+            
             if (!response.isSuccessful) {
+                val errorMsg = "HTTP ${response.code}: ${response.message}"
+                Log.e(TAG, "Download failed for ${model.displayName}: $errorMsg")
                 activeDownloads.remove(model.id)
                 android.os.Handler(android.os.Looper.getMainLooper()).post {
-                    onComplete(false, "HTTP ${response.code}")
+                    onComplete(false, errorMsg)
+                }
+                return
+            }
+            
+            // FIX: Check if body is null
+            if (response.body == null) {
+                Log.e(TAG, "Download failed for ${model.displayName}: Empty response body")
+                activeDownloads.remove(model.id)
+                android.os.Handler(android.os.Looper.getMainLooper()).post {
+                    onComplete(false, "Empty response from server")
                 }
                 return
             }
             
             try {
                 val modelsDir = java.io.File(context.getExternalFilesDir(null), "models")
-                modelsDir.mkdirs()
+                if (!modelsDir.exists() && !modelsDir.mkdirs()) {
+                    throw java.io.IOException("Failed to create models directory: ${modelsDir.absolutePath}")
+                }
                 
                 val outputFile = java.io.File(modelsDir, model.fileName)
                 val tempFile = java.io.File(modelsDir, "${model.fileName}.tmp")
                 
-                val totalBytes = response.body?.contentLength() ?: -1
+                // Delete temp file if exists
+                if (tempFile.exists()) {
+                    tempFile.delete()
+                }
+                
+                val totalBytes = response.body!!.contentLength()
                 var downloadedBytes = 0L
                 
-                response.body?.byteStream()?.use { input ->
+                Log.i(TAG, "Downloading ${model.displayName}: ${formatBytes(totalBytes)} total")
+                
+                response.body!!.byteStream().use { input ->
                     java.io.FileOutputStream(tempFile).use { output ->
                         val buffer = ByteArray(8192)
                         var bytesRead: Int
@@ -806,9 +840,9 @@ private fun startDownload(
                             output.write(buffer, 0, bytesRead)
                             downloadedBytes += bytesRead
                             
-                            // Update progress every 100ms
+                            // Update progress every 200ms
                             val now = System.currentTimeMillis()
-                            if (now - lastProgressUpdate > 100) {
+                            if (now - lastProgressUpdate > 200) {
                                 val progress = if (totalBytes > 0) {
                                     downloadedBytes.toFloat() / totalBytes
                                 } else 0f
@@ -819,24 +853,41 @@ private fun startDownload(
                                 lastProgressUpdate = now
                             }
                         }
+                        
+                        // Ensure all data is written
+                        output.flush()
                     }
                 }
                 
+                // Verify download completed
+                if (totalBytes > 0 && tempFile.length() < totalBytes * 0.99) {
+                    throw java.io.IOException("Download incomplete: ${tempFile.length()}/$totalBytes bytes")
+                }
+                
                 // Rename temp file to final
-                tempFile.renameTo(outputFile)
+                if (!tempFile.renameTo(outputFile)) {
+                    throw java.io.IOException("Failed to move downloaded file to final location")
+                }
+                
                 activeDownloads.remove(model.id)
                 
                 android.os.Handler(android.os.Looper.getMainLooper()).post {
                     onComplete(true, null)
                 }
                 
-                Log.i(TAG, "Download completed: ${model.displayName} -> ${outputFile.absolutePath}")
+                Log.i(TAG, "Download completed: ${model.displayName} -> ${outputFile.absolutePath} (${formatBytes(outputFile.length())})")
                 
             } catch (e: Exception) {
-                Log.e(TAG, "Error saving download", e)
+                val errorMsg = e.message ?: e.javaClass.simpleName
+                Log.e(TAG, "Error saving download for ${model.displayName}: $errorMsg", e)
                 activeDownloads.remove(model.id)
+                // Clean up temp file on error
+                try {
+                    val tempFile = java.io.File(context.getExternalFilesDir(null), "models/${model.fileName}.tmp")
+                    if (tempFile.exists()) tempFile.delete()
+                } catch (_: Exception) {}
                 android.os.Handler(android.os.Looper.getMainLooper()).post {
-                    onComplete(false, e.message)
+                    onComplete(false, "Save error: $errorMsg")
                 }
             }
         }

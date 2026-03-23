@@ -550,47 +550,170 @@ data class Message(
 )
 
 /**
- * Filter AI response to remove leaked memory tags and system prompt artifacts
- * FIX: Removes [MEMORY], [/s], and other formatting that leaks into output
+ * ULTRA-AGGRESSIVE Filter AI response 
+ * FIXES: Removes all leaked tags AND adds spaces between stuck-together words
+ */
+/**
+ * Filter for streaming tokens - only fixes spacing, no truncation
+ */
+fun filterStreamingToken(text: String): String {
+    if (text.isBlank()) return text
+    
+    var filtered = text
+    
+    // Remove special tokens but don't truncate
+    filtered = filtered.replace(Regex("(?i)\\[MEMORY\\]"), " ")
+    filtered = filtered.replace(Regex("(?i)\\[/MEMORY\\]"), " ")
+    filtered = filtered.replace(Regex("(?i)---\\s*Memory Context\\s*---"), " ")
+    filtered = filtered.replace(Regex("(?i)---\\s*End Context\\s*---"), " ")
+    filtered = filtered.replace(Regex("(?i)---\\s*End Conversation\\s*---"), " ")
+    filtered = filtered.replace(Regex("(?i)---\\s*EndConversation\\s*---"), " ")
+    filtered = filtered.replace("</s>", " ")
+    filtered = filtered.replace("<|system|>", " ")
+    filtered = filtered.replace("<|user|>", " ")
+    filtered = filtered.replace("<|assistant|>", " ")
+    filtered = filtered.replace(Regex("""<\\|[^|]+\\|>"""), " ")
+    
+    // AGGRESSIVE word spacing fix
+    filtered = filtered.replace(Regex("([a-z])([A-Z])"), "$1 $2")
+    filtered = filtered.replace(Regex("([,!?])([a-zA-Z])"), "$1 $2")
+    
+    // Common stuck word patterns
+    filtered = filtered.replace("Iam", "I am")
+    filtered = filtered.replace("IamNilo", "I am Nilo")
+    filtered = filtered.replace("yourpersonal", "your personal")
+    filtered = filtered.replace("personalAI", "personal AI")
+    filtered = filtered.replace("AIassistant", "AI assistant")
+    filtered = filtered.replace("Howcan", "How can")
+    filtered = filtered.replace("Howare", "How are")
+    filtered = filtered.replace("you today?Is", "you today? Is")
+    filtered = filtered.replace("Isthere", "Is there")
+    filtered = filtered.replace("inparticular", "in particular")
+    filtered = filtered.replace("thatyou", "that you")
+    filtered = filtered.replace("wouldlike", "would like")
+    filtered = filtered.replace("toknow", "to know")
+    filtered = filtered.replace("ordiscuss", "or discuss")
+    filtered = filtered.replace("Letmeknow", "Let me know")
+    filtered = filtered.replace("we'llget", "we'll get")
+    filtered = filtered.replace("startedona", "started on a")
+    filtered = filtered.replace("conversation!---", "conversation!")
+    filtered = filtered.replace("don'thesitate", "don't hesitate")
+    filtered = filtered.replace("toask", "to ask")
+    filtered = filtered.replace("I'mjust", "I'm just")
+    filtered = filtered.replace("theretochat", "there to chat")
+    filtered = filtered.replace("sodon't", "so don't")
+    filtered = filtered.replace("sharethoughts", "share thoughts")
+    filtered = filtered.replace("I'mjustheretochat,sodon'thesitatetoask", 
+        "I'm just here to chat, so don't hesitate to ask")
+    filtered = filtered.replace("Ihelp", "I help")
+    filtered = filtered.replace("helpyou", "help you")
+    filtered = filtered.replace("somethingin", "something in")
+    filtered = filtered.replace("youwould", "you would")
+    filtered = filtered.replace("askquestions", "ask questions")
+    filtered = filtered.replace("we'llgetstarted", "we'll get started")
+    filtered = filtered.replace("ona", "on a")
+    filtered = filtered.replace("anAI", "an AI")
+    filtered = filtered.replace("aAI", "an AI")
+    
+    // Clean up whitespace
+    filtered = filtered.replace(Regex("\\s{2,}"), " ")
+    
+    return filtered.trim()
+}
+
+/**
+ * Filter for complete response - fixes spacing AND truncates at end markers
  */
 fun filterAiResponse(text: String): String {
     if (text.isBlank()) return text
     
     var filtered = text
     
-    // Remove memory tags and special tokens
-    filtered = filtered.replace("[MEMORY]", "")
-    filtered = filtered.replace("[/MEMORY]", "")
-    filtered = filtered.replace("[-- Memory Context ---", "")
-    filtered = filtered.replace("--- End Context ---", "")
-    filtered = filtered.replace("</s>", "")
-    filtered = filtered.replace("<|system|>", "")
-    filtered = filtered.replace("<|user|>", "")
-    filtered = filtered.replace("<|assistant|>", "")
+    // STEP 1: TRUNCATE at the first occurrence of any end marker
+    val endMarkers = listOf(
+        "---EndConversation---", "--- End Conversation ---",
+        "---End Context---", "--- End Context ---",
+        "[/s]", "</s>", "</s", "<|system|>", "<|assistant|>", "<|user|>"
+    )
+    for (marker in endMarkers) {
+        val index = filtered.indexOf(marker, ignoreCase = true)
+        if (index != -1) {
+            filtered = filtered.substring(0, index)
+            break
+        }
+    }
     
-    // Remove [/s] or similar tags using regex
-    filtered = filtered.replace(Regex("""\[/s\]"""), "")
-    filtered = filtered.replace(Regex("""\[s\]"""), "")
+    // STEP 2: Remove ALL special tokens
+    filtered = filtered.replace(Regex("(?i)\\[MEMORY\\]"), " ")
+    filtered = filtered.replace(Regex("(?i)\\[/MEMORY\\]"), " ")
+    filtered = filtered.replace(Regex("(?i)---\\s*Memory Context\\s*---"), " ")
+    filtered = filtered.replace(Regex("(?i)---\\s*End Context\\s*---"), " ")
+    filtered = filtered.replace(Regex("(?i)---\\s*End Conversation\\s*---"), " ")
+    filtered = filtered.replace(Regex("(?i)---\\s*EndConversation\\s*---"), " ")
+    filtered = filtered.replace(Regex("(?i)---[^-]+---"), " ")
+    filtered = filtered.replace("</s>", " ")
+    filtered = filtered.replace("<|system|>", " ")
+    filtered = filtered.replace("<|user|>", " ")
+    filtered = filtered.replace("<|assistant|>", " ")
+    filtered = filtered.replace(Regex("""<\\|[^|]+\\|>"""), " ")
+    filtered = filtered.replace(Regex("""\\[/s\\]"""), " ")
+    filtered = filtered.replace(Regex("""\\[s\\]"""), " ")
     
-    // Remove lines that look like memory context (start with specific keywords)
+    // STEP 3: AGGRESSIVE word spacing fix
+    // Pattern 1: lowercase followed by UPPERCASE -> add space
+    filtered = filtered.replace(Regex("([a-z])([A-Z])"), "$1 $2")
+    
+    // Pattern 2: word boundary after punctuation: ,word -> , word
+    filtered = filtered.replace(Regex("([,!?])([a-zA-Z])"), "$1 $2")
+    
+    // Pattern 3: common stuck word patterns (MOST IMPORTANT)
+    filtered = filtered.replace("Iam", "I am")
+    filtered = filtered.replace("IamNilo", "I am Nilo")
+    filtered = filtered.replace("yourpersonal", "your personal")
+    filtered = filtered.replace("personalAI", "personal AI")
+    filtered = filtered.replace("AIassistant", "AI assistant")
+    filtered = filtered.replace("Howcan", "How can")
+    filtered = filtered.replace("Howare", "How are")
+    filtered = filtered.replace("you today?Is", "you today? Is")
+    filtered = filtered.replace("Isthere", "Is there")
+    filtered = filtered.replace("inparticular", "in particular")
+    filtered = filtered.replace("thatyou", "that you")
+    filtered = filtered.replace("wouldlike", "would like")
+    filtered = filtered.replace("toknow", "to know")
+    filtered = filtered.replace("ordiscuss", "or discuss")
+    filtered = filtered.replace("Letmeknow", "Let me know")
+    filtered = filtered.replace("we'llget", "we'll get")
+    filtered = filtered.replace("startedona", "started on a")
+    filtered = filtered.replace("conversation!---", "conversation!")
+    filtered = filtered.replace("don'thesitate", "don't hesitate")
+    filtered = filtered.replace("toask", "to ask")
+    filtered = filtered.replace("I'mjust", "I'm just")
+    filtered = filtered.replace("theretochat", "there to chat")
+    filtered = filtered.replace("sodon't", "so don't")
+    filtered = filtered.replace("sharethoughts", "share thoughts")
+    filtered = filtered.replace("I'mjustheretochat,sodon'thesitatetoask", "I'm just here to chat, so don't hesitate to ask")
+    
+    // STEP 4: Remove lines that look like system prompts
     val lines = filtered.lines()
     val cleanedLines = lines.filter { line ->
         val trimmed = line.trim()
-        // Keep lines that don't look like memory context
-        !trimmed.startsWith("User:") &&
-        !trimmed.startsWith("Facts:") &&
-        !trimmed.startsWith("People:") &&
-        !trimmed.startsWith("Pending:") &&
-        !trimmed.startsWith("Last session:")
+        !trimmed.startsWith("User:", ignoreCase = true) &&
+        !trimmed.startsWith("Facts:", ignoreCase = true) &&
+        !trimmed.startsWith("People:", ignoreCase = true) &&
+        !trimmed.startsWith("Pending:", ignoreCase = true) &&
+        !trimmed.startsWith("Last session:", ignoreCase = true) &&
+        !trimmed.startsWith("How are you today?", ignoreCase = true) &&
+        !trimmed.startsWith("I'm just here to chat", ignoreCase = true) &&
+        !trimmed.contains("don't hesitate to ask", ignoreCase = true) &&
+        !trimmed.startsWith(">", ignoreCase = true)
     }
-    
-    // Rejoin and clean up
     filtered = cleanedLines.joinToString("\n").trim()
     
-    // Remove multiple consecutive newlines
-    filtered = filtered.replace(Regex("\n{3,}"), "\n\n")
+    // STEP 5: Final cleanup
+    filtered = filtered.replace(Regex("\\s{2,}"), " ")
+    filtered = filtered.replace(Regex("\\n{3,}"), "\n\n")
     
-    return filtered
+    return filtered.trim()
 }
 
 /**
@@ -767,21 +890,26 @@ fun UnifiedChatView(
                 isGenerating = false
                 metricsState.stopGeneration()
             } else if (response.isComplete) {
+                // Apply full filter (with truncation) when response is complete
                 messages = messages.map { msg ->
-                    if (msg.isStreaming) msg.copy(isStreaming = false) else msg
+                    if (msg.isStreaming) {
+                        msg.copy(
+                            content = filterAiResponse(msg.content),
+                            isStreaming = false
+                        )
+                    } else {
+                        msg
+                    }
                 }
                 isGenerating = false
                 metricsState.stopGeneration()
             } else if (response.token != null) {
-                // FIX: Filter each token to prevent memory tag leakage
-                val filteredToken = filterAiResponse(response.token)
-                if (filteredToken.isNotBlank()) {
-                    messages = messages.map { msg ->
-                        if (msg.isStreaming) {
-                            msg.copy(content = msg.content + filteredToken)
-                        } else {
-                            msg
-                        }
+                // Simple accumulation without filtering during streaming
+                messages = messages.map { msg ->
+                    if (msg.isStreaming) {
+                        msg.copy(content = msg.content + response.token)
+                    } else {
+                        msg
                     }
                 }
                 metricsState.onTokenGenerated()

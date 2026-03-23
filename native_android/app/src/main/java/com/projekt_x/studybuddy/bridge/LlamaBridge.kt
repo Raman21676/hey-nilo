@@ -410,36 +410,42 @@ Keep responses short and natural. Responses will be spoken aloud."""
         // Calculate memory pressure
         val memoryPressure = calculateMemoryPressure(availableRamMB, totalRamMB)
         
-        // Get optimal thread count from native layer
+        // CRITICAL FIX: Cap threads for low-RAM devices to avoid thrashing
+        // 3GB devices should use max 2 threads, not 4+
         val optimalThreads = getOptimalThreadCount()
+        val maxThreadsForRam = when {
+            totalRamMB < 3072 -> 2  // 3GB or less: use only 2 threads
+            totalRamMB < 4096 -> 3  // 4GB: use max 3 threads
+            else -> 4               // 6GB+: can use 4 threads
+        }
         
         // Apply battery/temperature adjustments
         val finalThreads = when {
-            memoryPressure > 0.8f -> (optimalThreads * 0.7).toInt().coerceAtLeast(2)
-            batteryInfo.level < 15 && !isCharging -> (optimalThreads * 0.7).toInt().coerceAtLeast(2)
-            cpuTemp > 60f -> (optimalThreads * 0.8).toInt().coerceAtLeast(2)
-            isCharging -> optimalThreads
-            else -> optimalThreads
+            memoryPressure > 0.8f -> (optimalThreads * 0.7).toInt().coerceAtLeast(2).coerceAtMost(maxThreadsForRam)
+            batteryInfo.level < 15 && !isCharging -> (optimalThreads * 0.7).toInt().coerceAtLeast(2).coerceAtMost(maxThreadsForRam)
+            cpuTemp > 60f -> (optimalThreads * 0.8).toInt().coerceAtLeast(2).coerceAtMost(maxThreadsForRam)
+            else -> optimalThreads.coerceAtMost(maxThreadsForRam)
         }
         
-        // Determine context size based on RAM
+        // CRITICAL FIX: Smaller context size for faster generation on low-RAM devices
         val safeContextSize = when {
             availableRamMB < 2048 -> 512
-            availableRamMB < 3584 -> 1024
+            availableRamMB < 3072 -> 1024  // 3GB devices: use 1024 not 2048
             else -> 2048
         }
         
-        // Batch size based on memory pressure
+        // CRITICAL FIX: Smaller batch size for faster generation
         val batchSize = when {
-            memoryPressure > 0.7f -> 256
+            availableRamMB < 2048 -> 128
+            availableRamMB < 3072 -> 256  // 3GB devices: use 256 not 512
             else -> 512
         }
         
         // Use mmap for low RAM devices
         val useMmap = availableRamMB < 2500
         
-        Log.i(TAG, "Detected config: threads=$finalThreads, context=$safeContextSize, " +
-                "mmap=$useMmap, pressure=${(memoryPressure * 100).toInt()}%")
+        Log.i(TAG, "Detected config: threads=$finalThreads (max=$maxThreadsForRam), context=$safeContextSize, " +
+                "batch=$batchSize, mmap=$useMmap, pressure=${(memoryPressure * 100).toInt()}%")
         
         return BridgeConfig(
             threads = finalThreads,

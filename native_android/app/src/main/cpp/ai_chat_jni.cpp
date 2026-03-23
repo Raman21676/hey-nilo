@@ -617,6 +617,13 @@ Java_com_projekt_1x_studybuddy_LlamaBridge_nativeGenerateStream(
     const char* STOP_USER_LOWER = "user:";
     const char* STOP_IM_END = "<|im_end|>";
     const char* STOP_IM_START = "<|im_start|>";
+    const char* STOP_END = "</s>";
+    const char* STOP_SYSTEM = "<|system|>";
+    const char* STOP_ASSISTANT = "<|assistant|>";
+    const char* STOP_END_CONV = "--EndConversation--";
+    const char* STOP_END_CTX = "--EndContext--";
+    const char* STOP_INST = "[/INST]";
+    const char* STOP_END_GEN = "<|end|>";
     
     llama_token last_token = -1;
     int repeat_count = 0;
@@ -659,11 +666,28 @@ Java_com_projekt_1x_studybuddy_LlamaBridge_nativeGenerateStream(
         }
         
         std::string token_str(piece, n);
+        
+        // Replace BPE space character (U+2581) with regular space
+        // This fixes spacing issues with models like Qwen
+        std::string display_str = token_str;
+        size_t pos = 0;
+        while ((pos = display_str.find('\xE2\x96\x81', pos)) != std::string::npos) {
+            display_str.replace(pos, 3, " ");
+            pos += 1;
+        }
+        
         std::string test_str = pending + token_str;
         
         bool should_stop = false;
         if (test_str.find(STOP_IM_END) != std::string::npos ||
-            test_str.find(STOP_IM_START) != std::string::npos) {
+            test_str.find(STOP_IM_START) != std::string::npos ||
+            test_str.find(STOP_END) != std::string::npos ||
+            test_str.find(STOP_SYSTEM) != std::string::npos ||
+            test_str.find(STOP_ASSISTANT) != std::string::npos ||
+            test_str.find(STOP_END_CONV) != std::string::npos ||
+            test_str.find(STOP_END_CTX) != std::string::npos ||
+            test_str.find(STOP_INST) != std::string::npos ||
+            test_str.find(STOP_END_GEN) != std::string::npos) {
             should_stop = true;
         } else if (test_str.find(STOP_USER) != std::string::npos ||
                    test_str.find(STOP_USER_LOWER) != std::string::npos) {
@@ -688,7 +712,8 @@ Java_com_projekt_1x_studybuddy_LlamaBridge_nativeGenerateStream(
         if (potential_stop) {
             pending = test_str;
         } else {
-            std::string to_emit = pending + token_str;
+            // Use display_str (with proper spaces) for emission
+            std::string to_emit = pending + display_str;
             pending.clear();
             
             // Sanitize string for JNI (remove null bytes and invalid UTF-8)

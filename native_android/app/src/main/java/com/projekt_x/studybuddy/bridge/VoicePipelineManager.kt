@@ -1130,9 +1130,12 @@ class VoicePipelineManager(
                             }
                             fullResponseText.append(token)
                             
-                            // Add to TTS buffer
+                            // Add to TTS buffer (filter special tokens)
                             if (token.isNotBlank()) {
-                                ttsTextBuffer.append(token)
+                                val filteredToken = filterTTSText(token)
+                                if (filteredToken.isNotBlank()) {
+                                    ttsTextBuffer.append(filteredToken)
+                                }
                             }
                             
                             // Start TTS when we have a complete sentence
@@ -1227,7 +1230,10 @@ class VoicePipelineManager(
                                     Log.d(TAG, "Processing final token: '${response.token}'")
                                     tokenCount++
                                     fullResponseText.append(response.token)
-                                    ttsTextBuffer.append(response.token)
+                                    val filteredToken = filterTTSText(response.token)
+                                    if (filteredToken.isNotBlank()) {
+                                        ttsTextBuffer.append(filteredToken)
+                                    }
                                 }
                                 
                                 responseComplete = true
@@ -1277,10 +1283,13 @@ class VoicePipelineManager(
                                 currentState = PipelineState.SPEAKING
                                 fullResponseText.append(response.token)
                                 
-                                // Accumulate text for TTS
+                                // Accumulate text for TTS (filter special tokens)
                                 val token = response.token
                                 if (token.isNotBlank()) {
-                                    ttsTextBuffer.append(token)
+                                    val filteredToken = filterTTSText(token)
+                                    if (filteredToken.isNotBlank()) {
+                                        ttsTextBuffer.append(filteredToken)
+                                    }
                                 }
                                 
                                 // STREAMING: Start TTS immediately when we have a complete sentence
@@ -1433,7 +1442,8 @@ class VoicePipelineManager(
                         break  // Exit loop → triggers finally → sets LISTENING
                     } else if (isLLMResponseComplete && availableLength > 0) {
                         // LLM done but we have remaining text that didn't end with punctuation
-                        val remaining = availableText.trim()
+                        val rawRemaining = availableText.trim()
+                        val remaining = filterTTSText(rawRemaining)
                         Log.i(TAG, "TTS: LLM complete, speaking remainder (${availableLength} chars): '$remaining'")
                         if (remaining.isNotBlank()) {
                             val queueMode = if (isFirstChunk) TextToSpeech.QUEUE_FLUSH else TextToSpeech.QUEUE_ADD
@@ -1535,7 +1545,8 @@ class VoicePipelineManager(
                     if (nextChar == ' ') {
                         breakPoint = i + 2  // Skip the space
                     }
-                    val speakableText = availableText.substring(0, breakPoint).trim()
+                    val rawText = availableText.substring(0, breakPoint).trim()
+                    val speakableText = filterTTSText(rawText)
                     Log.d(TAG, "findSpeakableChunk: found sentence at $i: '$speakableText'")
                     return Pair(speakableText, breakPoint)
                 }
@@ -1547,7 +1558,8 @@ class VoicePipelineManager(
             for (i in availableText.length - 1 downTo maxOf(availableText.length - 50, 0)) {
                 if (availableText[i] == ',' || availableText[i] == ';') {
                     val breakPoint = i + 1
-                    val speakableText = availableText.substring(0, breakPoint).trim()
+                    val rawText = availableText.substring(0, breakPoint).trim()
+                    val speakableText = filterTTSText(rawText)
                     Log.d(TAG, "findSpeakableChunk: forced break at comma: '$speakableText'")
                     return Pair(speakableText, breakPoint)
                 }
@@ -1556,6 +1568,38 @@ class VoicePipelineManager(
         
         Log.v(TAG, "findSpeakableChunk: no chunk found in '${availableText.take(50)}...'")
         return Pair(null, 0)
+    }
+    
+    /**
+     * Filter TTS text to remove special tokens that should not be spoken
+     * Removes <|im_end|>, <|im_start|>, and other template tokens
+     */
+    private fun filterTTSText(text: String): String {
+        var filtered = text
+        
+        // Remove special Qwen2.5 chat template tokens
+        filtered = filtered.replace("<|im_end|>", "")
+        filtered = filtered.replace("<|im_start|>", "")
+        filtered = filtered.replace("|im_end|>", "")
+        filtered = filtered.replace("|im_start|>", "")
+        filtered = filtered.replace("<|im_end", "")
+        filtered = filtered.replace("<|im_start", "")
+        filtered = filtered.replace("<|", " ")
+        filtered = filtered.replace("|>", " ")
+        
+        // Remove role markers
+        filtered = filtered.replace(Regex("(?i)^\\s*system\\s*"), "")
+        filtered = filtered.replace(Regex("(?i)^\\s*assistant\\s*"), "")
+        filtered = filtered.replace(Regex("(?i)^\\s*user\\s*"), "")
+        
+        // Remove other special tokens
+        filtered = filtered.replace("</s>", "")
+        filtered = filtered.replace("<s>", "")
+        
+        // Clean up whitespace
+        filtered = filtered.replace(Regex("\\s+"), " ")
+        
+        return filtered.trim()
     }
     
     private fun hasCompleteSentence(text: String): Boolean {

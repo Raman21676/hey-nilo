@@ -754,6 +754,21 @@ Java_com_projekt_1x_studybuddy_LlamaBridge_nativeGenerateStream(
     return env->NewStringUTF(sanitizedResponse.c_str());
 }
 
+// Wrapper for nativeGenerate that uses default max tokens (256)
+extern "C" JNIEXPORT void JNICALL
+Java_com_projekt_1x_studybuddy_LlamaBridge_nativeGenerate(
+    JNIEnv* env,
+    jobject thiz,
+    jstring userPrompt,
+    jobject callback
+) {
+    // Default max tokens for simple wrapper
+    // The Kotlin layer should use nativeGenerateStream with dynamic limits
+    Java_com_projekt_1x_studybuddy_LlamaBridge_nativeGenerateStream(
+        env, thiz, userPrompt, 256, callback
+    );
+}
+
 extern "C" JNIEXPORT void JNICALL
 Java_com_projekt_1x_studybuddy_LlamaBridge_nativeAddToHistory(
     JNIEnv* env,

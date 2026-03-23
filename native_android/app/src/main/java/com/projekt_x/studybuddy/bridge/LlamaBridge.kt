@@ -253,7 +253,62 @@ Keep responses short and natural. Responses will be spoken aloud."""
                     }
                 }
                 
-                nativeGenerate(prompt, nativeCallback)
+                // Use default max tokens (256) for simple generate calls
+                nativeGenerateStream(prompt, 256, nativeCallback)
+                
+                if (isActive && !errorOccurred) {
+                    callback.onComplete(fullResponse.toString())
+                }
+            } catch (e: Exception) {
+                if (isActive) {
+                    callback.onError("Generation error: ${e.message}")
+                }
+            } finally {
+                updateState(State.READY)
+            }
+        }
+    }
+    
+    /**
+     * Generate text with specified max tokens limit
+     * 
+     * @param prompt The prompt text
+     * @param maxTokens Maximum tokens to generate (estimated based on query type)
+     * @param callback Streaming callback for tokens
+     */
+    fun generateWithMaxTokens(prompt: String, maxTokens: Int, callback: StreamingCallback) {
+        if (!assertReady("generate")) {
+            callback.onError("Bridge not ready: ${lastError ?: "unknown error"}")
+            return
+        }
+
+        updateState(State.BUSY)
+        Log.i(TAG, "Starting generation with maxTokens=$maxTokens")
+        
+        currentGenerationJob = scope.launch {
+            try {
+                val fullResponse = StringBuilder()
+                var errorOccurred = false
+                
+                val nativeCallback = object : GenerationCallback {
+                    override fun onToken(token: String) {
+                        if (isActive) {
+                            fullResponse.append(token)
+                            callback.onToken(token)
+                        }
+                    }
+                    
+                    override fun onComplete() {
+                        // Called when generation is complete
+                    }
+                    
+                    override fun onError(error: String) {
+                        errorOccurred = true
+                        callback.onError(error)
+                    }
+                }
+                
+                nativeGenerateStream(prompt, maxTokens, nativeCallback)
                 
                 if (isActive && !errorOccurred) {
                     callback.onComplete(fullResponse.toString())
@@ -328,7 +383,39 @@ Keep responses short and natural. Responses will be spoken aloud."""
             systemPrompt = systemPrompt ?: currentSystemPrompt,
             memoryContext = memoryContext
         )
-        generate(fullPrompt, callback)
+        // Estimate max tokens based on query type
+        val maxTokens = estimateMaxTokens(userMessage)
+        generateWithMaxTokens(fullPrompt, maxTokens, callback)
+    }
+    
+    /**
+     * Estimate max tokens based on query type to avoid wasted generation
+     * 
+     * Short messages get fewer tokens, complex requests get more
+     */
+    fun estimateMaxTokens(userMessage: String): Int {
+        val lowerMsg = userMessage.lowercase()
+        return when {
+            // Short conversational messages
+            userMessage.length < 20 -> 100
+            userMessage.length < 50 -> 150
+            
+            // Explicit long content requests
+            lowerMsg.containsAny(listOf("write", "story", "code", "explain", "describe", "list")) -> 600
+            
+            // Questions that need detailed answers
+            lowerMsg.containsAny(listOf("how to", "what is", "why", "compare", "difference")) -> 400
+            
+            // Medium questions
+            userMessage.length < 150 -> 250
+            
+            // Default
+            else -> 350
+        }
+    }
+    
+    private fun String.containsAny(keywords: List<String>): Boolean {
+        return keywords.any { this.contains(it) }
     }
     
     /**
@@ -681,7 +768,7 @@ Keep responses short and natural. Responses will be spoken aloud."""
         memoryPressure: Float
     ): Boolean
     private external fun nativeUnloadModel()
-    private external fun nativeGenerate(prompt: String, callback: GenerationCallback)
+    private external fun nativeGenerateStream(prompt: String, maxTokens: Int, callback: GenerationCallback)
     private external fun nativeStopGeneration()
     private external fun nativeSetSystemPrompt(prompt: String)
     private external fun nativeClearContext()

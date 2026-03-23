@@ -518,9 +518,11 @@ class LlamaBridge(private val context: Context) : BaseBridge() {
                 listOf(3, 2048, 256, 0)
             }
             totalRamMB >= 3000 -> {
-                // 3-4GB devices: Acceptable experience
+                // 3-4GB devices: Optimized for speed
+                // batch=512 cuts prefill time (long delay before first word)
+                // threads=4 uses big cores better on big.LITTLE chips
                 Log.i(TAG, "Low-range device detected: ${totalRamMB}MB RAM")
-                listOf(2, 1024, 128, 0)
+                listOf(4, 1024, 512, 0)
             }
             else -> {
                 // <3GB devices: Bare minimum, will show warning

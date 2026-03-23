@@ -68,6 +68,10 @@ struct LlamaState {
     // Conversation history
     std::vector<std::pair<std::string, std::string>> history;
     
+    // Special token IDs (set during model load)
+    llama_token token_im_end = -1;
+    llama_token token_im_start = -1;
+    
     ~LlamaState() {
         cleanup();
     }
@@ -98,6 +102,27 @@ struct LlamaState {
 };
 
 static std::unique_ptr<LlamaState> g_state;
+
+// Scan vocabulary to find special token IDs - call once after model load
+static void scanSpecialTokens() {
+    if (!g_state || !g_state->model) return;
+    
+    const llama_vocab* vocab = llama_model_get_vocab(g_state->model);
+    const int vocab_size = llama_vocab_n_tokens(vocab);
+    
+    for (int i = 0; i < vocab_size && (g_state->token_im_end == -1 || g_state->token_im_start == -1); i++) {
+        char token_text[256];
+        int n = llama_token_to_piece(vocab, i, token_text, sizeof(token_text), 0, false);
+        if (n > 0) {
+            std::string text(token_text, n);
+            if (text == "<|im_end|>") g_state->token_im_end = i;
+            if (text == "<|im_start|>") g_state->token_im_start = i;
+        }
+    }
+    
+    LOGI("Scanned vocabulary: im_end=%d, im_start=%d (vocab_size=%d)", 
+         (int)g_state->token_im_end, (int)g_state->token_im_start, vocab_size);
+}
 
 // ============================================
 // DEVICE DETECTION & OPTIMIZATION
@@ -437,6 +462,9 @@ Java_com_projekt_1x_studybuddy_LlamaBridge_loadModel(
     LOGI("Config: threads=%d (adaptive), ctx=%d, batch=%d, ubatch=%d", 
          g_state->n_threads, g_state->n_ctx, g_state->n_batch, g_state->n_ubatch);
     
+    // Scan for special token IDs - do this once at load time
+    scanSpecialTokens();
+    
     return 0;
 }
 
@@ -620,20 +648,9 @@ Java_com_projekt_1x_studybuddy_LlamaBridge_nativeGenerateStream(
     int n_gen = 0;
     std::string response;
     
-    // Find special token IDs by scanning vocabulary
-    llama_token token_im_end = -1, token_im_start = -1;
-    const int vocab_size = llama_vocab_n_tokens(vocab);
-    for (int i = 0; i < vocab_size && (token_im_end == -1 || token_im_start == -1); i++) {
-        char token_text[256];
-        int n = llama_token_to_piece(vocab, i, token_text, sizeof(token_text), 0, false);
-        if (n > 0) {
-            std::string text(token_text, n);
-            if (text == "<|im_end|>") token_im_end = i;
-            if (text == "<|im_start|>") token_im_start = i;
-        }
-    }
-    
-    LOGI("Found special tokens - im_end: %d, im_start: %d", (int)token_im_end, (int)token_im_start);
+    // Use pre-scanned special token IDs from model load
+    llama_token token_im_end = g_state->token_im_end;
+    llama_token token_im_start = g_state->token_im_start;
     
     llama_token last_token = -1;
     int repeat_count = 0;

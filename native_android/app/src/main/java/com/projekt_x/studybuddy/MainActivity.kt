@@ -634,7 +634,7 @@ fun filterAiResponse(text: String): String {
         "---EndConversation---", "--- End Conversation ---",
         "---End Context---", "--- End Context ---",
         "[/s]", "</s>", "</s", "<|system|>", "<|assistant|>", "<|user|>",
-        "|im_end|>", "<|im_end|>", "<|im_start|>assistant"
+        "|im_end|>", "<|im_end|>", "<|im_start|>assistant", "I am Nilo, a friendly"
     )
     for (marker in endMarkers) {
         val index = filtered.indexOf(marker, ignoreCase = true)
@@ -914,8 +914,9 @@ fun UnifiedChatView(
                         val filtered = newContent
                             .replace("<|im_end|>", "")
                             .replace("|im_end|>", "")
-                            .replace("<|im_start|>", "")
-                            .replace("<|im_start|>assistant", "")
+                            .replace("<|im_start|>assistant", " ")
+                            .replace("<|im_start|>", " ")
+                            .replace(Regex("assistant\\s*$"), "")
                         msg.copy(content = filtered)
                     } else {
                         msg

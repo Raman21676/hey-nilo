@@ -190,6 +190,14 @@ Keep responses short and natural. Responses will be spoken aloud."""
             false
         }
     }
+    
+    /**
+     * Get the current device configuration
+     * Returns default config if no model is loaded
+     */
+    fun getDeviceConfig(): BridgeConfig {
+        return currentConfig ?: detectDeviceConfig()
+    }
 
     /**
      * Unload the current model
@@ -400,6 +408,10 @@ Keep responses short and natural. Responses will be spoken aloud."""
     /**
      * Detect device capabilities and return optimal config
      */
+    /**
+     * Detect optimal device configuration based on total RAM
+     * Tiered approach: higher RAM = better experience
+     */
     fun detectDeviceConfig(): BridgeConfig {
         val batteryInfo = getBatteryInfo()
         val isCharging = batteryInfo.isCharging
@@ -410,49 +422,57 @@ Keep responses short and natural. Responses will be spoken aloud."""
         // Calculate memory pressure
         val memoryPressure = calculateMemoryPressure(availableRamMB, totalRamMB)
         
-        // CRITICAL FIX: Cap threads for low-RAM devices to avoid thrashing
-        // 3GB devices should use max 2 threads, not 4+
-        val optimalThreads = getOptimalThreadCount()
-        val maxThreadsForRam = when {
-            totalRamMB < 3072 -> 2  // 3GB or less: use only 2 threads
-            totalRamMB < 4096 -> 3  // 4GB: use max 3 threads
-            else -> 4               // 6GB+: can use 4 threads
+        // TIERED CONFIG based on TOTAL RAM (not available)
+        // This ensures consistent experience regardless of current memory usage
+        val configData = when {
+            totalRamMB >= 6000 -> {
+                // 6GB+ devices: Full experience
+                Log.i(TAG, "High-end device detected: ${totalRamMB}MB RAM")
+                listOf(4, 4096, 512, 0) // threads, context, batch, isLowTier (0=false)
+            }
+            totalRamMB >= 4000 -> {
+                // 4-6GB devices: Good experience
+                Log.i(TAG, "Mid-range device detected: ${totalRamMB}MB RAM")
+                listOf(3, 2048, 256, 0)
+            }
+            totalRamMB >= 3000 -> {
+                // 3-4GB devices: Acceptable experience
+                Log.i(TAG, "Low-range device detected: ${totalRamMB}MB RAM")
+                listOf(2, 1024, 128, 0)
+            }
+            else -> {
+                // <3GB devices: Bare minimum, will show warning
+                Log.w(TAG, "Very low RAM device: ${totalRamMB}MB - limited functionality")
+                listOf(2, 512, 128, 1) // isLowTier = 1 (true)
+            }
         }
         
-        // Apply battery/temperature adjustments
+        val optimalThreads = configData[0]
+        val contextSize = configData[1]
+        val batchSize = configData[2]
+        val isLowTier = configData[3] == 1
+        
+        // Apply battery/temperature adjustments to threads only
         val finalThreads = when {
-            memoryPressure > 0.8f -> (optimalThreads * 0.7).toInt().coerceAtLeast(2).coerceAtMost(maxThreadsForRam)
-            batteryInfo.level < 15 && !isCharging -> (optimalThreads * 0.7).toInt().coerceAtLeast(2).coerceAtMost(maxThreadsForRam)
-            cpuTemp > 60f -> (optimalThreads * 0.8).toInt().coerceAtLeast(2).coerceAtMost(maxThreadsForRam)
-            else -> optimalThreads.coerceAtMost(maxThreadsForRam)
+            memoryPressure > 0.8f -> (optimalThreads * 0.7).toInt().coerceAtLeast(2)
+            batteryInfo.level < 15 && !isCharging -> (optimalThreads * 0.7).toInt().coerceAtLeast(2)
+            cpuTemp > 60f -> (optimalThreads * 0.8).toInt().coerceAtLeast(2)
+            else -> optimalThreads
         }
         
-        // CRITICAL FIX: Smaller context size for faster generation on low-RAM devices
-        val safeContextSize = when {
-            availableRamMB < 2048 -> 512
-            availableRamMB < 3072 -> 1024  // 3GB devices: use 1024 not 2048
-            else -> 2048
-        }
+        // Use mmap for low RAM devices to save memory
+        val useMmap = totalRamMB < 4000
         
-        // CRITICAL FIX: Smaller batch size for faster generation
-        val batchSize = when {
-            availableRamMB < 2048 -> 128
-            availableRamMB < 3072 -> 256  // 3GB devices: use 256 not 512
-            else -> 512
-        }
-        
-        // Use mmap for low RAM devices
-        val useMmap = availableRamMB < 2500
-        
-        Log.i(TAG, "Detected config: threads=$finalThreads (max=$maxThreadsForRam), context=$safeContextSize, " +
-                "batch=$batchSize, mmap=$useMmap, pressure=${(memoryPressure * 100).toInt()}%")
+        Log.i(TAG, "Config: threads=$finalThreads, context=$contextSize, " +
+                "batch=$batchSize, mmap=$useMmap, lowTier=$isLowTier")
         
         return BridgeConfig(
             threads = finalThreads,
             useMmap = useMmap,
-            contextSize = safeContextSize,
+            contextSize = contextSize,
             batchSize = batchSize,
-            memoryPressure = memoryPressure
+            memoryPressure = memoryPressure,
+            isLowTierDevice = isLowTier
         )
     }
 

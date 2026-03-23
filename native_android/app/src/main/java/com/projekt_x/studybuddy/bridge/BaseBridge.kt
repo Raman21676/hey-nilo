@@ -272,7 +272,8 @@ data class BridgeConfig(
     val useMmap: Boolean = true,
     val contextSize: Int = 2048,
     val batchSize: Int = 512,
-    val memoryPressure: Float = 0f
+    val memoryPressure: Float = 0f,
+    val isLowTierDevice: Boolean = false
 )
 
 /**

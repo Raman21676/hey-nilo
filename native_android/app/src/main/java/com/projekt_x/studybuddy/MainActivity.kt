@@ -963,13 +963,16 @@ fun UnifiedChatView(
                 tonalElevation = 3.dp,
                 modifier = Modifier.fillMaxWidth()
             ) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(12.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                Column(
+                    modifier = Modifier.fillMaxWidth()
                 ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 12.dp, vertical = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
                     // Voice button (circular) with Nilo head
                     IconButton(
                         onClick = {
@@ -1073,6 +1076,20 @@ fun UnifiedChatView(
                         ) {
                             Icon(Icons.Default.Send, contentDescription = "Send")
                         }
+                    }
+                    
+                    }
+                    // Warning for low-tier devices
+                    if (bridge.getDeviceConfig().isLowTierDevice) {
+                        Text(
+                            text = "⚠️ Low memory: Long responses may be cut short. Use Online mode for complex tasks.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.error,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 12.dp)
+                                .padding(bottom = 8.dp)
+                        )
                     }
                 }
             }

@@ -619,19 +619,16 @@ Java_com_projekt_1x_studybuddy_LlamaBridge_nativeGenerateStream(
     
     int n_gen = 0;
     std::string response;
-    std::string pending;
     
-    const char* STOP_USER = "User:";
-    const char* STOP_USER_LOWER = "user:";
-    const char* STOP_IM_END = "<|im_end|>";
-    const char* STOP_IM_START = "<|im_start|>";
-    const char* STOP_END = "</s>";
-    const char* STOP_SYSTEM = "<|system|>";
-    const char* STOP_ASSISTANT = "<|assistant|>";
-    const char* STOP_END_CONV = "--EndConversation--";
-    const char* STOP_END_CTX = "--EndContext--";
-    const char* STOP_INST = "[/INST]";
-    const char* STOP_END_GEN = "<|end|>";
+    // Get Qwen special token IDs by tokenizing the special strings
+    llama_token token_im_end = -1, token_im_start = -1;
+    std::vector<llama_token> im_end_tokens(4), im_start_tokens(4);
+    int n_im_end = llama_tokenize(vocab, "<|im_end|>", 10, im_end_tokens.data(), im_end_tokens.size(), false, false);
+    int n_im_start = llama_tokenize(vocab, "<|im_start|>", 12, im_start_tokens.data(), im_start_tokens.size(), false, false);
+    if (n_im_end == 1) token_im_end = im_end_tokens[0];
+    if (n_im_start == 1) token_im_start = im_start_tokens[0];
+    
+    LOGI("Special token IDs - im_end: %d, im_start: %d", (int)token_im_end, (int)token_im_start);
     
     llama_token last_token = -1;
     int repeat_count = 0;
@@ -647,6 +644,13 @@ Java_com_projekt_1x_studybuddy_LlamaBridge_nativeGenerateStream(
         }
         
         llama_token new_token = llama_sampler_sample(g_state->sampler, g_state->ctx, -1);
+        
+        // Check for special tokens FIRST - before any string conversion
+        // These are single-token stop sequences in Qwen2.5
+        if (new_token == token_im_end || new_token == token_im_start) {
+            LOGI("Stopping at special token: %d", (int)new_token);
+            break;
+        }
         
         if (llama_vocab_is_eog(vocab, new_token)) {
             break;
@@ -676,7 +680,6 @@ Java_com_projekt_1x_studybuddy_LlamaBridge_nativeGenerateStream(
         std::string token_str(piece, n);
         
         // Replace BPE space character (U+2581) with regular space
-        // This fixes spacing issues with models like Qwen
         std::string display_str = token_str;
         size_t pos = 0;
         while ((pos = display_str.find('\xE2\x96\x81', pos)) != std::string::npos) {
@@ -684,69 +687,22 @@ Java_com_projekt_1x_studybuddy_LlamaBridge_nativeGenerateStream(
             pos += 1;
         }
         
-        std::string test_str = pending + token_str;
-        
-        // Check for complete stop sequences
-        bool should_stop = false;
-        if (test_str.find(STOP_IM_END) != std::string::npos ||
-            test_str.find(STOP_IM_START) != std::string::npos ||
-            test_str.find(STOP_END) != std::string::npos ||
-            test_str.find(STOP_SYSTEM) != std::string::npos ||
-            test_str.find(STOP_ASSISTANT) != std::string::npos ||
-            test_str.find(STOP_END_CONV) != std::string::npos ||
-            test_str.find(STOP_END_CTX) != std::string::npos ||
-            test_str.find(STOP_INST) != std::string::npos ||
-            test_str.find(STOP_END_GEN) != std::string::npos ||
-            test_str.find(STOP_USER) != std::string::npos ||
-            test_str.find(STOP_USER_LOWER) != std::string::npos) {
-            should_stop = true;
-        }
-        
-        if (should_stop) {
-            LOGI("STOP DETECTED in: '%s' (pending was: '%s')", test_str.c_str(), pending.c_str());
+        // Simple string-based safety check for custom end marker
+        // The special tokens (im_end, im_start, EOS) are already handled by token ID check above
+        if (display_str.find("--EndConversation--") != std::string::npos) {
+            LOGI("Stopping at custom end marker");
             break;
         }
         
-        // Check for potential stop sequence start (buffer if might be partial)
-        bool potential_stop = false;
-        const char* stop_patterns[] = {
-            STOP_IM_END, STOP_IM_START, STOP_USER, STOP_USER_LOWER, 
-            STOP_SYSTEM, STOP_ASSISTANT, STOP_END
-        };
-        const int num_patterns = 7;
-        
-        for (int p = 0; p < num_patterns && !potential_stop; p++) {
-            const char* pattern = stop_patterns[p];
-            int pattern_len = strlen(pattern);
-            for (int i = 1; i <= pattern_len && i <= (int)test_str.length(); i++) {
-                std::string suffix = test_str.substr(test_str.length() - i);
-                if (strncmp(pattern, suffix.c_str(), i) == 0) {
-                    potential_stop = true;
-                    break;
-                }
+        // Sanitize and emit
+        std::string sanitized = sanitizeForJNI(display_str);
+        if (!sanitized.empty()) {
+            jstring jTokenStr = env->NewStringUTF(sanitized.c_str());
+            if (jTokenStr) {
+                env->CallVoidMethod(callback, onTokenMethod, jTokenStr);
+                env->DeleteLocalRef(jTokenStr);
             }
-        }
-        
-        if (potential_stop) {
-            // Buffer this token - might be part of a stop sequence
-            LOGI("Buffering potential stop: '%s' + '%s' = '%s'", pending.c_str(), token_str.c_str(), test_str.c_str());
-            pending = test_str;
-        } else {
-            // Safe to emit - no stop sequence detected
-            LOGI("Emitting: pending='%s' display='%s'", pending.c_str(), display_str.c_str());
-            std::string to_emit = pending + display_str;
-            pending.clear();
-            
-            // Sanitize string for JNI (remove null bytes and invalid UTF-8)
-            std::string sanitized = sanitizeForJNI(to_emit);
-            if (!sanitized.empty()) {
-                jstring jTokenStr = env->NewStringUTF(sanitized.c_str());
-                if (jTokenStr) {
-                    env->CallVoidMethod(callback, onTokenMethod, jTokenStr);
-                    env->DeleteLocalRef(jTokenStr);
-                }
-                response.append(sanitized);
-            }
+            response.append(sanitized);
         }
         
         g_state->batch.n_tokens = 0;

@@ -645,10 +645,18 @@ Java_com_projekt_1x_studybuddy_LlamaBridge_nativeGenerateStream(
         
         llama_token new_token = llama_sampler_sample(g_state->sampler, g_state->ctx, -1);
         
+        // Debug: log first few tokens to see what IDs are being generated
+        if (n_gen < 20) {
+            char debug_piece[256];
+            int debug_n = llama_token_to_piece(vocab, new_token, debug_piece, sizeof(debug_piece), 0, false);
+            LOGI("Token %d: id=%d piece='%.*s'", n_gen, (int)new_token, debug_n, debug_piece);
+        }
+        
         // Check for special tokens FIRST - before any string conversion
         // These are single-token stop sequences in Qwen2.5
         if (new_token == token_im_end || new_token == token_im_start) {
-            LOGI("Stopping at special token: %d", (int)new_token);
+            LOGI("STOPPING at special token: id=%d (im_end=%d, im_start=%d)", 
+                 (int)new_token, (int)token_im_end, (int)token_im_start);
             break;
         }
         
@@ -687,10 +695,13 @@ Java_com_projekt_1x_studybuddy_LlamaBridge_nativeGenerateStream(
             pos += 1;
         }
         
-        // Simple string-based safety check for custom end marker
-        // The special tokens (im_end, im_start, EOS) are already handled by token ID check above
-        if (display_str.find("--EndConversation--") != std::string::npos) {
-            LOGI("Stopping at custom end marker");
+        // String-based stop sequence detection
+        // Check for partial matches to stop before emitting special tokens
+        if (display_str.find("<|im_end|>") != std::string::npos ||
+            display_str.find("|im_end|>") != std::string::npos ||
+            display_str.find("<|im_start|>") != std::string::npos ||
+            display_str.find("--EndConversation--") != std::string::npos) {
+            LOGI("Stopping at special token marker");
             break;
         }
         

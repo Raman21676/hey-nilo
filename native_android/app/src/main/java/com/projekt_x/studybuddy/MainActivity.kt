@@ -633,7 +633,8 @@ fun filterAiResponse(text: String): String {
     val endMarkers = listOf(
         "---EndConversation---", "--- End Conversation ---",
         "---End Context---", "--- End Context ---",
-        "[/s]", "</s>", "</s", "<|system|>", "<|assistant|>", "<|user|>"
+        "[/s]", "</s>", "</s", "<|system|>", "<|assistant|>", "<|user|>",
+        "|im_end|>", "<|im_end|>", "<|im_start|>assistant"
     )
     for (marker in endMarkers) {
         val index = filtered.indexOf(marker, ignoreCase = true)

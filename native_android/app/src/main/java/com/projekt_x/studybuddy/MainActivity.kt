@@ -869,13 +869,18 @@ fun UnifiedChatView(
         }
     }
     
-    // AUTO-SCROLL during streaming: Track last message content changes
-    val lastMessageContent = messages.lastOrNull()?.content ?: ""
-    LaunchedEffect(lastMessageContent) {
-        if (messages.isNotEmpty() && messages.lastOrNull()?.isStreaming == true) {
-            scope.launch {
-                listState.animateScrollToItem(messages.size - 1)
-            }
+    // AUTO-SCROLL during streaming: Use derivedStateOf for real-time updates
+    // This ensures scrolling happens immediately as content grows during generation
+    val isStreaming by remember { derivedStateOf { messages.lastOrNull()?.isStreaming == true } }
+    val lastMessageIndex by remember { derivedStateOf { messages.size - 1 } }
+    
+    LaunchedEffect(isStreaming, lastMessageIndex) {
+        if (isStreaming && lastMessageIndex >= 0) {
+            snapshotFlow { messages.lastOrNull()?.content?.length ?: 0 }
+                .collect { _ ->
+                    // Scroll immediately on every content change during streaming
+                    listState.scrollToItem(lastMessageIndex)
+                }
         }
     }
     

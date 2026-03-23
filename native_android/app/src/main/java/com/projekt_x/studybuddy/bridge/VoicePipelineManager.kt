@@ -48,14 +48,14 @@ class VoicePipelineManager(
         
         // WORKING CONFIG FROM MINI PROJECT - Fast response (2 seconds)
         // FIX: Balanced threshold for Samsung Tab A7 Lite
-        private const val VAD_THRESHOLD = 0.20f      // Balanced for Samsung Tab A7 Lite
-        private const val MIN_SPEECH_MS = 200L       // Minimum speech duration
+        private const val VAD_THRESHOLD = 0.25f      // Slightly less sensitive (was 0.20)
+        private const val MIN_SPEECH_MS = 1500L      // Minimum 1.5 seconds of speech (was 200ms - too short)
         // INCREASED: Wait longer for user to finish speaking (prevents cutting off mid-sentence)
-        private const val MIN_SILENCE_MS = 800L      // Wait 800ms silence before ending (was 350ms)
+        private const val MIN_SILENCE_MS = 1200L     // Wait 1.2s silence before ending (was 800ms)
         private const val PRE_SPEECH_BUFFER_MS = 800L // Capture word beginnings
         private const val MAX_SPEECH_MS = 10000L     // Force stop after 10 seconds
         // INCREASED: More trailing silence tolerance for natural pauses
-        private const val TRAILING_SILENCE_FRAMES = 15
+        private const val TRAILING_SILENCE_FRAMES = 25  // ~800ms of silence to end (was 15)
         
         // BUG FIX 2: Barge-in detection - requires sustained human speech
         // Motorbike horn (~200ms) won't trigger, human speech (~960ms+) will
@@ -940,6 +940,7 @@ class VoicePipelineManager(
      */
     fun forceStopAndProcess() {
         Log.i(TAG, "Force stop requested by user tap")
+        Log.i(TAG, "Current state: isCollectingSpeech=$isCollectingSpeech, speechBuffer=${speechBuffer.size}, preSpeechBuffer=${preSpeechBuffer.size}")
         
         // If we have collected speech, process it
         if (isCollectingSpeech && speechBuffer.size >= FRAME_SIZE) {
@@ -955,7 +956,9 @@ class VoicePipelineManager(
         if (preSpeechBuffer.isNotEmpty()) {
             val preSpeechSize = minOf(preSpeechBuffer.size, SAMPLE_RATE * 2) // Max 2 seconds of pre-speech
             combinedBuffer.addAll(preSpeechBuffer.takeLast(preSpeechSize))
-            Log.i(TAG, "Added $preSpeechSize pre-speech samples")
+            Log.i(TAG, "Added $preSpeechSize pre-speech samples (buffer had ${preSpeechBuffer.size})")
+        } else {
+            Log.w(TAG, "Pre-speech buffer is EMPTY!")
         }
         
         // Add any collected speech buffer
@@ -964,8 +967,10 @@ class VoicePipelineManager(
             Log.i(TAG, "Added ${speechBuffer.size} speech samples")
         }
         
-        // Process if we have enough audio (at least 0.5 seconds)
-        val minSamples = SAMPLE_RATE / 2 // 0.5 seconds minimum
+        // Process if we have enough audio (at least 0.3 seconds - reduced from 0.5)
+        val minSamples = SAMPLE_RATE * 3 / 10 // 0.3 seconds minimum
+        Log.i(TAG, "Combined buffer size: ${combinedBuffer.size} samples (need $minSamples)")
+        
         if (combinedBuffer.size >= minSamples) {
             Log.i(TAG, "Processing combined buffer: ${combinedBuffer.size} samples (${combinedBuffer.size * 1000 / SAMPLE_RATE}ms)")
             speechBuffer.clear()
@@ -975,7 +980,7 @@ class VoicePipelineManager(
         }
         
         // Otherwise just stop normally
-        Log.w(TAG, "No audio collected, stopping normally")
+        Log.w(TAG, "No audio collected (${combinedBuffer.size} samples), stopping normally")
         stopConversation()
     }
     

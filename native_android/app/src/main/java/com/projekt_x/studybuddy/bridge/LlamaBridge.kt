@@ -49,20 +49,15 @@ class LlamaBridge(private val context: Context) : BaseBridge() {
         private const val MODEL_SIZE_MB = 650L // TinyLlama size
         
         // Default system prompt (fallback)
-        // BUG FIX 3: Identity prompt - Nilo knows its name
-        const val DEFAULT_SYSTEM_PROMPT = """You are Nilo, a friendly personal AI assistant.
-Your name is Nilo. Always refer to yourself as Nilo or I am Nilo.
-Never say you are a computer program, AI assistant, or language model.
-When asked Who are you, respond with I am Nilo, your personal AI assistant.
-You are helpful, concise, and conversational.
-Keep responses short and natural. Responses will be spoken aloud."""
+        // SIMPLIFIED: Clear identity without confusing instructions
+        const val DEFAULT_SYSTEM_PROMPT = """You are Nilo, a friendly AI assistant. Be helpful and concise."""
         
-        // TinyLlama chat template tokens
-        const val SYSTEM_START = "<|system|>\n"
-        const val SYSTEM_END = "</s>"
-        const val USER_START = "<|user|>\n"
-        const val USER_END = "</s>"
-        const val ASSISTANT_START = "<|assistant|>\n"
+        // Qwen2.5 chat template tokens
+        const val SYSTEM_START = "<|im_start|>system\n"
+        const val SYSTEM_END = "<|im_end|>"
+        const val USER_START = "<|im_start|>user\n"
+        const val USER_END = "<|im_end|>"
+        const val ASSISTANT_START = "<|im_start|>assistant\n"
         
         // Native library loading
         init {

@@ -536,24 +536,24 @@ Java_com_projekt_1x_studybuddy_LlamaBridge_nativeGenerateStream(
     g_state->history.push_back({"user", std::string(prompt)});
     env->ReleaseStringUTFChars(userPrompt, prompt);
     
-    // Use TinyLlama chat template with proper system prompt
+    // Use Qwen2.5 chat template format
     std::string formatted;
     
     // Add system prompt if set
     if (!g_system_prompt.empty()) {
-        formatted += "<|system|>\n" + g_system_prompt + "</s>\n";
+        formatted += "<|im_start|>system\n" + g_system_prompt + "<|im_end|>\n";
     }
     
     // Add conversation history
     for (const auto& msg : g_state->history) {
         if (msg.first == "user") {
-            formatted += "<|user|>\n" + msg.second + "</s>\n";
+            formatted += "<|im_start|>user\n" + msg.second + "<|im_end|>\n";
         } else if (msg.first == "assistant") {
-            formatted += "<|assistant|>\n" + msg.second + "</s>\n";
+            formatted += "<|im_start|>assistant\n" + msg.second + "<|im_end|>\n";
         }
     }
     // Add assistant prefix for completion
-    formatted += "<|assistant|>\n";
+    formatted += "<|im_start|>assistant\n";
     
     LOGI("Prompt length: %zu chars", formatted.length());
     

@@ -906,10 +906,17 @@ fun UnifiedChatView(
                 isGenerating = false
                 metricsState.stopGeneration()
             } else if (response.token != null) {
-                // Simple accumulation without filtering during streaming
+                // Accumulate with filtering to remove special tokens during streaming
                 messages = messages.map { msg ->
                     if (msg.isStreaming) {
-                        msg.copy(content = msg.content + response.token)
+                        val newContent = msg.content + response.token
+                        // Apply lightweight filter during streaming
+                        val filtered = newContent
+                            .replace("<|im_end|>", "")
+                            .replace("|im_end|>", "")
+                            .replace("<|im_start|>", "")
+                            .replace("<|im_start|>assistant", "")
+                        msg.copy(content = filtered)
                     } else {
                         msg
                     }

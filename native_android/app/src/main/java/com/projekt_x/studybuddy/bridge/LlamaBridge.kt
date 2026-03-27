@@ -661,32 +661,34 @@ class LlamaBridge(private val context: Context) : BaseBridge() {
     }
 
     /**
-     * Add to history (stub for backward compatibility)
-     * TODO: Implement proper conversation history
+     * Add to history - calls native layer to maintain conversation context
      */
     fun addToHistory(role: String, content: String) {
         Log.d(TAG, "Adding to history - role: $role, content: ${content.take(50)}...")
-        // TODO: Implement conversation history management
+        try {
+            nativeAddToHistory(role, content)
+        } catch (e: Exception) {
+            Log.e(TAG, "Error adding to history: ${e.message}")
+        }
     }
 
     /**
      * Generate with Flow-based API (backward compatible)
-     * FIX: Now properly formats prompt with system prompt using TinyLlama template
+     * CRITICAL FIX: Pass raw user message to C++, which handles prompt formatting
      */
     fun generateStream(prompt: String, maxTokens: Int = 256): kotlinx.coroutines.flow.Flow<String> = 
         kotlinx.coroutines.flow.flow {
             val channel = kotlinx.coroutines.channels.Channel<String>(kotlinx.coroutines.channels.Channel.UNLIMITED)
             
-            // FIX: Build proper TinyLlama prompt with system prompt
-            val fullPrompt = buildTinyLlamaPrompt(
-                userMessage = prompt,
-                systemPrompt = currentSystemPrompt
-            )
+            // CRITICAL FIX: C++ code (nativeGenerateStream) expects RAW user message.
+            // It maintains conversation history and builds the formatted prompt itself.
+            // If we format it here, C++ will wrap it again, causing double-prompt corruption!
+            val rawPrompt = prompt
             
             // Launch generation in a separate coroutine so it doesn't block the flow
             val generationJob = scope.launch {
-                // FIX: Use fullPrompt instead of raw prompt
-                generate(fullPrompt, object : StreamingCallback {
+                // Pass raw prompt to native layer
+                generate(rawPrompt, object : StreamingCallback {
                     override fun onToken(token: String) {
                         channel.trySend(token)
                     }
@@ -790,6 +792,7 @@ class LlamaBridge(private val context: Context) : BaseBridge() {
     private external fun nativeStopGeneration()
     private external fun nativeSetSystemPrompt(prompt: String)
     private external fun nativeClearContext()
+    private external fun nativeAddToHistory(role: String, content: String)
     private external fun nativeGetContextSize(): Int
     private external fun nativeGetOptimalThreadCount(): Int
     private external fun nativeGetCurrentTemperature(): Float

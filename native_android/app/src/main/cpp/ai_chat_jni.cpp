@@ -559,9 +559,17 @@ Java_com_projekt_1x_studybuddy_LlamaBridge_nativeGenerateStream(
     std::lock_guard<std::mutex> lock(g_state->mutex);
     
     const char* prompt = env->GetStringUTFChars(userPrompt, nullptr);
+    std::string promptStr(prompt);
     const llama_vocab* vocab = llama_model_get_vocab(g_state->model);
     
-    g_state->history.push_back({"user", std::string(prompt)});
+    // SAFETY CHECK: Detect if prompt is already formatted (should be raw user message)
+    if (promptStr.find("<|im_start|>") != std::string::npos ||
+        promptStr.find("<|im_end|>") != std::string::npos) {
+        LOGW("WARNING: Prompt appears to be pre-formatted! Should be raw user message.");
+        LOGW("Prompt starts with: %.100s", promptStr.c_str());
+    }
+    
+    g_state->history.push_back({"user", promptStr});
     env->ReleaseStringUTFChars(userPrompt, prompt);
     
     // Limit history to last 1 exchange (2 messages max) to keep prompt short

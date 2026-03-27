@@ -19,6 +19,7 @@ extern "C" {
     JNIEXPORT jfloat JNICALL Java_com_projekt_1x_studybuddy_LlamaBridge_getCurrentTemperature(JNIEnv* env, jobject thiz);
     JNIEXPORT jlong JNICALL Java_com_projekt_1x_studybuddy_LlamaBridge_nativeOptimizeMemory(JNIEnv* env, jobject thiz);
     JNIEXPORT void JNICALL Java_com_projekt_1x_studybuddy_LlamaBridge_nativeClearContext(JNIEnv* env, jobject thiz);
+    JNIEXPORT void JNICALL Java_com_projekt_1x_studybuddy_LlamaBridge_nativeAddToHistory(JNIEnv* env, jobject thiz, jstring role, jstring content);
 }
 
 // Bridge package JNI wrappers - these call the original implementations
@@ -86,6 +87,13 @@ Java_com_projekt_1x_studybuddy_bridge_LlamaBridge_nativeClearContext(JNIEnv* env
     LOGI("Bridge nativeClearContext calling actual implementation");
     // Call the real implementation in ai_chat_jni.cpp
     Java_com_projekt_1x_studybuddy_LlamaBridge_nativeClearContext(env, thiz);
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_projekt_1x_studybuddy_bridge_LlamaBridge_nativeAddToHistory(JNIEnv* env, jobject thiz, jstring role, jstring content) {
+    LOGI("Bridge nativeAddToHistory calling actual implementation");
+    // Call the real implementation in ai_chat_jni.cpp
+    Java_com_projekt_1x_studybuddy_LlamaBridge_nativeAddToHistory(env, thiz, role, content);
 }
 
 extern "C" JNIEXPORT jint JNICALL

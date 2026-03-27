@@ -281,15 +281,25 @@ class LlamaBridge(private val context: Context) : BaseBridge() {
         Log.i(TAG, "Starting generation with maxTokens=$maxTokens")
         
         currentGenerationJob = scope.launch {
+            val fullResponse = StringBuilder()
+            var errorOccurred = false
+            var tokenCount = 0
+            val startTime = System.currentTimeMillis()
+            
             try {
-                val fullResponse = StringBuilder()
-                var errorOccurred = false
-                
                 val nativeCallback = object : GenerationCallback {
                     override fun onToken(token: String) {
                         if (isActive) {
                             fullResponse.append(token)
+                            tokenCount++
                             callback.onToken(token)
+                            
+                            // Safety check: if we've been generating too long, stop
+                            val elapsed = System.currentTimeMillis() - startTime
+                            if (elapsed > 60000) { // 60 second timeout
+                                Log.w(TAG, "Generation timeout after ${elapsed}ms, stopping")
+                                stopGeneration()
+                            }
                         }
                     }
                     
@@ -303,10 +313,18 @@ class LlamaBridge(private val context: Context) : BaseBridge() {
                     }
                 }
                 
-                nativeGenerateStream(prompt, maxTokens, nativeCallback)
+                // Add timeout to prevent infinite generation loops
+                withTimeout(60000) { // 60 second timeout
+                    nativeGenerateStream(prompt, maxTokens, nativeCallback)
+                }
                 
                 if (isActive && !errorOccurred) {
                     callback.onComplete(fullResponse.toString())
+                }
+            } catch (e: TimeoutCancellationException) {
+                Log.w(TAG, "Generation timed out after 60 seconds")
+                if (isActive) {
+                    callback.onComplete(fullResponse.toString() + "\n\n[Response timed out]")
                 }
             } catch (e: Exception) {
                 if (isActive) {
@@ -392,20 +410,23 @@ class LlamaBridge(private val context: Context) : BaseBridge() {
         val lowerMsg = userMessage.lowercase()
         return when {
             // Short conversational messages
-            userMessage.length < 20 -> 100
-            userMessage.length < 50 -> 150
+            userMessage.length < 20 -> 150
+            userMessage.length < 50 -> 200
+            
+            // List-type questions (names of, all planets, etc.)
+            lowerMsg.containsAny(listOf("name of all", "names of", "all the", "list", "planets", "countries", "cities")) -> 512
             
             // Explicit long content requests
-            lowerMsg.containsAny(listOf("write", "story", "code", "explain", "describe", "list")) -> 600
+            lowerMsg.containsAny(listOf("write", "story", "code", "explain", "describe", "detail")) -> 600
             
             // Questions that need detailed answers
             lowerMsg.containsAny(listOf("how to", "what is", "why", "compare", "difference")) -> 400
             
             // Medium questions
-            userMessage.length < 150 -> 250
+            userMessage.length < 150 -> 300
             
             // Default
-            else -> 350
+            else -> 400
         }
     }
     

@@ -1550,6 +1550,9 @@ class VoicePipelineManager(
                 // Clear LLM context for next utterance
                 llmBridge?.clearContext()
                 
+                // CRITICAL FIX: Reset listening timer so timeout doesn't fire immediately
+                listeningStartTime = System.currentTimeMillis()
+                
                 // Resume listening by changing state back to LISTENING
                 currentState = PipelineState.LISTENING
                 

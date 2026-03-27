@@ -44,6 +44,7 @@ import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -920,9 +921,9 @@ fun UnifiedChatView(
         vpm.onResponseUpdate = { text, isComplete ->
             // FIX: Filter out leaked memory tags and system prompt artifacts
             val filteredText = filterAiResponse(text)
-            // PROFESSOR FIX: Always REPLACE (not append) since we now get accumulated text
-            messages = messages.mapIndexed { index, msg ->
-                if (index == messages.size - 1 && !msg.isUser) {
+            // FIX: Find the last AI message that is streaming and update it
+            messages = messages.map { msg ->
+                if (!msg.isUser && msg.isStreaming) {
                     msg.copy(content = filteredText, isStreaming = !isComplete)
                 } else {
                     msg
@@ -931,6 +932,7 @@ fun UnifiedChatView(
             if (isComplete) {
                 isGenerating = false
                 metricsState.stopGeneration()
+                Log.d(TAG, "Response complete, streaming finished")
             }
         }
         vpm.onError = { error ->
@@ -1164,16 +1166,28 @@ fun UnifiedChatView(
                         shape = CircleShape
                     )
                     
-                    // Send button
-                    if (isGenerating) {
+                    // Send button - becomes STOP button during generation or TTS
+                    val isSpeaking = pipelineState == VoicePipelineManager.Companion.PipelineState.SPEAKING
+                    val canStop = isGenerating || isSpeaking
+                    
+                    if (canStop) {
                         IconButton(
                             onClick = {
-                                queue.cancel(messages.lastOrNull { it.isStreaming }?.id ?: "")
+                                // Stop generation
+                                if (isGenerating) {
+                                    queue.cancel(messages.lastOrNull { it.isStreaming }?.id ?: "")
+                                    isGenerating = false
+                                }
+                                // Stop voice pipeline (TTS and listening)
+                                if (isVoiceModeActive) {
+                                    voicePipelineManager?.stopConversation()
+                                }
                             }
                         ) {
-                            CircularProgressIndicator(
-                                modifier = Modifier.size(24.dp),
-                                strokeWidth = 2.dp
+                            Icon(
+                                imageVector = Icons.Default.Close,
+                                contentDescription = "Stop",
+                                tint = MaterialTheme.colorScheme.error
                             )
                         }
                     } else {

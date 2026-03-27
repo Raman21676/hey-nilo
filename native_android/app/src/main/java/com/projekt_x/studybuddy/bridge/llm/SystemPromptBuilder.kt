@@ -21,8 +21,10 @@ object SystemPromptBuilder {
      * @return Complete system prompt string
      */
     fun buildSystemPrompt(memoryManager: MemoryManager?, maxTokens: Int = 300): String {
-        // SIMPLIFIED: Just basic identity, no forced self-introduction
-        val identity = """You are Nilo, a helpful AI assistant. Be concise and natural."""
+        // BALANCED: Helpful responses without forced self-introduction
+        val identity = """You are Nilo, a helpful AI assistant. 
+Answer questions clearly and completely. Be concise but don't skip important details.
+Never start responses with "I am Nilo" unless asked who you are."""
         
         // Get memory context block (now in plain English, no tags)
         val memoryBlock = try {

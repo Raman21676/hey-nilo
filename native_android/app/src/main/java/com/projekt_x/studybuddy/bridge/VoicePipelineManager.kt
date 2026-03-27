@@ -539,13 +539,18 @@ class VoicePipelineManager(
         onAudioLevel?.invoke(audioLevel)
         
         // ========================================================================
-        // TIMEOUT CHECK: Auto-stop if listening too long without speech
+        // TIMEOUT CHECK: Auto-restart if listening too long without speech
         // ========================================================================
         if (currentState == PipelineState.LISTENING && !isCollectingSpeech) {
             val listeningDuration = System.currentTimeMillis() - listeningStartTime
             if (listeningDuration > MAX_LISTENING_TIME_MS) {
-                Log.w(TAG, "Listening timeout after ${listeningDuration}ms - no speech detected, stopping")
-                stopConversation()
+                Log.w(TAG, "Listening timeout after ${listeningDuration}ms - no speech detected")
+                // CRITICAL FIX: Restart listening instead of stopping conversation
+                // This allows user to try again without manually tapping
+                Log.i(TAG, "🎤 Auto-restarting listening for another attempt...")
+                scope.launch {
+                    restartListening()
+                }
                 return
             }
         }
@@ -900,7 +905,10 @@ class VoicePipelineManager(
                     }
                 } else {
                     Log.w(TAG, "STT returned empty transcription (${durationMs}ms audio was likely noise)")
-                    currentState = PipelineState.LISTENING
+                    // CRITICAL FIX: Restart listening automatically when no speech detected
+                    // This prevents the app from getting stuck in a non-responsive state
+                    Log.i(TAG, "🎤 No speech detected - automatically restarting listening...")
+                    restartListening()
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "STT processing failed", e)

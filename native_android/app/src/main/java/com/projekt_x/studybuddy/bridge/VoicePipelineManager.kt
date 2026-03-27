@@ -486,7 +486,10 @@ class VoicePipelineManager(
             // Start audio recording with VAD processing
             val recordingStarted = audioRecorder?.startRecording(object : SimpleAudioRecorder.AudioCallback {
                 override fun onAudioData(audioData: ShortArray) {
-                    if (!isRunning.get()) return
+                    if (!isRunning.get()) {
+                        Log.w(TAG, "BLOCKED: isRunning=false, audio ignored")
+                        return
+                    }
                     
                     // DEBUG LOG - Critical for debugging
                     Log.d(TAG, "Received audio frame: ${audioData.size} samples")
@@ -502,8 +505,7 @@ class VoicePipelineManager(
             }) ?: false
             
             if (!recordingStarted) {
-                Log.e(TAG, "Failed to start recording")
-                onError?.invoke("Failed to start recording")
+                Log.e(TAG, "CRITICAL: Failed to start recording - setting isRunning=false")
                 isRunning.set(false)
                 return@launch
             }
@@ -996,7 +998,7 @@ class VoicePipelineManager(
     fun stopConversation() {
         if (!isRunning.get()) return
         
-        Log.i(TAG, "Stopping voice conversation...")
+        Log.w(TAG, "CRITICAL: stopConversation() called - setting isRunning=false")
         isRunning.set(false)
         currentState = PipelineState.IDLE
         
@@ -1065,8 +1067,8 @@ class VoicePipelineManager(
             try {
                 // Clear previous response text when NEW user query starts
                 fullResponseText.clear()
-                // Clear LLM context so previous conversation doesn't bleed into new response
-                llmBridge?.clearContext()
+                // NOTE: Don't clear context here - it was cleared after previous response
+                // This allows the model to maintain context for natural conversation
                 // Reset streaming token filter state
                 streamingTokenBuffer.clear()
                 isCollectingImEnd = false
@@ -1146,6 +1148,13 @@ class VoicePipelineManager(
                                     Log.w(TAG, "Failed to save conversation or extract memory: ${e.message}")
                                 }
                             }
+                            
+                            // CRITICAL FIX: Clear LLM context after response to prevent corruption for next turn
+                            // BUT only if we're going to continue listening (not if user closed voice mode)
+                            if (isRunning.get()) {
+                                llmBridge?.clearContext()
+                                Log.i(TAG, "LLM context cleared after response for clean next turn")
+                            }
                         }
                         response.isStreaming -> {
                             tokenCount++
@@ -1211,8 +1220,7 @@ class VoicePipelineManager(
             try {
                 // Clear previous response text when NEW user query starts
                 fullResponseText.clear()
-                // Clear LLM context so previous conversation doesn't bleed into new response
-                llmBridge?.clearContext()
+                // NOTE: Don't clear context here - it was cleared after previous response
                 // Reset streaming token filter state
                 streamingTokenBuffer.clear()
                 isCollectingImEnd = false
@@ -1316,6 +1324,13 @@ class VoicePipelineManager(
                                     } catch (e: Exception) {
                                         Log.w(TAG, "Failed to save conversation or extract memory: ${e.message}")
                                     }
+                                }
+                                
+                                // CRITICAL FIX: Clear LLM context after response to prevent corruption for next turn
+                                // BUT only if we're going to continue listening
+                                if (isRunning.get()) {
+                                    llmBridge?.clearContext()
+                                    Log.i(TAG, "LLM context cleared after response for clean next turn")
                                 }
                                 
                                 // NOTE: Don't clear fullResponseText here - it's cleared when NEW user speech starts
@@ -1552,6 +1567,12 @@ class VoicePipelineManager(
                 
                 // CRITICAL FIX: Reset listening timer so timeout doesn't fire immediately
                 listeningStartTime = System.currentTimeMillis()
+                
+                // CRITICAL FIX: Ensure isRunning is true for next listening cycle
+                if (!isRunning.get()) {
+                    Log.w(TAG, "CRITICAL: isRunning was false, setting to true")
+                    isRunning.set(true)
+                }
                 
                 // Resume listening by changing state back to LISTENING
                 currentState = PipelineState.LISTENING

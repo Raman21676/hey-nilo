@@ -564,9 +564,9 @@ Java_com_projekt_1x_studybuddy_LlamaBridge_nativeGenerateStream(
     g_state->history.push_back({"user", std::string(prompt)});
     env->ReleaseStringUTFChars(userPrompt, prompt);
     
-    // Limit history to last 3 exchanges (6 messages max) to keep prompt short
-    // This prevents the prompt from growing forever and slowing down generation
-    const size_t MAX_HISTORY_PAIRS = 3;  // Keep only last 3 back-and-forths
+    // Limit history to last 1 exchange (2 messages max) to keep prompt short
+    // TinyLlama 1.1B works best with short, focused prompts
+    const size_t MAX_HISTORY_PAIRS = 1;  // Keep only last 1 back-and-forth
     const size_t MAX_HISTORY_SIZE = MAX_HISTORY_PAIRS * 2;  // user + assistant each
     while (g_state->history.size() > MAX_HISTORY_SIZE) {
         g_state->history.erase(g_state->history.begin());
@@ -594,6 +594,8 @@ Java_com_projekt_1x_studybuddy_LlamaBridge_nativeGenerateStream(
     formatted += "<|im_start|>assistant\n";
     
     LOGI("Prompt length: %zu chars", formatted.length());
+    // DEBUG: Log first 300 chars of prompt to see what's being sent
+    LOGI("PROMPT DEBUG: %.300s", formatted.c_str());
     
     g_state->current_pos = 0;
     g_state->batch.n_tokens = 0;
@@ -950,4 +952,39 @@ Java_com_projekt_1x_studybuddy_LlamaBridge_nativeOptimizeMemory(JNIEnv* env, job
          memoryBefore, memoryAfter, memoryFreed);
     
     return memoryFreed;
+}
+
+// ============================================
+// CONTEXT CLEARING - CRITICAL FOR MULTI-TURN
+// ============================================
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_projekt_1x_studybuddy_LlamaBridge_nativeClearContext(
+    JNIEnv* env,
+    jobject /*thiz*/
+) {
+    if (!g_state || !g_state->ctx) {
+        LOGW("Cannot clear context - not initialized");
+        return;
+    }
+    
+    std::lock_guard<std::mutex> lock(g_state->mutex);
+    
+    // Reset position to start fresh - this effectively clears the KV cache
+    // as new tokens will overwrite old ones
+    g_state->current_pos = 0;
+    LOGI("Current position reset to 0");
+    
+    // Clear conversation history
+    size_t old_size = g_state->history.size();
+    g_state->history.clear();
+    LOGI("Conversation history cleared (was %zu messages)", old_size);
+    
+    // Clear any pending batch tokens
+    if (g_state->batch.n_tokens > 0) {
+        g_state->batch.n_tokens = 0;
+        LOGI("Batch tokens cleared");
+    }
+    
+    LOGI("Context fully cleared for next turn");
 }

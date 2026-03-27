@@ -163,6 +163,7 @@ class SimpleAudioRecorder(
                             // Only process full frames
                             if (frame.size == FRAME_SIZE) {
                                 // Pass raw audio - VOICE_RECOGNITION provides hardware AGC
+                                Log.d(TAG, "CALLBACK: About to call onAudioData")
                                 withContext(Dispatchers.Main) {
                                     callback.onAudioData(frame)
                                 }

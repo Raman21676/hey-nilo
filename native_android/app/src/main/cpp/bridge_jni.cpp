@@ -18,6 +18,7 @@ extern "C" {
     JNIEXPORT jint JNICALL Java_com_projekt_1x_studybuddy_LlamaBridge_getOptimalThreadCount(JNIEnv* env, jobject thiz);
     JNIEXPORT jfloat JNICALL Java_com_projekt_1x_studybuddy_LlamaBridge_getCurrentTemperature(JNIEnv* env, jobject thiz);
     JNIEXPORT jlong JNICALL Java_com_projekt_1x_studybuddy_LlamaBridge_nativeOptimizeMemory(JNIEnv* env, jobject thiz);
+    JNIEXPORT void JNICALL Java_com_projekt_1x_studybuddy_LlamaBridge_nativeClearContext(JNIEnv* env, jobject thiz);
 }
 
 // Bridge package JNI wrappers - these call the original implementations
@@ -82,8 +83,9 @@ Java_com_projekt_1x_studybuddy_bridge_LlamaBridge_nativeSetSystemPrompt(JNIEnv* 
 
 extern "C" JNIEXPORT void JNICALL
 Java_com_projekt_1x_studybuddy_bridge_LlamaBridge_nativeClearContext(JNIEnv* env, jobject thiz) {
-    LOGI("Bridge nativeClearContext called");
-    // TODO: Implement or call existing if available
+    LOGI("Bridge nativeClearContext calling actual implementation");
+    // Call the real implementation in ai_chat_jni.cpp
+    Java_com_projekt_1x_studybuddy_LlamaBridge_nativeClearContext(env, thiz);
 }
 
 extern "C" JNIEXPORT jint JNICALL

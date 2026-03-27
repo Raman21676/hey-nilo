@@ -226,11 +226,18 @@ class InferenceQueue private constructor(
             val fullResponse = responseBuilder.toString()
             Log.i(TAG, "Full response collected: ${fullResponse.length} chars")
             
-            if (fullResponse.isNotBlank()) {
-                bridge.addToHistory("assistant", fullResponse)
-                Log.i(TAG, "Added assistant response to history: ${fullResponse.take(50)}...")
+            // CRITICAL FIX: Filter special tokens before saving to history
+            val filteredResponse = fullResponse
+                .replace("<|im_end|>", "")
+                .replace("<|im_start|>", "")
+                .replace("</s>", "")
+                .trim()
+            
+            if (filteredResponse.isNotBlank()) {
+                bridge.addToHistory("assistant", filteredResponse)
+                Log.i(TAG, "Added assistant response to history: ${filteredResponse.take(50)}...")
             } else {
-                Log.w(TAG, "Empty response for ${request.id}")
+                Log.w(TAG, "Empty response for ${request.id} (original: '${fullResponse.take(30)}')")
             }
             
             // Mark complete

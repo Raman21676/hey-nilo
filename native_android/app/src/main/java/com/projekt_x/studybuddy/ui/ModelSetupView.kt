@@ -217,12 +217,7 @@ fun ModelSetupView(
                                                 val config = bridge.detectDeviceConfig()
                                                 val success = bridge.loadModel(modelFile.absolutePath, config)
                                                 if (success) {
-                                                    // Use SystemPromptBuilder for consistent identity
-                                                    val systemPrompt = com.projekt_x.studybuddy.bridge.llm.SystemPromptBuilder.buildSystemPrompt(
-                                                        memoryManager = null, // Will be set later in MainActivity
-                                                        maxTokens = 300
-                                                    )
-                                                    bridge.setSystemPrompt(systemPrompt)
+                                                    bridge.setSystemPrompt(com.projekt_x.studybuddy.bridge.llm.SystemPromptBuilder.buildSystemPrompt())
                                                     onModelLoaded()
                                                 } else {
                                                     onError("Failed to load model")

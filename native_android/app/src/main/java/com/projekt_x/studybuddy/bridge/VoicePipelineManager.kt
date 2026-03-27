@@ -118,6 +118,10 @@ class VoicePipelineManager(
     @Volatile
     private var isLLMResponseComplete = false  // NEW: Signal when LLM is done
     
+    // Token filtering buffer for streaming <|im_end|> detection
+    private val streamingTokenBuffer = StringBuilder()
+    private var isCollectingImEnd = false
+    
     // LLM Provider job (for cancellation during barge-in)
     private var llmProviderJob: Job? = null
     
@@ -1063,6 +1067,9 @@ class VoicePipelineManager(
                 fullResponseText.clear()
                 // Clear LLM context so previous conversation doesn't bleed into new response
                 llmBridge?.clearContext()
+                // Reset streaming token filter state
+                streamingTokenBuffer.clear()
+                isCollectingImEnd = false
                 
                 // BUG FIX 5: Use shared system prompt builder for consistent identity + memory
                 val fullSystemPrompt = SystemPromptBuilder.buildSystemPrompt(memoryManager, maxTokens = 300)
@@ -1158,11 +1165,14 @@ class VoicePipelineManager(
                             }
                             fullResponseText.append(token)
                             
-                            // Add to TTS buffer (filter special tokens)
+                            // Add to TTS buffer (filter special tokens AND streaming partials)
                             if (token.isNotBlank()) {
-                                val filteredToken = filterTTSText(token)
-                                if (filteredToken.isNotBlank()) {
-                                    ttsTextBuffer.append(filteredToken)
+                                val streamingFiltered = filterStreamingTokenForTTS(token)
+                                if (streamingFiltered != null && streamingFiltered.isNotBlank()) {
+                                    val filteredToken = filterTTSText(streamingFiltered)
+                                    if (filteredToken.isNotBlank()) {
+                                        ttsTextBuffer.append(filteredToken)
+                                    }
                                 }
                             }
                             
@@ -1203,6 +1213,9 @@ class VoicePipelineManager(
                 fullResponseText.clear()
                 // Clear LLM context so previous conversation doesn't bleed into new response
                 llmBridge?.clearContext()
+                // Reset streaming token filter state
+                streamingTokenBuffer.clear()
+                isCollectingImEnd = false
                 
                 // BUG FIX 5: Use shared system prompt builder for consistent identity + memory
                 val fullSystemPrompt = SystemPromptBuilder.buildSystemPrompt(memoryManager, maxTokens = 300)
@@ -1313,12 +1326,15 @@ class VoicePipelineManager(
                                 currentState = PipelineState.SPEAKING
                                 fullResponseText.append(response.token)
                                 
-                                // Accumulate text for TTS (filter special tokens)
+                                // Accumulate text for TTS (filter special tokens AND streaming partials)
                                 val token = response.token
                                 if (token.isNotBlank()) {
-                                    val filteredToken = filterTTSText(token)
-                                    if (filteredToken.isNotBlank()) {
-                                        ttsTextBuffer.append(filteredToken)
+                                    val streamingFiltered = filterStreamingTokenForTTS(token)
+                                    if (streamingFiltered != null && streamingFiltered.isNotBlank()) {
+                                        val filteredToken = filterTTSText(streamingFiltered)
+                                        if (filteredToken.isNotBlank()) {
+                                            ttsTextBuffer.append(filteredToken)
+                                        }
                                     }
                                 }
                                 
@@ -1647,6 +1663,60 @@ class VoicePipelineManager(
         filtered = filtered.replace(Regex("\\s+"), " ")
         
         return filtered.trim()
+    }
+    
+    /**
+     * Filter individual streaming tokens for TTS.
+     * The model generates <|im_end|> as separate tokens: '<', '|', 'im', '_end', '|', '>'
+     * This buffers and detects these patterns, returning null for partial tokens.
+     */
+    private fun filterStreamingTokenForTTS(token: String): String? {
+        // Quick check: if token contains complete marker, remove it
+        if (token.contains("<|im_end|>") || token.contains("<|im_start|>")) {
+            return token.replace("<|im_end|>", "").replace("<|im_start|>", "")
+        }
+        
+        // Check for individual components of <|im_end|>
+        val trimmed = token.trim()
+        
+        // Pattern detection: <|im_end|> breaks into: '<', '|', 'im', '_end', '|', '>'
+        when {
+            trimmed == "<" -> {
+                streamingTokenBuffer.clear()
+                streamingTokenBuffer.append("<")
+                isCollectingImEnd = true
+                return null
+            }
+            isCollectingImEnd && trimmed == "|" && streamingTokenBuffer.toString() == "<" -> {
+                streamingTokenBuffer.append("|")
+                return null
+            }
+            isCollectingImEnd && trimmed == "im" && streamingTokenBuffer.toString() == "<|" -> {
+                streamingTokenBuffer.append("im")
+                return null
+            }
+            isCollectingImEnd && trimmed == "_end" && streamingTokenBuffer.toString() == "<|im" -> {
+                streamingTokenBuffer.append("_end")
+                return null
+            }
+            isCollectingImEnd && trimmed == "|" && streamingTokenBuffer.toString() == "<|im_end" -> {
+                streamingTokenBuffer.append("|")
+                return null
+            }
+            isCollectingImEnd && trimmed == ">" && streamingTokenBuffer.toString() == "<|im_end|" -> {
+                streamingTokenBuffer.clear()
+                isCollectingImEnd = false
+                return null
+            }
+            isCollectingImEnd -> {
+                val bufferContent = streamingTokenBuffer.toString()
+                streamingTokenBuffer.clear()
+                isCollectingImEnd = false
+                return bufferContent + token
+            }
+        }
+        
+        return token
     }
     
     private fun hasCompleteSentence(text: String): Boolean {

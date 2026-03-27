@@ -758,6 +758,77 @@ fun filterAiResponse(text: String): String {
     return filtered.trim()
 }
 
+// Buffer for detecting special token patterns during streaming
+private val streamingTokenBuffer = StringBuilder()
+private var isCollectingImEnd = false
+
+/**
+ * Filter individual streaming tokens to prevent partial <|im_end|> from showing.
+ * The model generates <|im_end|> as separate tokens: '<', '|', 'im', '_end', '|', '>'
+ * This function buffers and detects these patterns, returning null for partial tokens.
+ * 
+ * @param token The incoming token string
+ * @return The token to display (or null if it should be suppressed)
+ */
+fun filterStreamingTokenForDisplay(token: String): String? {
+    // Quick check: if token contains complete marker, remove it
+    if (token.contains("<|im_end|>") || token.contains("<|im_start|>")) {
+        return token.replace("<|im_end|>", "").replace("<|im_start|>", "")
+    }
+    
+    // Check for individual components of <|im_end|>
+    val trimmed = token.trim()
+    
+    // Pattern detection: <|im_end|> breaks into: '<', '|', 'im', '_end', '|', '>'
+    when {
+        // Start of pattern
+        trimmed == "<" -> {
+            streamingTokenBuffer.clear()
+            streamingTokenBuffer.append("<")
+            isCollectingImEnd = true
+            return null // Suppress this token
+        }
+        // Continue pattern after '<'
+        isCollectingImEnd && trimmed == "|" && streamingTokenBuffer.toString() == "<" -> {
+            streamingTokenBuffer.append("|")
+            return null
+        }
+        // Continue pattern after '<|'
+        isCollectingImEnd && trimmed == "im" && streamingTokenBuffer.toString() == "<|" -> {
+            streamingTokenBuffer.append("im")
+            return null
+        }
+        // Continue pattern after '<|im'
+        isCollectingImEnd && trimmed == "_end" && streamingTokenBuffer.toString() == "<|im" -> {
+            streamingTokenBuffer.append("_end")
+            return null
+        }
+        // Continue pattern after '<|im_end'
+        isCollectingImEnd && trimmed == "|" && streamingTokenBuffer.toString() == "<|im_end" -> {
+            streamingTokenBuffer.append("|")
+            return null
+        }
+        // End of pattern '<|im_end|>'
+        isCollectingImEnd && trimmed == ">" && streamingTokenBuffer.toString() == "<|im_end|" -> {
+            // Complete pattern detected, reset and suppress
+            streamingTokenBuffer.clear()
+            isCollectingImEnd = false
+            return null
+        }
+        // If we were collecting but got something unexpected, flush buffer and return current
+        isCollectingImEnd -> {
+            val bufferContent = streamingTokenBuffer.toString()
+            streamingTokenBuffer.clear()
+            isCollectingImEnd = false
+            // Return buffered content + current token
+            return bufferContent + token
+        }
+    }
+    
+    // Normal token, return as-is
+    return token
+}
+
 /**
  * Unified Chat View - Like ChatGPT/Gemini
  * Combines text chat and voice mode in one interface
@@ -951,12 +1022,15 @@ fun UnifiedChatView(
                 isGenerating = false
                 metricsState.stopGeneration()
             } else if (response.token != null) {
-                // Simple accumulation during streaming - C++ stops at right token now
-                messages = messages.map { msg ->
-                    if (msg.isStreaming) {
-                        msg.copy(content = msg.content + response.token)
-                    } else {
-                        msg
+                // Filter individual tokens during streaming to prevent <|im_end|> from showing
+                val filteredToken = filterStreamingTokenForDisplay(response.token)
+                if (filteredToken != null) {
+                    messages = messages.map { msg ->
+                        if (msg.isStreaming) {
+                            msg.copy(content = msg.content + filteredToken)
+                        } else {
+                            msg
+                        }
                     }
                 }
                 metricsState.onTokenGenerated()

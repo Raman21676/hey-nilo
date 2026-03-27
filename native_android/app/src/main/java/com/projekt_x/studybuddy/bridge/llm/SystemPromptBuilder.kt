@@ -21,30 +21,21 @@ object SystemPromptBuilder {
      * @return Complete system prompt string
      */
     fun buildSystemPrompt(memoryManager: MemoryManager?, maxTokens: Int = 300): String {
-        // FIX: Stronger identity prompt - AVOID special characters that confuse TinyLlama
-        val identity = """You are Nilo, a friendly personal AI assistant.
-Your name is Nilo. Always refer to yourself as Nilo or I am Nilo.
-Never say you are a computer program, AI assistant, or language model.
-When asked Who are you, respond with I am Nilo, your personal AI assistant.
-You are helpful, concise, and conversational.
-Keep responses short and natural. Responses will be spoken aloud.
-IMPORTANT: Never output tags like [MEMORY], [/MEMORY], </s>, <|im_end|>, or markers like END OF MEMORY, START OF MEMORY. Just respond naturally."""
+        // SIMPLIFIED: Just basic identity, no forced self-introduction
+        val identity = """You are Nilo, a helpful AI assistant. Be concise and natural."""
         
         // Get memory context block (now in plain English, no tags)
         val memoryBlock = try {
             memoryManager?.buildContextBlock(maxTokens) ?: ""
         } catch (e: Exception) {
-            // If memory fails, continue without it
             ""
         }
         
         return if (memoryBlock.isBlank()) {
-            // No memory context, just return identity
             identity
         } else {
-            // Combine identity with memory context in plain English
-            // NO special tags or markers that could be echoed
-            "$identity\n\nHere is what you know about the user: $memoryBlock"
+            // Combine identity with memory context
+            "$identity\n\nUser info: $memoryBlock"
         }
     }
     

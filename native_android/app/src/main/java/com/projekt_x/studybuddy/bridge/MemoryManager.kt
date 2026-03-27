@@ -104,68 +104,41 @@ class MemoryManager(
     }
 
     /**
-     * Build context block for LLM prompt injection
-     * Ensures output is ≤ maxTokens (default 300)
-     * 
-     * Format:
-     * [MEMORY]
-     * User: {name}. {age}. {location}.
-     * Facts: {3 facts}
-     * People: {3 relationships}
-     * Pending: {3 reminders}
-     * Last session: {summary}
-     * [/MEMORY]
+     * Build context block for LLM prompt injection - SIMPLIFIED VERSION
+     * Only includes basic user profile info (name, age, nickname, gender, occupation)
+     * Format is plain English - NO tags that the LLM can echo
      * 
      * @param maxTokens Maximum tokens allowed (default 300)
-     * @return Formatted context block string
+     * @return Plain English user context string
      */
     fun buildContextBlock(maxTokens: Int = MemoryDefaults.MAX_CONTEXT_TOKENS): String {
         ensureInitialized()
 
         val parts = mutableListOf<String>()
-        parts.add("[MEMORY]")
 
-        // User info line
-        val userInfo = buildUserInfoLine()
-        if (userInfo.isNotBlank()) {
-            parts.add("User: $userInfo")
+        // Only include basic user profile information in plain English
+        // NO tags like [MEMORY], NO markers like --- End Context ---
+        // This prevents the LLM from echoing these markers in its response
+        
+        userProfile.identity.name?.let { parts.add("The user's name is $it.") }
+        userProfile.identity.preferredName?.let { parts.add("They prefer to be called $it.") }
+        userProfile.getAgeString()?.let { parts.add("They are $it.") }
+        userProfile.identity.gender?.let { parts.add("Their gender is $it.") }
+        userProfile.occupation.title?.let { 
+            val company = userProfile.occupation.company?.let { c -> " at $c" } ?: ""
+            parts.add("They work as $it$company.") 
+        }
+        userProfile.contact.city?.let { 
+            val country = userProfile.contact.country?.let { c -> ", $c" } ?: ""
+            parts.add("They live in $it$country.") 
         }
 
-        // Facts (max 3)
-        val facts = userProfile.facts.take(MemoryConfig.MAX_FACTS_IN_CONTEXT)
-        if (facts.isNotEmpty()) {
-            parts.add("Facts: ${facts.joinToString(". ")}")
+        // Join with spaces to create a natural sentence flow
+        if (parts.isEmpty()) {
+            return ""
         }
 
-        // People (max 3)
-        val people = relationships
-            .filter { it.name != null }
-            .take(MemoryConfig.MAX_PEOPLE_IN_CONTEXT)
-        if (people.isNotEmpty()) {
-            val peopleStr = people.joinToString(". ") { it.formatForContext() }
-            parts.add("People: $peopleStr")
-        }
-
-        // Pending reminders (max 3)
-        val pendingReminders = reminders.getPending()
-            .take(MemoryConfig.MAX_REMINDERS_IN_CONTEXT)
-        if (pendingReminders.isNotEmpty()) {
-            val remindersStr = pendingReminders.joinToString(" · ") { it.formatForContext() }
-            parts.add("Pending: $remindersStr")
-        }
-
-        // Last session (optional)
-        if (MemoryConfig.INCLUDE_LAST_SESSION) {
-            val lastSession = getLastSessionSummary()
-            if (lastSession.isNotBlank()) {
-                parts.add("Last session: $lastSession")
-            }
-        }
-
-        parts.add("--- End Context ---")
-
-        // Join and truncate to token limit
-        var result = parts.joinToString("\n")
+        var result = parts.joinToString(" ")
         result = MemoryDefaults.truncateToTokens(result, maxTokens)
 
         return result

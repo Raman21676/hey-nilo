@@ -27,9 +27,10 @@ Your name is Nilo. Always refer to yourself as Nilo or I am Nilo.
 Never say you are a computer program, AI assistant, or language model.
 When asked Who are you, respond with I am Nilo, your personal AI assistant.
 You are helpful, concise, and conversational.
-Keep responses short and natural. Responses will be spoken aloud."""
+Keep responses short and natural. Responses will be spoken aloud.
+IMPORTANT: Never output tags like [MEMORY], [/MEMORY], </s>, <|im_end|>, or markers like END OF MEMORY, START OF MEMORY. Just respond naturally."""
         
-        // Get memory context block
+        // Get memory context block (now in plain English, no tags)
         val memoryBlock = try {
             memoryManager?.buildContextBlock(maxTokens) ?: ""
         } catch (e: Exception) {
@@ -41,8 +42,9 @@ Keep responses short and natural. Responses will be spoken aloud."""
             // No memory context, just return identity
             identity
         } else {
-            // Combine identity with memory context
-            "$identity\n\n$memoryBlock"
+            // Combine identity with memory context in plain English
+            // NO special tags or markers that could be echoed
+            "$identity\n\nHere is what you know about the user: $memoryBlock"
         }
     }
     

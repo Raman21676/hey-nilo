@@ -182,7 +182,10 @@ class VoicePipelineManager(
         set(value) {
             field = value
             Log.i(TAG, "State changed: $value")
-            onStateChange?.invoke(value)
+            // Always notify UI on Main thread regardless of which thread set the state
+            scope.launch(Dispatchers.Main.immediate) {
+                onStateChange?.invoke(value)
+            }
         }
     
     /**
@@ -868,7 +871,7 @@ class VoicePipelineManager(
         currentState = PipelineState.TRANSCRIBING
         
         // Process with STT
-        scope.launch {
+        scope.launch(Dispatchers.IO) {
             try {
                 Log.d("TIMING", "2. STT start at: ${System.currentTimeMillis()}")
                 val sttProcessingStart = System.currentTimeMillis()
@@ -1058,6 +1061,8 @@ class VoicePipelineManager(
             try {
                 // Clear previous response text when NEW user query starts
                 fullResponseText.clear()
+                // Clear LLM context so previous conversation doesn't bleed into new response
+                llmBridge?.clearContext()
                 
                 // BUG FIX 5: Use shared system prompt builder for consistent identity + memory
                 val fullSystemPrompt = SystemPromptBuilder.buildSystemPrompt(memoryManager, maxTokens = 300)
@@ -1077,7 +1082,8 @@ class VoicePipelineManager(
                     systemPrompt = fullSystemPrompt,
                     memoryContext = null, // Already included in systemPrompt via SystemPromptBuilder
                     maxTokens = 256,
-                    stream = true
+                    stream = true,
+                    stopSequences = listOf("<|im_end|>", "</s>", "<|endoftext|>", "<|user|>", "User:")
                 )
                 
                 // Stream response
@@ -1195,6 +1201,8 @@ class VoicePipelineManager(
             try {
                 // Clear previous response text when NEW user query starts
                 fullResponseText.clear()
+                // Clear LLM context so previous conversation doesn't bleed into new response
+                llmBridge?.clearContext()
                 
                 // BUG FIX 5: Use shared system prompt builder for consistent identity + memory
                 val fullSystemPrompt = SystemPromptBuilder.buildSystemPrompt(memoryManager, maxTokens = 300)
@@ -1594,10 +1602,22 @@ class VoicePipelineManager(
     
     /**
      * Filter TTS text to remove special tokens that should not be spoken
-     * Removes <|im_end|>, <|im_start|>, and other template tokens
+     * Removes <|im_end|>, <|im_start|>, memory tags, and other template tokens
      */
     private fun filterTTSText(text: String): String {
+        if (text.isBlank()) return ""
+        
         var filtered = text
+        
+        // Remove memory-related text patterns (case insensitive)
+        filtered = filtered.replace(Regex("(?i)\\[?MEMORY\\]?"), "")
+        filtered = filtered.replace(Regex("(?i)END\\s*OF\\s*MEMORY"), "")
+        filtered = filtered.replace(Regex("(?i)START\\s*OF\\s*MEMORY"), "")
+        filtered = filtered.replace(Regex("(?i)<--\\s*START"), "")
+        filtered = filtered.replace(Regex("(?i)<--\\s*END"), "")
+        filtered = filtered.replace(Regex("(?i)---\\s*End\\s*Context\\s*---"), "")
+        filtered = filtered.replace(Regex("(?i)---\\s*Memory\\s*Context\\s*---"), "")
+        filtered = filtered.replace(Regex("(?i)\\[/MEMORY\\]"), "")
         
         // Remove special Qwen2.5 chat template tokens
         filtered = filtered.replace("<|im_end|>", "")
@@ -1618,6 +1638,10 @@ class VoicePipelineManager(
         // Remove other special tokens
         filtered = filtered.replace("</s>", "")
         filtered = filtered.replace("<s>", "")
+        
+        // Clean up any remaining angle brackets and dashes that might be spoken
+        filtered = filtered.replace(Regex("<[^>]*>"), " ")
+        filtered = filtered.replace(Regex("-{3,}"), " ")  // 3+ dashes
         
         // Clean up whitespace
         filtered = filtered.replace(Regex("\\s+"), " ")

@@ -659,7 +659,7 @@ fun filterAiResponse(text: String): String {
         }
     }
     
-    // STEP 2: Remove ALL special tokens
+    // STEP 2: Remove ALL special tokens AND memory-related noise
     filtered = filtered.replace(Regex("(?i)\\[MEMORY\\]"), " ")
     filtered = filtered.replace(Regex("(?i)\\[/MEMORY\\]"), " ")
     filtered = filtered.replace(Regex("(?i)---\\s*Memory Context\\s*---"), " ")
@@ -667,6 +667,16 @@ fun filterAiResponse(text: String): String {
     filtered = filtered.replace(Regex("(?i)---\\s*End Conversation\\s*---"), " ")
     filtered = filtered.replace(Regex("(?i)---\\s*EndConversation\\s*---"), " ")
     filtered = filtered.replace(Regex("(?i)---[^-]+---"), " ")
+    
+    // CRITICAL FIX: Remove memory echo patterns that LLM generates
+    filtered = filtered.replace(Regex("(?i)END\\s*OF\\s*MEMORY"), " ")
+    filtered = filtered.replace(Regex("(?i)START\\s*OF\\s*MEMORY"), " ")
+    filtered = filtered.replace(Regex("(?i)<--\\s*START"), " ")
+    filtered = filtered.replace(Regex("(?i)<--\\s*END"), " ")
+    filtered = filtered.replace(Regex("(?i)MEMORY"), " ")  // Remove standalone MEMORY word
+    filtered = filtered.replace(Regex("(?i)The\\s+user's\\s+name\\s+is"), " ")  // Remove echoed context
+    filtered = filtered.replace(Regex("(?i)They\\s+(?:are|live|work|prefer)"), " ")  // Remove echoed context lines
+    
     filtered = filtered.replace("</s>", " ")
     filtered = filtered.replace("<|system|>", " ")
     filtered = filtered.replace("<|user|>", " ")
@@ -985,6 +995,8 @@ fun UnifiedChatView(
                         if (pipelineState == VoicePipelineManager.Companion.PipelineState.LISTENING ||
                             pipelineState == VoicePipelineManager.Companion.PipelineState.SPEECH_DETECTED) {
                             Log.d(TAG, "User tapped orb during listening - forcing speech processing")
+                            // Immediately update UI so user sees feedback before STT finishes
+                            pipelineState = VoicePipelineManager.Companion.PipelineState.TRANSCRIBING
                             voicePipelineManager?.forceStopAndProcess()
                         } else {
                             Log.d(TAG, "User tapped orb - stopping voice mode")
@@ -1226,7 +1238,7 @@ fun VoiceModeOverlay(
                     .scale(breathingScale)
                     .clip(CircleShape)
                     .background(orbColor)
-                    .pointerInput(Unit) {
+                    .pointerInput(onStop) {
                         detectTapGestures(onTap = { onStop() })
                     },
                 contentAlignment = Alignment.Center

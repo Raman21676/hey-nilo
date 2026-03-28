@@ -299,6 +299,14 @@ class KokoroTTSBridge(private val context: Context) {
     }
     
     /**
+     * Check if TTS is currently speaking
+     * Used to prevent barge-in from triggering on TTS feedback loop
+     */
+    fun isSpeaking(): Boolean {
+        return androidTts?.isSpeaking == true || synchronized(utteranceLock) { pendingUtterances.isNotEmpty() }
+    }
+    
+    /**
      * Release resources
      */
     fun release() {

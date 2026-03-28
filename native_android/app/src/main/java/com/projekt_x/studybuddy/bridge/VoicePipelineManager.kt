@@ -563,6 +563,17 @@ class VoicePipelineManager(
         // Motorbike horn (~200ms) will NOT trigger, human speech (~960ms+) WILL trigger
         // ========================================================================
         if (currentState == PipelineState.SPEAKING) {
+            // CRITICAL FIX: Skip barge-in detection if TTS is actively speaking
+            // This prevents feedback loop: TTS → mic picks up → VAD detects → false barge-in
+            if (kokoroTTS?.isSpeaking() == true) {
+                // TTS is speaking, reset barge-in counter and skip detection
+                if (bargeInConfirmFrames > 0) {
+                    Log.v(TAG, "Barge-in reset: TTS is speaking, ignoring mic input")
+                }
+                bargeInConfirmFrames = 0
+                return
+            }
+            
             // Calculate audio energy (RMS)
             val audioEnergy = calculateAudioEnergy(audioData)
             // Check if VAD agrees it's speech (neural model classification)

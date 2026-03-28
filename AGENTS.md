@@ -629,3 +629,28 @@ If you're stuck:
 **Remember**: You're building something meaningful — an AI companion that respects privacy and remembers what matters. Take pride in your work!
 
 **Now go read `TODO.md` and find your first task! 🚀**
+
+---
+
+## 🆕 Latest Development Session (March 29, 2026)
+
+### Current Work: Voice Pipeline Improvements
+
+**See `native_android/DEVELOPMENT_LOG.md` for complete details**
+
+**Status**: Multiple fixes in progress, some issues remaining
+
+**Key Issues Addressed:**
+1. ✅ **Microphone Gain**: Added 8x software gain for Samsung Tab A7 Lite
+2. ✅ **Role Leakage Detection**: Stops LLM when generating system content
+3. ✅ **Response Length Control**: Max 200 chars / 3 sentences
+4. ⚠️ **TTS/UI Sync**: Attempted fix - needs verification
+5. ⚠️ **STT Accuracy**: Model limitation, not code bug
+
+**Git Commit**: `fb18a13`
+
+**For Next Session:**
+- Read `native_android/DEVELOPMENT_LOG.md` first
+- Test TTS/UI sync fix
+- Consider switching to online STT for better accuracy
+

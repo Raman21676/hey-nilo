@@ -265,14 +265,14 @@ class KokoroTTSBridge(private val context: Context) {
                 if (!hasPending && !isSpeaking) {
                     emptyCount++
                     // Wait a bit more to make sure nothing new started
-                    if (emptyCount >= 3) {
+                    if (emptyCount >= 2) {  // Reduced from 3 to 2 for faster response
                         Log.d(TAG, "TTS complete - no pending utterances")
                         break
                     }
                 } else {
                     emptyCount = 0
                 }
-                delay(150)
+                delay(100)  // Reduced from 150ms to 100ms for faster polling
             }
         }
         // Clear any stale pending utterances

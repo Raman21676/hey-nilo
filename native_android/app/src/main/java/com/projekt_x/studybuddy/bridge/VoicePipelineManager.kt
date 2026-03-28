@@ -1767,13 +1767,13 @@ class VoicePipelineManager(
                         isFirstChunk = false
                         
                         // Small delay to let TTS engine process
-                        delay(50)
+                        delay(30)  // Reduced from 50ms to 30ms
                     } else if (isLLMResponseComplete && availableLength == 0) {
                         // All text spoken and LLM is complete - we're done!
                         Log.i(TAG, "TTS: All text spoken, waiting for completion...")
                         
                         // Wait a bit for last TTS to start, then track completion
-                        delay(200)
+                        delay(100)  // Reduced from 200ms to 100ms
                         
                         // Wait for TTS to actually finish speaking
                         kokoroTTS?.waitForCompletion()
@@ -1796,7 +1796,7 @@ class VoicePipelineManager(
                             isFirstChunk = false
                             
                             // Wait for completion
-                            delay(300)
+                            delay(150)  // Reduced from 300ms to 150ms
                             kokoroTTS?.waitForCompletion()
                             Log.i(TAG, "TTS: finished speaking remainder")
                         } else {

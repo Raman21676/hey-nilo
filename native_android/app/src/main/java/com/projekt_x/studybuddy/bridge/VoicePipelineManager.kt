@@ -61,6 +61,11 @@ class VoicePipelineManager(
         private const val BARGE_IN_ENERGY_THRESHOLD = 3500f   // High energy threshold
         private const val BARGE_IN_CONFIRM_FRAMES = 30        // ~960ms sustained detection
         
+        // CRITICAL FIX: TTS cooldown period to prevent acoustic echo feedback
+        // After TTS finishes, wait 1500ms before allowing barge-in detection
+        // This prevents room echo from being detected as user speech
+        private const val TTS_COOLDOWN_MS = 1500L
+        
         // MAX LISTENING TIME: Force stop if user doesn't speak or tap within 15 seconds
         private const val MAX_LISTENING_TIME_MS = 15000L
         
@@ -98,6 +103,74 @@ class VoicePipelineManager(
     private var speechStartTime: Long = 0
     private var consecutiveSilenceFrames = 0  // Count consecutive silence frames for trailing silence detection
     private var bargeInConfirmFrames = 0      // BUG FIX 2: Count frames for barge-in confirmation
+    private var lastTTSFinishedTime = 0L      // CRITICAL FIX: Track when TTS finished to prevent echo detection
+    private val isTransitioningToListening = java.util.concurrent.atomic.AtomicBoolean(false)  // Prevent race conditions
+    private val isRestarting = java.util.concurrent.atomic.AtomicBoolean(false)  // Prevent concurrent restarts
+    
+    /**
+     * CRITICAL FIX: Transition to LISTENING state with TTS cooldown check
+     * This prevents the app from listening while TTS is speaking or before cooldown
+     * Uses atomic flag to prevent race conditions from multiple coroutines
+     */
+    private suspend fun transitionToListening() {
+        // Only allow one transition at a time
+        if (!isTransitioningToListening.compareAndSet(false, true)) {
+            Log.d(TAG, "Transition already in progress, skipping")
+            return
+        }
+        
+        try {
+            val timeSinceTTS = System.currentTimeMillis() - lastTTSFinishedTime
+            val cooldownRemaining = TTS_COOLDOWN_MS - timeSinceTTS
+            
+            if (cooldownRemaining > 0 && lastTTSFinishedTime > 0) {
+                Log.i(TAG, "⏳ TTS cooldown: waiting ${cooldownRemaining}ms before listening...")
+                delay(cooldownRemaining)
+            }
+            
+            if (isRunning.get() && currentState != PipelineState.LISTENING) {
+                currentState = PipelineState.LISTENING
+                Log.i(TAG, "🎤 State changed: LISTENING")
+            }
+        } finally {
+            isTransitioningToListening.set(false)
+        }
+    }
+    
+    /**
+     * Non-suspending version for non-coroutine contexts
+     * Also uses atomic flag and cooldown check
+     */
+    private fun transitionToListeningImmediate() {
+        // Only allow one transition at a time
+        if (!isTransitioningToListening.compareAndSet(false, true)) {
+            Log.d(TAG, "Transition already in progress, skipping immediate")
+            return
+        }
+        
+        val timeSinceTTS = System.currentTimeMillis() - lastTTSFinishedTime
+        val cooldownRemaining = TTS_COOLDOWN_MS - timeSinceTTS
+        
+        if (cooldownRemaining > 0 && lastTTSFinishedTime > 0) {
+            Log.i(TAG, "⏳ TTS cooldown needed: ${cooldownRemaining}ms (will wait in coroutine)")
+            // Launch in coroutine to handle the delay
+            scope.launch {
+                delay(cooldownRemaining)
+                if (isRunning.get() && currentState != PipelineState.LISTENING) {
+                    currentState = PipelineState.LISTENING
+                    Log.i(TAG, "🎤 State changed: LISTENING (after cooldown)")
+                }
+                isTransitioningToListening.set(false)
+            }
+            return
+        }
+        
+        if (isRunning.get() && currentState != PipelineState.LISTENING) {
+            currentState = PipelineState.LISTENING
+            Log.i(TAG, "🎤 State changed: LISTENING (immediate)")
+        }
+        isTransitioningToListening.set(false)
+    }
     private var listeningStartTime: Long = 0  // Track when listening started for timeout
     
     // Bridges
@@ -457,8 +530,10 @@ class VoicePipelineManager(
         vadProcessor?.reset()
         
         isRunning.set(true)
-        currentState = PipelineState.LISTENING
         listeningStartTime = System.currentTimeMillis()  // Track listening start for timeout
+        
+        // CRITICAL FIX: Use helper to respect TTS cooldown
+        transitionToListeningImmediate()
         
         // Start recording
         startRecording()
@@ -480,7 +555,7 @@ class VoicePipelineManager(
         // Ensure we're in the LISTENING state
         if (currentState != PipelineState.LISTENING) {
             Log.d(TAG, "Setting state to LISTENING before starting recording")
-            currentState = PipelineState.LISTENING
+            transitionToListeningImmediate()
         }
         
         pipelineJob = scope.launch {
@@ -544,13 +619,15 @@ class VoicePipelineManager(
         // ========================================================================
         // TIMEOUT CHECK: Auto-restart if listening too long without speech
         // ========================================================================
-        if (currentState == PipelineState.LISTENING && !isCollectingSpeech) {
+        if (currentState == PipelineState.LISTENING && !isCollectingSpeech && !isRestarting.get()) {
             val listeningDuration = System.currentTimeMillis() - listeningStartTime
             if (listeningDuration > MAX_LISTENING_TIME_MS) {
                 Log.w(TAG, "Listening timeout after ${listeningDuration}ms - no speech detected")
                 // CRITICAL FIX: Restart listening instead of stopping conversation
                 // This allows user to try again without manually tapping
                 Log.i(TAG, "🎤 Auto-restarting listening for another attempt...")
+                // Reset timer immediately to prevent duplicate timeout triggers
+                listeningStartTime = System.currentTimeMillis()
                 scope.launch {
                     restartListening()
                 }
@@ -563,12 +640,16 @@ class VoicePipelineManager(
         // Motorbike horn (~200ms) will NOT trigger, human speech (~960ms+) WILL trigger
         // ========================================================================
         if (currentState == PipelineState.SPEAKING) {
-            // CRITICAL FIX: Skip barge-in detection if TTS is actively speaking
-            // This prevents feedback loop: TTS → mic picks up → VAD detects → false barge-in
-            if (kokoroTTS?.isSpeaking() == true) {
-                // TTS is speaking, reset barge-in counter and skip detection
+            // CRITICAL FIX: Skip barge-in detection if TTS is actively speaking OR 
+            // if TTS finished recently (prevents acoustic echo from being detected)
+            val isTTSSpeaking = kokoroTTS?.isSpeaking() == true
+            val timeSinceTTS = System.currentTimeMillis() - lastTTSFinishedTime
+            val inTTSCooldown = timeSinceTTS < TTS_COOLDOWN_MS
+            
+            if (isTTSSpeaking || inTTSCooldown) {
+                // TTS is speaking or just finished, reset barge-in counter
                 if (bargeInConfirmFrames > 0) {
-                    Log.v(TAG, "Barge-in reset: TTS is speaking, ignoring mic input")
+                    Log.v(TAG, "Barge-in reset: TTS speaking=$isTTSSpeaking, cooldown=$inTTSCooldown (${timeSinceTTS}ms)")
                 }
                 bargeInConfirmFrames = 0
                 return
@@ -709,7 +790,8 @@ class VoicePipelineManager(
                     // FIX: Reset VAD state to prevent pollution between utterances
                     vadProcessor?.reset()
                     
-                    currentState = PipelineState.LISTENING
+                    // CRITICAL FIX: Respect TTS cooldown before listening
+                    transitionToListeningImmediate()
                 }
             }
             
@@ -783,8 +865,8 @@ class VoicePipelineManager(
             onResponseUpdate?.invoke(currentResponse + "\n\n(interrupted - listening...)", false)
         }
         
-        // Switch back to listening state immediately
-        currentState = PipelineState.LISTENING
+        // CRITICAL FIX: Switch back to listening with cooldown check
+        transitionToListeningImmediate()
         
         Log.i(TAG, "✓ Barge-in handled - chat history preserved, listening for new input")
     }
@@ -862,7 +944,7 @@ class VoicePipelineManager(
             speechBuffer.clear()
             preSpeechBuffer.clear()
             consecutiveSilenceFrames = 0
-            currentState = PipelineState.LISTENING
+            transitionToListeningImmediate()
         }
     }
     
@@ -1164,7 +1246,7 @@ class VoicePipelineManager(
         // Ensure we're still running and go back to LISTENING state
         if (isRunning.get()) {
             Log.i(TAG, "🎤 Returning to LISTENING state for new question")
-            currentState = PipelineState.LISTENING
+            transitionToListeningImmediate()
         } else {
             // If somehow stopped, restart the voice conversation
             Log.i(TAG, "🎤 Voice pipeline was stopped, restarting...")
@@ -1519,51 +1601,64 @@ class VoicePipelineManager(
      * Restart listening after error or when TTS is not available
      * This is a fallback function for error recovery.
      * For normal TTS flow, we use seamless transition (see finally block in startStreamingTTS).
+     * Uses atomic flag to prevent concurrent restarts from multiple threads.
      */
     private suspend fun restartListening() {
-        if (!isRunning.get()) {
-            Log.w(TAG, "Cannot restart: pipeline not running")
+        // Prevent concurrent restarts
+        if (!isRestarting.compareAndSet(false, true)) {
+            Log.d(TAG, "Restart already in progress, skipping")
             return
         }
         
-        // Cancel any existing streaming TTS job to prevent conflicts
-        streamingTTSJob?.cancel()
-        streamingTTSJob = null
-        isStreamingTTSActive = false
-        isLLMResponseComplete = false  // Reset for next utterance
-        
-        Log.i(TAG, "=".repeat(50))
-        Log.i(TAG, "RESTARTING LISTENING (fallback mode)")
-        Log.i(TAG, "=".repeat(50))
-        
-        // Reset all speech-related state
-        speechBuffer.clear()
-        preSpeechBuffer.clear()
-        isCollectingSpeech = false
-        isProcessingSTT = false
-        consecutiveSilenceFrames = 0
-        lastSpokenPosition = 0
-        ttsTextBuffer.clear()
-        fullResponseText.clear()
-        
-        // Reset VAD processor for clean state
-        vadProcessor?.reset()
-        
-        // Clear LLM context for next utterance
-        llmBridge?.clearContext()
-        
-        // Only restart recording if it's not already running
-        if (audioRecorder?.isRecording() != true) {
-            Log.w(TAG, "Recording was stopped - restarting it")
-            audioRecorder?.stopRecording()
-            pipelineJob?.cancel()
-            pipelineJob = null
-            delay(200)
-            startRecording()
+        try {
+            if (!isRunning.get()) {
+                Log.w(TAG, "Cannot restart: pipeline not running")
+                return
+            }
+            
+            // Cancel any existing streaming TTS job to prevent conflicts
+            streamingTTSJob?.cancel()
+            streamingTTSJob = null
+            isStreamingTTSActive = false
+            isLLMResponseComplete = false  // Reset for next utterance
+            
+            Log.i(TAG, "=".repeat(50))
+            Log.i(TAG, "RESTARTING LISTENING (fallback mode)")
+            Log.i(TAG, "=".repeat(50))
+            
+            // Reset all speech-related state
+            speechBuffer.clear()
+            preSpeechBuffer.clear()
+            isCollectingSpeech = false
+            isProcessingSTT = false
+            consecutiveSilenceFrames = 0
+            lastSpokenPosition = 0
+            ttsTextBuffer.clear()
+            fullResponseText.clear()
+            lastTTSFinishedTime = 0L  // Reset TTS cooldown
+            
+            // Reset VAD processor for clean state
+            vadProcessor?.reset()
+            
+            // Clear LLM context for next utterance
+            llmBridge?.clearContext()
+            
+            // Only restart recording if it's not already running
+            if (audioRecorder?.isRecording() != true) {
+                Log.w(TAG, "Recording was stopped - restarting it")
+                audioRecorder?.stopRecording()
+                pipelineJob?.cancel()
+                pipelineJob = null
+                delay(200)
+                startRecording()
+            }
+            
+            // CRITICAL FIX: Use suspend helper to respect TTS cooldown
+            transitionToListening()
+            Log.i(TAG, "✓ Listening restarted - ready for next utterance")
+        } finally {
+            isRestarting.set(false)
         }
-        
-        currentState = PipelineState.LISTENING
-        Log.i(TAG, "✓ Listening restarted - ready for next utterance")
     }
     
     /**
@@ -1685,6 +1780,9 @@ class VoicePipelineManager(
                 
                 Log.i(TAG, "TTS finished - preparing for next utterance")
                 
+                // CRITICAL FIX: Record when TTS finished to prevent echo detection
+                lastTTSFinishedTime = System.currentTimeMillis()
+                
                 // Reset all speech-related state for next utterance
                 speechBuffer.clear()
                 preSpeechBuffer.clear()
@@ -1710,8 +1808,17 @@ class VoicePipelineManager(
                     isRunning.set(true)
                 }
                 
+                // CRITICAL FIX: Wait for TTS cooldown before resuming listening
+                // This prevents acoustic echo from being detected as user speech
+                val timeSinceTTS = System.currentTimeMillis() - lastTTSFinishedTime
+                val cooldownRemaining = TTS_COOLDOWN_MS - timeSinceTTS
+                if (cooldownRemaining > 0) {
+                    Log.i(TAG, "Waiting ${cooldownRemaining}ms for TTS cooldown before listening...")
+                    delay(cooldownRemaining)
+                }
+                
                 // Resume listening by changing state back to LISTENING
-                currentState = PipelineState.LISTENING
+                transitionToListening()
                 
                 // Ensure audio recorder is still running
                 if (audioRecorder?.isRecording() != true) {

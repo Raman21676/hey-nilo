@@ -53,6 +53,7 @@ class KokoroTTSBridge(private val context: Context) {
                         } else {
                             androidTts?.setSpeechRate(0.9f)
                             androidTts?.setPitch(1.0f)
+                            setupUtteranceListener()  // CRITICAL: Set up listener once
                             isReady = true
                             Log.i(TAG, "✓ Android TTS initialized with default locale")
                             initResult.complete(true)
@@ -60,6 +61,7 @@ class KokoroTTSBridge(private val context: Context) {
                     } else {
                         androidTts?.setSpeechRate(0.9f)
                         androidTts?.setPitch(1.0f)
+                        setupUtteranceListener()  // CRITICAL: Set up listener once
                         isReady = true
                         Log.i(TAG, "✓ Android TTS initialized with US English")
                         initResult.complete(true)
@@ -86,6 +88,37 @@ class KokoroTTSBridge(private val context: Context) {
             isReady = false
             false
         }
+    }
+    
+    /**
+     * CRITICAL FIX: Set up utterance progress listener ONCE during initialization
+     * This ensures all utterances are properly tracked regardless of when they're queued
+     */
+    private fun setupUtteranceListener() {
+        androidTts?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
+            override fun onStart(utteranceId: String?) {
+                Log.d(TAG, "TTS started: $utteranceId")
+            }
+            override fun onDone(utteranceId: String?) {
+                Log.d(TAG, "TTS completed: $utteranceId")
+                synchronized(utteranceLock) {
+                    pendingUtterances.remove(utteranceId)
+                }
+            }
+            override fun onError(utteranceId: String?) {
+                Log.e(TAG, "TTS error: $utteranceId")
+                synchronized(utteranceLock) {
+                    pendingUtterances.remove(utteranceId)
+                }
+            }
+            override fun onStop(utteranceId: String?, interrupted: Boolean) {
+                Log.d(TAG, "TTS stopped: $utteranceId (interrupted: $interrupted)")
+                synchronized(utteranceLock) {
+                    pendingUtterances.remove(utteranceId)
+                }
+            }
+        })
+        Log.d(TAG, "Utterance progress listener set up")
     }
     
     /**
@@ -199,30 +232,8 @@ class KokoroTTSBridge(private val context: Context) {
                 pendingUtterances.add(utteranceId)
             }
             
-            // Set up listener once (tracks all utterances)
-            androidTts?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
-                override fun onStart(utteranceId: String?) {
-                    Log.d(TAG, "TTS started: $utteranceId")
-                }
-                override fun onDone(utteranceId: String?) {
-                    Log.d(TAG, "TTS completed: $utteranceId")
-                    synchronized(utteranceLock) {
-                        pendingUtterances.remove(utteranceId)
-                    }
-                }
-                override fun onError(utteranceId: String?) {
-                    Log.e(TAG, "TTS error: $utteranceId")
-                    synchronized(utteranceLock) {
-                        pendingUtterances.remove(utteranceId)
-                    }
-                }
-                override fun onStop(utteranceId: String?, interrupted: Boolean) {
-                    Log.d(TAG, "TTS stopped: $utteranceId (interrupted: $interrupted)")
-                    synchronized(utteranceLock) {
-                        pendingUtterances.remove(utteranceId)
-                    }
-                }
-            })
+            // CRITICAL FIX: Listener is set up ONCE in initialize(), not here
+            // Setting it here would replace the listener and break tracking for queued utterances
             
             val result = androidTts?.speak(cleanText, queueMode, null, utteranceId)
             if (result == TextToSpeech.ERROR) {

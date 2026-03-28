@@ -197,6 +197,10 @@ class KokoroTTSBridge(private val context: Context) {
                 pendingUtterances.add(utteranceId)
             }
             
+            // VOICE FIX: Ensure pitch and rate are set before each speak
+            androidTts?.setPitch(1.1f)
+            androidTts?.setSpeechRate(0.95f)
+            
             // CRITICAL FIX: Listener is set up ONCE in initialize(), not here
             // Setting it here would replace the listener and break tracking for queued utterances
             

@@ -1784,7 +1784,9 @@ class VoicePipelineManager(
                         // LLM done but we have remaining text that didn't end with punctuation
                         val rawRemaining = availableText.trim()
                         val remaining = filterTTSText(rawRemaining)
-                        Log.i(TAG, "TTS: LLM complete, speaking remainder (${availableLength} chars): '$remaining'")
+                        val totalText = ttsTextBuffer.toString()
+                        Log.i(TAG, "TTS: LLM complete, total=${totalText.length}, spoken=$lastSpokenPosition, remaining=${remaining.length} chars")
+                        Log.i(TAG, "TTS: Remainder text: '${remaining.take(100)}${if (remaining.length > 100) "..." else ""}'")
                         if (remaining.isNotBlank()) {
                             val queueMode = if (isFirstChunk) TextToSpeech.QUEUE_FLUSH else TextToSpeech.QUEUE_ADD
                             Log.d(TAG, "TTS speaking final remainder with $queueMode: '$remaining'")
@@ -1943,8 +1945,8 @@ class VoicePipelineManager(
         
         var filtered = text
         
-        // STEP 1: TRUNCATE at the first occurrence of any end marker
-        // This prevents TTS from speaking content that the UI hides
+        // STEP 1: TRUNCATE at end markers - BUT ONLY if they're near the end of text
+        // This prevents cutting off valid content that might contain these substrings
         val endMarkers = listOf(
             "---EndConversation---", "--- End Conversation ---",
             "---End Context---", "--- End Context ---",
@@ -1954,14 +1956,17 @@ class VoicePipelineManager(
         
         for (marker in endMarkers) {
             val index = filtered.indexOf(marker, ignoreCase = true)
-            if (index != -1) {
+            // Only truncate if marker is found and near the end (last 30% of text)
+            if (index != -1 && index > filtered.length * 0.7) {
+                Log.d(TAG, "filterTTSText: truncating at '$marker' (index=$index, len=${filtered.length})")
                 filtered = filtered.substring(0, index)
             }
         }
         
-        // Also truncate at partial im_end patterns
+        // Also truncate at partial im_end patterns (but only if near end)
         val partialImEnd = filtered.indexOf("<|im_end")
-        if (partialImEnd != -1) {
+        if (partialImEnd != -1 && partialImEnd > filtered.length * 0.7) {
+            Log.d(TAG, "filterTTSText: truncating at partial '<|im_end' (index=$partialImEnd, len=${filtered.length})")
             filtered = filtered.substring(0, partialImEnd)
         }
         

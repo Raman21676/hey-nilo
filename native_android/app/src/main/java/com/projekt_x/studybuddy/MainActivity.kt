@@ -1173,14 +1173,23 @@ fun UnifiedChatView(
                     if (canStop) {
                         IconButton(
                             onClick = {
-                                // Stop generation
+                                // Stop generation in text mode
                                 if (isGenerating) {
                                     queue.cancel(messages.lastOrNull { it.isStreaming }?.id ?: "")
+                                    bridge.stop()  // Also stop native generation
                                     isGenerating = false
                                 }
-                                // Stop voice pipeline (TTS and listening)
+                                
+                                // In voice mode: stop everything and restart listening
                                 if (isVoiceModeActive) {
-                                    voicePipelineManager?.stopConversation()
+                                    // Stop TTS immediately
+                                    voicePipelineManager?.stopTTS()
+                                    // Stop any ongoing generation
+                                    voicePipelineManager?.stopGeneration()
+                                    // Clear any partial responses
+                                    voicePipelineManager?.clearResponse()
+                                    // Restart voice mode for new question
+                                    voicePipelineManager?.restartForNewQuestion()
                                 }
                             }
                         ) {

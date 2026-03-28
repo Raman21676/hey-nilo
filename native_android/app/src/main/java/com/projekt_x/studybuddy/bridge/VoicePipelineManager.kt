@@ -125,6 +125,9 @@ class VoicePipelineManager(
     // LLM Provider job (for cancellation during barge-in)
     private var llmProviderJob: Job? = null
     
+    // STT job (for cancellation when user presses X)
+    private var sttJob: Job? = null
+    
     // Callbacks for UI
     var onStateChange: ((PipelineState) -> Unit)? = null
     var onTranscriptionUpdate: ((String, Boolean) -> Unit)? = null
@@ -881,8 +884,8 @@ class VoicePipelineManager(
         Log.i(TAG, "Sending ${speechArray.size} samples (${durationMs}ms) to STT")
         currentState = PipelineState.TRANSCRIBING
         
-        // Process with STT
-        scope.launch(Dispatchers.IO) {
+        // Process with STT - track job so we can cancel it if needed
+        sttJob = scope.launch(Dispatchers.IO) {
             try {
                 Log.d("TIMING", "2. STT start at: ${System.currentTimeMillis()}")
                 val sttProcessingStart = System.currentTimeMillis()
@@ -918,6 +921,7 @@ class VoicePipelineManager(
                 }
             } finally {
                 isProcessingSTT = false
+                sttJob = null
             }
         }
     }
@@ -1050,6 +1054,95 @@ class VoicePipelineManager(
     }
     
     /**
+     * Stop ongoing LLM generation
+     * Called when user presses the cross button to interrupt generation
+     */
+    fun stopGeneration() {
+        Log.i(TAG, "Stopping LLM generation")
+        // Cancel LLM Provider job if running
+        llmProviderJob?.cancel()
+        llmProviderJob = null
+        // Signal native layer to stop
+        llmBridge?.stopGeneration()
+        // Reset state
+        isLLMResponseComplete = false
+        currentState = PipelineState.IDLE
+    }
+    
+    /**
+     * Clear current response text and buffers
+     * Called when user interrupts to start fresh
+     */
+    fun clearResponse() {
+        Log.i(TAG, "Clearing response buffers")
+        fullResponseText.clear()
+        ttsTextBuffer.clear()
+        lastSpokenPosition = 0
+        streamingTokenBuffer.clear()
+        isCollectingImEnd = false
+    }
+    
+    /**
+     * Restart voice mode for a new question
+     * Called when user presses cross button during voice mode
+     * Stops everything and returns to LISTENING state
+     * 
+     * CRITICAL FIX: Also clears native LLM context to prevent contamination
+     * from previous failed/corrupted conversation turns.
+     */
+    fun restartForNewQuestion() {
+        Log.i(TAG, "🔄 Restarting voice mode for new question (HARD RESET)")
+        
+        // Stop any ongoing processes
+        stopTTS()
+        stopGeneration()
+        
+        // CRITICAL: Clear native LLM context to prevent history contamination
+        // This prevents bad context from affecting new questions
+        try {
+            llmBridge?.clearContext()
+            Log.i(TAG, "✅ Native LLM context cleared")
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to clear native context: ${e.message}")
+        }
+        
+        // Clear buffers - CRITICAL: Reset STT processing flag
+        speechBuffer.clear()
+        preSpeechBuffer.clear()
+        isCollectingSpeech = false
+        isProcessingSTT = false  // FORCE RESET - this was getting stuck!
+        consecutiveSilenceFrames = 0
+        bargeInConfirmFrames = 0
+        
+        // Reset response state
+        clearResponse()
+        
+        // Cancel any pending jobs
+        llmProviderJob?.cancel()
+        llmProviderJob = null
+        streamingTTSJob?.cancel()
+        streamingTTSJob = null
+        sttJob?.cancel()
+        sttJob = null
+        
+        // Reset completion flag
+        isLLMResponseComplete = false
+        
+        // Reset listening timer
+        listeningStartTime = System.currentTimeMillis()
+        
+        // Ensure we're still running and go back to LISTENING state
+        if (isRunning.get()) {
+            Log.i(TAG, "🎤 Returning to LISTENING state for new question")
+            currentState = PipelineState.LISTENING
+        } else {
+            // If somehow stopped, restart the voice conversation
+            Log.i(TAG, "🎤 Voice pipeline was stopped, restarting...")
+            startVoiceConversation()
+        }
+    }
+    
+    /**
      * Send transcription to LLM for processing
      * 
      * LLM PROVIDER INTEGRATION: Uses LLMProvider abstraction when available,
@@ -1069,6 +1162,9 @@ class VoicePipelineManager(
     
     /**
      * Process with new LLMProvider (streaming, memory context)
+     * 
+     * CRITICAL FIX: Added 60-second timeout to prevent getting stuck indefinitely.
+     * If LLM doesn't respond within 60 seconds, we timeout and restart listening.
      */
     private fun processWithLLMProvider(transcription: String) {
         llmProviderJob = scope.launch {
@@ -1222,6 +1318,8 @@ class VoicePipelineManager(
     
     /**
      * Process with legacy InferenceQueue (backward compatibility)
+     * 
+     * CRITICAL FIX: Added 60-second timeout to prevent getting stuck indefinitely.
      */
     private fun processWithLegacyQueue(transcription: String) {
         scope.launch {
@@ -1651,13 +1749,38 @@ class VoicePipelineManager(
     /**
      * Filter TTS text to remove special tokens that should not be spoken
      * Removes <|im_end|>, <|im_start|>, memory tags, and other template tokens
+     * 
+     * CRITICAL FIX: Also TRUNCATES at end markers (like filterAiResponse) to prevent
+     * TTS from speaking content that comes after <|im_end|> which is hidden from UI.
      */
     private fun filterTTSText(text: String): String {
         if (text.isBlank()) return ""
         
         var filtered = text
         
-        // Remove memory-related text patterns (case insensitive)
+        // STEP 1: TRUNCATE at the first occurrence of any end marker
+        // This prevents TTS from speaking content that the UI hides
+        val endMarkers = listOf(
+            "---EndConversation---", "--- End Conversation ---",
+            "---End Context---", "--- End Context ---",
+            "[/s]", "</s>", "</s", "<|system|>", "<|assistant|>", "<|user|>",
+            "|im_end|>", "<|im_end|>", "<|im_start|>assistant"
+        )
+        
+        for (marker in endMarkers) {
+            val index = filtered.indexOf(marker, ignoreCase = true)
+            if (index != -1) {
+                filtered = filtered.substring(0, index)
+            }
+        }
+        
+        // Also truncate at partial im_end patterns
+        val partialImEnd = filtered.indexOf("<|im_end")
+        if (partialImEnd != -1) {
+            filtered = filtered.substring(0, partialImEnd)
+        }
+        
+        // STEP 2: Remove memory-related text patterns (case insensitive)
         filtered = filtered.replace(Regex("(?i)\\[?MEMORY\\]?"), "")
         filtered = filtered.replace(Regex("(?i)END\\s*OF\\s*MEMORY"), "")
         filtered = filtered.replace(Regex("(?i)START\\s*OF\\s*MEMORY"), "")
@@ -1667,7 +1790,7 @@ class VoicePipelineManager(
         filtered = filtered.replace(Regex("(?i)---\\s*Memory\\s*Context\\s*---"), "")
         filtered = filtered.replace(Regex("(?i)\\[/MEMORY\\]"), "")
         
-        // Remove special Qwen2.5 chat template tokens
+        // STEP 3: Remove special Qwen2.5 chat template tokens
         filtered = filtered.replace("<|im_end|>", "")
         filtered = filtered.replace("<|im_start|>", "")
         filtered = filtered.replace("|im_end|>", "")
@@ -1677,21 +1800,21 @@ class VoicePipelineManager(
         filtered = filtered.replace("<|", " ")
         filtered = filtered.replace("|>", " ")
         
-        // Remove role markers only when they appear as standalone role indicators
+        // STEP 4: Remove role markers only when they appear as standalone role indicators
         // Must be at start AND followed by newline (not just space)
         filtered = filtered.replace(Regex("(?i)^\\s*system\\s*\n"), "")
         filtered = filtered.replace(Regex("(?i)^\\s*assistant\\s*\n"), "")
         filtered = filtered.replace(Regex("(?i)^\\s*user\\s*\n"), "")
         
-        // Remove other special tokens
+        // STEP 5: Remove other special tokens
         filtered = filtered.replace("</s>", "")
         filtered = filtered.replace("<s>", "")
         
-        // Clean up any remaining angle brackets and dashes that might be spoken
+        // STEP 6: Clean up any remaining angle brackets and dashes that might be spoken
         filtered = filtered.replace(Regex("<[^>]*>"), " ")
         filtered = filtered.replace(Regex("-{3,}"), " ")  // 3+ dashes
         
-        // Clean up whitespace
+        // STEP 7: Clean up whitespace
         filtered = filtered.replace(Regex("\\s+"), " ")
         
         return filtered.trim()

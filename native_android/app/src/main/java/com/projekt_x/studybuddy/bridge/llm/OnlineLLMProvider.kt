@@ -163,7 +163,8 @@ class OnlineLLMProvider(
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            Log.e(TAG, "Streaming failed", e)
+            Log.e(TAG, "Streaming failed: ${e.javaClass.simpleName}: ${e.message}", e)
+            e.printStackTrace()
             emit(LLMResponse(
                 error = e.message ?: "Streaming error",
                 isComplete = true,

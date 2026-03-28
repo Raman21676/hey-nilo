@@ -12,6 +12,7 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -120,6 +121,10 @@ fun OfflineModelPickerScreen(
     }
     var snackbarMessage by remember { mutableStateOf<String?>(null) }
     
+    // State for incompatible model download warning dialog
+    var showIncompatibleWarning by remember { mutableStateOf(false) }
+    var pendingDownloadModel by remember { mutableStateOf<OfflineModelConfig?>(null) }
+    
     val snackbarHostState = remember { SnackbarHostState() }
     
     // FIX: Check for completed downloads that happened while we were away
@@ -142,17 +147,25 @@ fun OfflineModelPickerScreen(
         }
     }
     
-    // Scan for downloaded models
+    // Scan for downloaded models - merge file check with download manager state
     LaunchedEffect(Unit) {
         val modelsDir = File(context.getExternalFilesDir(null), "models")
         val downloaded = allModels.associate { model ->
             val file = File(modelsDir, model.fileName)
-            model.id to file.exists()
+            // FIX: Check file existence OR if download manager says it's completed
+            // This prevents the "+ Get" bug where file.exists() might temporarily fail
+            val fileExists = file.exists()
+            val downloadCompleted = DownloadManager.getState(model.id)?.completed == true
+            val isDownloaded = fileExists || downloadCompleted
+            if (downloadCompleted && !fileExists) {
+                Log.w(TAG, "Model ${model.id} marked as completed but file not found - waiting for filesystem")
+            }
+            model.id to isDownloaded
         }
         downloadedModels = downloaded
         Log.i(TAG, "Device: ${String.format("%.2f", totalRamGB)}GB total, " +
                    "${String.format("%.2f", freeRamGB)}GB free. " +
-                   "Scanned ${allModels.size} models")
+                   "Scanned ${allModels.size} models, found ${downloaded.count { it.value }} downloaded")
     }
     
     Scaffold(
@@ -201,7 +214,14 @@ fun OfflineModelPickerScreen(
                                 }
                             }
                         },
-                        onDownload = { model ->
+                        onDownload = { model, isCompatible ->
+                            // Check compatibility - if incompatible, show warning first
+                            if (!isCompatible) {
+                                pendingDownloadModel = model
+                                showIncompatibleWarning = true
+                                return@RAMTierSection
+                            }
+                            
                             // FIX: Start download with global tracking - UI auto-updates via derivedStateOf
                             DownloadManager.updateProgress(model.id, 0f, 0, 0)
                             
@@ -221,11 +241,12 @@ fun OfflineModelPickerScreen(
                                     } else {
                                         DownloadManager.markError(model.id, error ?: "Unknown error")
                                         snackbarMessage = "Download failed: $error"
+                                        // Only clear error state after delay, keep completed state
+                                        android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+                                            DownloadManager.clear(model.id)
+                                        }, 5000)
                                     }
-                                    // Clear from global state after a delay
-                                    android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
-                                        DownloadManager.clear(model.id)
-                                    }, 5000)
+                                    // Note: We don't clear completed downloads - they persist for UI state
                                 }
                             )
                         },
@@ -251,6 +272,101 @@ fun OfflineModelPickerScreen(
             
             Spacer(modifier = Modifier.height(16.dp))
         }
+    }
+    
+    // Warning dialog for incompatible model download
+    if (showIncompatibleWarning && pendingDownloadModel != null) {
+        val model = pendingDownloadModel!!
+        AlertDialog(
+            onDismissRequest = { 
+                showIncompatibleWarning = false
+                pendingDownloadModel = null
+            },
+            title = { 
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        imageVector = Icons.Default.Warning,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.error,
+                        modifier = Modifier.size(24.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Device Compatibility Warning")
+                }
+            },
+            text = {
+                Column {
+                    Text(
+                        "${model.displayName} requires ${model.minRamGB}GB RAM, " +
+                        "but your device has ${String.format("%.1f", totalRamGB)}GB RAM."
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text(
+                        "Downloading this model may cause:",
+                        fontWeight = FontWeight.Medium
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text("• App crashes or freezes")
+                    Text("• Very slow performance")
+                    Text("• System instability")
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text(
+                        "Download at your own risk?",
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.error
+                    )
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        showIncompatibleWarning = false
+                        val modelToDownload = pendingDownloadModel
+                        pendingDownloadModel = null
+                        modelToDownload?.let { m ->
+                            // Start download for incompatible model
+                            DownloadManager.updateProgress(m.id, 0f, 0, 0)
+                            startDownload(
+                                context = context,
+                                model = m,
+                                onProgress = { progress, bytesDownloaded, totalBytes ->
+                                    DownloadManager.updateProgress(m.id, progress, bytesDownloaded, totalBytes)
+                                },
+                                onComplete = { success, error ->
+                                    if (success) {
+                                        DownloadManager.markComplete(m.id)
+                                        downloadedModels = downloadedModels + (m.id to true)
+                                        selectedModelId = m.id
+                                        snackbarMessage = "${m.displayName} downloaded successfully!"
+                                    } else {
+                                        DownloadManager.markError(m.id, error ?: "Unknown error")
+                                        snackbarMessage = "Download failed: $error"
+                                        android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+                                            DownloadManager.clear(m.id)
+                                        }, 5000)
+                                    }
+                                }
+                            )
+                        }
+                    },
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.error
+                    )
+                ) {
+                    Text("Download Anyway")
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = {
+                        showIncompatibleWarning = false
+                        pendingDownloadModel = null
+                    }
+                ) {
+                    Text("Cancel")
+                }
+            }
+        )
     }
 }
 
@@ -396,7 +512,7 @@ private fun RAMTierSection(
     downloadedModels: Map<String, Boolean>,
     downloadProgress: Map<String, DownloadState>,
     onModelSelected: (OfflineModelConfig) -> Unit,
-    onDownload: (OfflineModelConfig) -> Unit,
+    onDownload: (OfflineModelConfig, Boolean) -> Unit,
     onDelete: (OfflineModelConfig) -> Unit,
     onCancelDownload: (OfflineModelConfig) -> Unit
 ) {
@@ -463,6 +579,7 @@ private fun RAMTierSection(
         // Models in this tier
         models.forEach { model ->
             val downloadState = downloadProgress[model.id]
+            val isModelCompatible = model.isCompatibleWith(totalRamGB.toInt())
             ModelCard(
                 model = model,
                 totalRamGB = totalRamGB,
@@ -471,7 +588,7 @@ private fun RAMTierSection(
                 isDownloaded = downloadedModels[model.id] == true,
                 downloadState = downloadState,
                 onSelect = { onModelSelected(model) },
-                onDownload = { onDownload(model) },
+                onDownload = { compat -> onDownload(model, compat) },
                 onDelete = { onDelete(model) },
                 onCancelDownload = { onCancelDownload(model) }
             )
@@ -488,7 +605,7 @@ private fun ModelCard(
     isDownloaded: Boolean,
     downloadState: DownloadState?,
     onSelect: () -> Unit,
-    onDownload: () -> Unit,
+    onDownload: (Boolean) -> Unit,
     onDelete: () -> Unit,
     onCancelDownload: () -> Unit
 ) {
@@ -699,12 +816,22 @@ private fun ModelCard(
                             }
                         }
                     }
-                    isCompatible -> {
-                        // Not downloaded - show download button
+                    else -> {
+                        // Not downloaded - show download button for ALL models (even incompatible)
+                        // Incompatible models will show a warning dialog before downloading
                         FilledTonalButton(
-                            onClick = onDownload,
+                            onClick = { onDownload(isCompatible) },
                             modifier = Modifier.height(36.dp),
-                            contentPadding = PaddingValues(horizontal = 16.dp)
+                            contentPadding = PaddingValues(horizontal = 16.dp),
+                            colors = if (isCompatible) {
+                                ButtonDefaults.filledTonalButtonColors()
+                            } else {
+                                // Use error colors for incompatible models to indicate risk
+                                ButtonDefaults.filledTonalButtonColors(
+                                    containerColor = MaterialTheme.colorScheme.errorContainer,
+                                    contentColor = MaterialTheme.colorScheme.onErrorContainer
+                                )
+                            }
                         ) {
                             Icon(
                                 imageVector = Icons.Default.Add,
@@ -714,14 +841,6 @@ private fun ModelCard(
                             Spacer(modifier = Modifier.width(4.dp))
                             Text("Get", style = MaterialTheme.typography.labelMedium)
                         }
-                    }
-                    else -> {
-                        // Incompatible - no download button
-                        Text(
-                            text = "Need ${model.minRamGB}GB",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.outline
-                        )
                     }
                 }
             }

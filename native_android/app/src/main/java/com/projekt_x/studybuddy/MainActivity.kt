@@ -15,6 +15,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.compose.BackHandler
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.*
 import androidx.compose.animation.core.*
@@ -303,6 +304,15 @@ fun InitializingView() {
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
             )
+            
+            Spacer(modifier = Modifier.height(32.dp))
+            
+            // AI Disclaimer
+            Text(
+                text = "⚠️ AI can make mistakes. Verify important information.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
+            )
         }
     }
 }
@@ -343,6 +353,19 @@ fun HeyNiloApp(
     // Online/Offline mode state
     var currentMode by remember { mutableStateOf<AppMode>(AppMode.Offline) }
     var activeOnlineConfig by remember { mutableStateOf<ProviderConfig?>(null) }
+    
+    // Back navigation: When in chat view, go back to ModelSetupView instead of quitting
+    BackHandler(enabled = isModelLoaded || activeOnlineConfig != null) {
+        // Unload the model to properly return to setup
+        if (bridge.isLoaded()) {
+            bridge.unloadModel()
+        }
+        // Reset to model setup view
+        isModelLoaded = false
+        activeOnlineConfig = null
+        isVoiceModeActive = false
+        Log.i(TAG, "Back pressed: Returning to ModelSetupView")
+    }
     
     val scope = rememberCoroutineScope()
     val metrics by remember { derivedStateOf { metricsState.metrics } }
@@ -884,6 +907,16 @@ fun UnifiedChatView(
             }
         } else {
             Toast.makeText(context, "Microphone permission required for voice mode", Toast.LENGTH_SHORT).show()
+        }
+    }
+    
+    // FIX: Re-initialize voice pipeline when permission becomes granted
+    LaunchedEffect(hasRecordPermission) {
+        if (hasRecordPermission && voicePipelineManager != null && !isVoiceReady) {
+            Log.i(TAG, "Permission granted, re-initializing voice pipeline...")
+            voicePipelineManager?.release()
+            delay(100)
+            voicePipelineManager?.initialize()
         }
     }
     

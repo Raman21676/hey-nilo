@@ -62,6 +62,7 @@ fun ModelSetupView(
     var showOnlineSetup by remember { mutableStateOf(false) }
     var showOfflinePicker by remember { mutableStateOf(false) }
     var snackbarMessage by remember { mutableStateOf<String?>(null) }
+    var showQuitDialog by remember { mutableStateOf(false) }
     
     // API Key Store
     val apiKeyStore = remember { ApiKeyStore(context) }
@@ -264,6 +265,7 @@ fun ModelSetupView(
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
+
             }
         }
         
@@ -274,10 +276,40 @@ fun ModelSetupView(
         )
     }
     
-    // Handle system back button when picker is showing
+    // Handle system back button
     BackHandler(enabled = showOfflinePicker) {
         Log.i(TAG, "BackHandler: Closing OfflineModelPickerScreen")
         showOfflinePicker = false
+    }
+    
+    // Handle back button on main setup screen - show quit confirmation
+    BackHandler(enabled = !showOfflinePicker && !showOnlineSetup) {
+        Log.i(TAG, "BackHandler: Showing quit confirmation dialog")
+        showQuitDialog = true
+    }
+    
+    // Quit confirmation dialog
+    if (showQuitDialog) {
+        AlertDialog(
+            onDismissRequest = { showQuitDialog = false },
+            title = { Text("Quit Hey-Nilo?") },
+            text = { Text("Are you sure you want to exit the app?") },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        Log.i(TAG, "User confirmed quit")
+                        (context as? android.app.Activity)?.finish()
+                    }
+                ) {
+                    Text("Quit", color = MaterialTheme.colorScheme.error)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showQuitDialog = false }) {
+                    Text("Cancel")
+                }
+            }
+        )
     }
     
     // Full screen picker overlay - shown instead of main UI

@@ -51,21 +51,21 @@ class KokoroTTSBridge(private val context: Context) {
                             Log.e(TAG, "Default language also not supported")
                             initResult.complete(false)
                         } else {
-                            // VOICE CUSTOMIZATION: More natural, less robotic
-                            androidTts?.setSpeechRate(0.95f)  // Slightly faster (was 0.9)
-                            androidTts?.setPitch(1.1f)        // Higher pitch for warmer tone (was 1.0)
+                            // VOICE CUSTOMIZATION: Clear, natural speech with proper pacing
+                            androidTts?.setSpeechRate(0.85f)  // Slower for clarity (was 0.95)
+                            androidTts?.setPitch(1.05f)       // Slightly higher pitch (was 1.1)
                             setupUtteranceListener()  // CRITICAL: Set up listener once
                             isReady = true
-                            Log.i(TAG, "✓ Android TTS initialized with default locale (pitch=1.1, rate=0.95)")
+                            Log.i(TAG, "✓ Android TTS initialized with default locale (pitch=1.05, rate=0.85)")
                             initResult.complete(true)
                         }
                     } else {
-                        // VOICE CUSTOMIZATION: More natural, less robotic
-                        androidTts?.setSpeechRate(0.95f)  // Slightly faster (was 0.9)
-                        androidTts?.setPitch(1.1f)        // Higher pitch for warmer tone (was 1.0)
+                        // VOICE CUSTOMIZATION: Clear, natural speech with proper pacing
+                        androidTts?.setSpeechRate(0.85f)  // Slower for clarity (was 0.95)
+                        androidTts?.setPitch(1.05f)       // Slightly higher pitch (was 1.1)
                         setupUtteranceListener()  // CRITICAL: Set up listener once
                         isReady = true
-                        Log.i(TAG, "✓ Android TTS initialized with US English (pitch=1.1, rate=0.95)")
+                            Log.i(TAG, "✓ Android TTS initialized with US English (pitch=1.05, rate=0.85)")
                         initResult.complete(true)
                     }
                 } else {
@@ -153,7 +153,7 @@ class KokoroTTSBridge(private val context: Context) {
             }
             
             // Set pitch for more natural voice
-            androidTts?.setPitch(1.1f)
+            androidTts?.setPitch(1.05f)
             androidTts?.setSpeechRate(speed)
             
             val result = androidTts?.speak(cleanText, TextToSpeech.QUEUE_FLUSH, null, utteranceId)
@@ -198,8 +198,8 @@ class KokoroTTSBridge(private val context: Context) {
             }
             
             // VOICE FIX: Ensure pitch and rate are set before each speak
-            androidTts?.setPitch(1.1f)
-            androidTts?.setSpeechRate(0.95f)
+            androidTts?.setPitch(1.05f)
+            androidTts?.setSpeechRate(0.85f)
             
             // CRITICAL FIX: Listener is set up ONCE in initialize(), not here
             // Setting it here would replace the listener and break tracking for queued utterances
@@ -304,6 +304,10 @@ class KokoroTTSBridge(private val context: Context) {
             // Time formats
             .replace(Regex("\\b(\\d{1,2}):(\\d{2})\\s*AM\\b", RegexOption.IGNORE_CASE), "$1 $2 A M")
             .replace(Regex("\\b(\\d{1,2}):(\\d{2})\\s*PM\\b", RegexOption.IGNORE_CASE), "$1 $2 P M")
+            
+            // VOICE FIX: Ensure proper pauses between sentences
+            // Add space after punctuation if missing (for natural TTS pauses)
+            .replace(Regex("([.!?])([^\\s])"), "$1 $2")  // "Hello.World" -> "Hello. World"
             
             // Clean up extra whitespace
             .replace(Regex("\\s+"), " ")

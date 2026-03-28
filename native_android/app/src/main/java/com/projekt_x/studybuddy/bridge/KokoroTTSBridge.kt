@@ -51,19 +51,21 @@ class KokoroTTSBridge(private val context: Context) {
                             Log.e(TAG, "Default language also not supported")
                             initResult.complete(false)
                         } else {
-                            androidTts?.setSpeechRate(0.9f)
-                            androidTts?.setPitch(1.0f)
+                            // VOICE CUSTOMIZATION: More natural, less robotic
+                            androidTts?.setSpeechRate(0.95f)  // Slightly faster (was 0.9)
+                            androidTts?.setPitch(1.1f)        // Higher pitch for warmer tone (was 1.0)
                             setupUtteranceListener()  // CRITICAL: Set up listener once
                             isReady = true
-                            Log.i(TAG, "✓ Android TTS initialized with default locale")
+                            Log.i(TAG, "✓ Android TTS initialized with default locale (pitch=1.1, rate=0.95)")
                             initResult.complete(true)
                         }
                     } else {
-                        androidTts?.setSpeechRate(0.9f)
-                        androidTts?.setPitch(1.0f)
+                        // VOICE CUSTOMIZATION: More natural, less robotic
+                        androidTts?.setSpeechRate(0.95f)  // Slightly faster (was 0.9)
+                        androidTts?.setPitch(1.1f)        // Higher pitch for warmer tone (was 1.0)
                         setupUtteranceListener()  // CRITICAL: Set up listener once
                         isReady = true
-                        Log.i(TAG, "✓ Android TTS initialized with US English")
+                        Log.i(TAG, "✓ Android TTS initialized with US English (pitch=1.1, rate=0.95)")
                         initResult.complete(true)
                     }
                 } else {
@@ -131,85 +133,48 @@ class KokoroTTSBridge(private val context: Context) {
         speed: Float = 0.95f,
         onStart: (() -> Unit)? = null,
         onDone: (() -> Unit)? = null
-    ) = withContext(Dispatchers.Main) {
+    ): Boolean = withContext(Dispatchers.Main) {
         if (!isReady || androidTts == null) {
             Log.w(TAG, "TTS not ready, cannot speak")
-            onDone?.invoke()
-            return@withContext
+            return@withContext false
         }
         
-        if (text.isBlank()) {
-            onDone?.invoke()
-            return@withContext
-        }
+        if (text.isBlank()) return@withContext false
         
         val cleanText = preprocessText(text)
-        if (cleanText.isBlank()) {
-            onDone?.invoke()
-            return@withContext
-        }
+        if (cleanText.isBlank()) return@withContext false
         
         try {
             val utteranceId = UUID.randomUUID().toString()
-            val completionDeferred = CompletableDeferred<Unit>()
             
-            androidTts?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
-                override fun onStart(utteranceId: String?) {
-                    Log.d(TAG, "TTS started speaking")
-                    onStart?.invoke()
-                }
-                override fun onDone(utteranceId: String?) {
-                    Log.d(TAG, "TTS finished speaking")
-                    completionDeferred.complete(Unit)
-                    onDone?.invoke()
-                }
-                override fun onError(utteranceId: String?) {
-                    Log.e(TAG, "TTS error for utterance: $utteranceId")
-                    completionDeferred.complete(Unit)
-                    onDone?.invoke()
-                }
-                override fun onStop(utteranceId: String?, interrupted: Boolean) {
-                    Log.d(TAG, "TTS stopped (interrupted: $interrupted)")
-                    completionDeferred.complete(Unit)
-                    onDone?.invoke()
-                }
-            })
-            
-            // Apply speed if different from default
-            if (speed != 0.95f) {
-                androidTts?.setSpeechRate(speed)
+            // Track this utterance
+            synchronized(utteranceLock) {
+                pendingUtterances.add(utteranceId)
             }
+            
+            // Set pitch for more natural voice
+            androidTts?.setPitch(1.1f)
+            androidTts?.setSpeechRate(speed)
             
             val result = androidTts?.speak(cleanText, TextToSpeech.QUEUE_FLUSH, null, utteranceId)
             if (result == TextToSpeech.ERROR) {
                 Log.e(TAG, "TTS speak() returned ERROR")
-                completionDeferred.complete(Unit)
-                onDone?.invoke()
+                synchronized(utteranceLock) {
+                    pendingUtterances.remove(utteranceId)
+                }
+                false
             } else {
-                Log.d(TAG, "TTS speak() queued successfully: '${cleanText.take(50)}...'")
+                Log.d(TAG, "TTS speaking: '${cleanText.take(50)}...'")
+                true
             }
-            
         } catch (e: Exception) {
             Log.e(TAG, "TTS speak error: ${e.message}")
-            onDone?.invoke()
+            false
         }
     }
     
     /**
-     * Speak text and wait for completion
-     */
-    suspend fun speakAndWait(
-        text: String,
-        speaker: Int = 0,
-        speed: Float = 0.95f
-    ) {
-        val completion = CompletableDeferred<Unit>()
-        speak(text, speaker, speed, onDone = { completion.complete(Unit) })
-        withTimeoutOrNull(60000) { completion.await() }
-    }
-    
-    /**
-     * CLAUDE FIX: Fire-and-forget TTS with specified queue mode
+     * Speak text with queue mode
      * Use QUEUE_FLUSH for first utterance, QUEUE_ADD for seamless continuation
      * FIXED: Properly track all utterances with a single listener
      */
@@ -281,10 +246,10 @@ class KokoroTTSBridge(private val context: Context) {
     
     /**
      * Preprocess text for TTS
-     * Simple version - just remove markdown and emoji, keep text intact
+     * Converts abbreviations and symbols to spoken words for natural speech
      */
     fun preprocessText(raw: String): String {
-        return raw
+        var text = raw
             .replace(Regex("```[\\s\\S]*?```"), "")  // Remove code blocks
             .replace(Regex("[*_~`#>]+"), "")  // Remove markdown formatting
             // Simple emoji removal (just common emoji range)
@@ -292,8 +257,55 @@ class KokoroTTSBridge(private val context: Context) {
             .replace(Regex("\\[(.*?)\\]\\(.*?\\)"), "$1")  // Convert links to text
             .replace(Regex("<[^>]+>"), "")  // Remove HTML tags
             .replace(Regex("https?://\\S+"), "")  // Remove URLs
-            .replace(Regex("\\s+"), " ")  // Collapse whitespace
+        
+        // VOICE FIX: Convert abbreviations to spoken words
+        text = text
+            // Common abbreviations
+            .replace(Regex("\\be\\.g\\.\\b", RegexOption.IGNORE_CASE), "for example")
+            .replace(Regex("\\bi\\.e\\.\\b", RegexOption.IGNORE_CASE), "that is")
+            .replace(Regex("\\betc\\.\\b", RegexOption.IGNORE_CASE), "etcetera")
+            .replace(Regex("\\bvs\\.\\b", RegexOption.IGNORE_CASE), "versus")
+            .replace(Regex("\\bvs\\b", RegexOption.IGNORE_CASE), "versus")
+            .replace(Regex("\\bMr\\.\\b", RegexOption.IGNORE_CASE), "Mister")
+            .replace(Regex("\\bMrs\\.\\b", RegexOption.IGNORE_CASE), "Misses")
+            .replace(Regex("\\bMs\\.\\b", RegexOption.IGNORE_CASE), "Ms")
+            .replace(Regex("\\bDr\\.\\b", RegexOption.IGNORE_CASE), "Doctor")
+            .replace(Regex("\\bProf\\.\\b", RegexOption.IGNORE_CASE), "Professor")
+            .replace(Regex("\\bSt\\.\\b", RegexOption.IGNORE_CASE), "Saint")
+            .replace(Regex("\\bAve\\.\\b", RegexOption.IGNORE_CASE), "Avenue")
+            .replace(Regex("\\bBlvd\\.\\b", RegexOption.IGNORE_CASE), "Boulevard")
+            .replace(Regex("\\bRd\\.\\b", RegexOption.IGNORE_CASE), "Road")
+            .replace(Regex("\\bInc\\.\\b", RegexOption.IGNORE_CASE), "Incorporated")
+            .replace(Regex("\\bLtd\\.\\b", RegexOption.IGNORE_CASE), "Limited")
+            .replace(Regex("\\bCorp\\.\\b", RegexOption.IGNORE_CASE), "Corporation")
+            .replace(Regex("\\bNo\\.\\s*(\\d+)", RegexOption.IGNORE_CASE), "number $1")
+            
+            // Symbols that get spelled out - convert to words
+            .replace("!", ".")  // Exclamation becomes period (stops "exclamation mark" spelling)
+            .replace("?", "?")  // Keep question marks (they affect intonation)
+            .replace("&", " and ")
+            .replace("+", " plus ")
+            .replace("=", " equals ")
+            .replace("%", " percent ")
+            .replace("$", " dollars ")
+            .replace("€", " euros ")
+            .replace("£", " pounds ")
+            .replace("°", " degrees ")
+            .replace("#", " number ")
+            .replace("@", " at ")
+            
+            // Date formats
+            .replace(Regex("\\b([A-Z][a-z]{2})\\.\\s*(\\d{1,2})\\b"), "$1 $2")  // Jan. 15 -> Jan 15
+            
+            // Time formats
+            .replace(Regex("\\b(\\d{1,2}):(\\d{2})\\s*AM\\b", RegexOption.IGNORE_CASE), "$1 $2 A M")
+            .replace(Regex("\\b(\\d{1,2}):(\\d{2})\\s*PM\\b", RegexOption.IGNORE_CASE), "$1 $2 P M")
+            
+            // Clean up extra whitespace
+            .replace(Regex("\\s+"), " ")
             .trim()
+        
+        return text
     }
     
     /**
@@ -318,17 +330,23 @@ class KokoroTTSBridge(private val context: Context) {
     }
     
     /**
-     * Release resources
+     * Shutdown TTS
      */
-    fun release() {
+    fun shutdown() {
         try {
             androidTts?.stop()
             androidTts?.shutdown()
+            isReady = false
+            Log.i(TAG, "TTS shutdown")
         } catch (e: Exception) {
-            Log.w(TAG, "Release error: ${e.message}")
+            Log.w(TAG, "Shutdown error: ${e.message}")
         }
-        androidTts = null
-        isReady = false
-        Log.i(TAG, "KokoroTTSBridge released")
+    }
+    
+    /**
+     * Release resources (alias for shutdown)
+     */
+    fun release() {
+        shutdown()
     }
 }

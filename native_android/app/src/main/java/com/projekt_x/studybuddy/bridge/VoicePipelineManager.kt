@@ -1131,6 +1131,25 @@ class VoicePipelineManager(
         // Reset listening timer
         listeningStartTime = System.currentTimeMillis()
         
+        // CRITICAL FIX: Reset VAD processor for clean state
+        // This was missing and causing VAD to be in a bad state after restart
+        vadProcessor?.reset()
+        Log.i(TAG, "✅ VAD processor reset")
+        
+        // Reset audio recorder TTS speaking state
+        audioRecorder?.setTTSSpeaking(false)
+        
+        // CRITICAL FIX: Briefly restart audio recorder to ensure clean audio pipeline
+        // This reinitializes audio effects (AEC, NS, AGC) which can degrade over time
+        if (audioRecorder?.isRecording() == true) {
+            Log.i(TAG, "🎤 Restarting audio recorder for clean state...")
+            audioRecorder?.stopRecording()
+            scope.launch {
+                delay(100)  // Brief delay for hardware to settle
+                startRecording()
+            }
+        }
+        
         // Ensure we're still running and go back to LISTENING state
         if (isRunning.get()) {
             Log.i(TAG, "🎤 Returning to LISTENING state for new question")

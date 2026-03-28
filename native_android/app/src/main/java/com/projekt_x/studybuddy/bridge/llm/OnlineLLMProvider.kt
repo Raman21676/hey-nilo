@@ -211,10 +211,18 @@ class OnlineLLMProvider(
                 
                 // Provide user-friendly error messages for common errors
                 val userFriendlyError = when (response.code) {
-                    401 -> "Invalid API key. Please check your DeepSeek API key in settings."
-                    402 -> "Insufficient balance. Please top up your DeepSeek account at platform.deepseek.com"
+                    401 -> "Invalid API key. Please check your ${provider.name} API key in settings."
+                    402 -> when (provider) {
+                        ApiProvider.DEEPSEEK -> "Insufficient balance. Please top up your DeepSeek account."
+                        ApiProvider.OPENROUTER -> "Model requires credits. Try a free model or add credits at openrouter.ai"
+                        else -> "Insufficient balance. Please check your account."
+                    }
+                    404 -> when (provider) {
+                        ApiProvider.OPENROUTER -> "Model not found. The model may be unavailable or renamed. Check openrouter.ai/models"
+                        else -> "API endpoint not found."
+                    }
                     429 -> "Rate limit exceeded. Please wait a moment and try again."
-                    500, 502, 503, 504 -> "DeepSeek server error. Please try again later."
+                    500, 502, 503, 504 -> "${provider.name} server error. Please try again later."
                     else -> "API Error ${response.code}: $errorBody"
                 }
                 

@@ -174,7 +174,7 @@ data class ProviderConfig(
                 ApiProvider.CLAUDE -> "claude-3-haiku-20240307"
                 ApiProvider.DEEPSEEK -> "deepseek-chat"
                 ApiProvider.KIMI -> "moonshot-v1-8k"
-                ApiProvider.OPENROUTER -> "nvidia/llama-3.1-nemotron-70b-instruct:free"
+                ApiProvider.OPENROUTER -> "nvidia/llama-3.1-nemotron-70b-instruct"
             }
         }
         

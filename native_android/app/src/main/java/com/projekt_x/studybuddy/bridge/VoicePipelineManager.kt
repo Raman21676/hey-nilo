@@ -69,8 +69,15 @@ class VoicePipelineManager(
         // MAX LISTENING TIME: Force stop if user doesn't speak or tap within 15 seconds
         private const val MAX_LISTENING_TIME_MS = 15000L
         
-        // NO SOFTWARE GAIN — hardware AGC via VOICE_RECOGNITION handles this
-        // Previous AGC code removed per professor's guidance: gain causes clipping/distortion
+        // SOFTWARE GAIN FIX: Samsung Tab A7 Lite has very quiet microphone
+        // Hardware AGC via VOICE_RECOGNITION doesn't provide enough gain
+        // Using minimal 8x gain to boost audio to VAD-detectable levels without clipping
+        private const val SOFTWARE_GAIN = 8f
+        
+        // MAX RESPONSE LENGTH: Force stop LLM once we have enough content
+        // For voice mode, we want concise responses (2-3 sentences = ~150-200 chars)
+        private const val MAX_RESPONSE_CHARS = 200
+        private const val MAX_RESPONSE_SENTENCES = 3
         
         // Debug: set to true to save raw audio to /sdcard/Download/mini_debug/
         private const val DEBUG_SAVE_AUDIO = false
@@ -299,6 +306,11 @@ class VoicePipelineManager(
      * Initialize the entire pipeline
      */
     fun initialize(mode: BridgeMode = BridgeMode.AUTO) {
+        if (isInitialized) {
+            Log.w(TAG, "Already initialized, skipping...")
+            return
+        }
+        
         Log.i(TAG, "=".repeat(60))
         Log.i(TAG, "VOICE PIPELINE INITIALIZATION START")
         Log.i(TAG, "Mode: $mode")
@@ -645,8 +657,20 @@ class VoicePipelineManager(
             return
         }
         
+        // SOFTWARE GAIN FIX: Apply gain to boost quiet Samsung Tab A7 Lite microphone
+        // Hardware AGC is insufficient, so we add minimal software gain
+        val amplifiedAudio = ShortArray(audioData.size) { i ->
+            val amplified = (audioData[i] * SOFTWARE_GAIN).toInt()
+            // Clamp to Short range to prevent overflow/clipping
+            when {
+                amplified > Short.MAX_VALUE -> Short.MAX_VALUE
+                amplified < Short.MIN_VALUE -> Short.MIN_VALUE
+                else -> amplified.toShort()
+            }
+        }
+        
         // Calculate audio level for visualization (always, even during non-listening states)
-        val audioLevel = calculateAudioLevel(audioData)
+        val audioLevel = calculateAudioLevel(amplifiedAudio)
         
         // DEBUG: Log audio level periodically
         if (audioLevel > 0.001f) {
@@ -694,10 +718,10 @@ class VoicePipelineManager(
                 return
             }
             
-            // Calculate audio energy (RMS)
-            val audioEnergy = calculateAudioEnergy(audioData)
-            // Check if VAD agrees it's speech (neural model classification)
-            val vadSaysSpeech = vadBridge?.detectVoice(audioData) == true
+            // Calculate audio energy (RMS) - USE AMPLIFIED AUDIO
+            val audioEnergy = calculateAudioEnergy(amplifiedAudio)
+            // Check if VAD agrees it's speech (neural model classification) - USE AMPLIFIED AUDIO
+            val vadSaysSpeech = vadBridge?.detectVoice(amplifiedAudio) == true
             val isHighEnergy = audioEnergy > BARGE_IN_ENERGY_THRESHOLD
             
             // ALL THREE conditions must be true to increment counter
@@ -736,15 +760,15 @@ class VoicePipelineManager(
             return
         }
         
-        // Add to pre-speech buffer (circular buffer)
-        preSpeechBuffer.addAll(audioData.toList())
+        // Add to pre-speech buffer (circular buffer) - USE AMPLIFIED AUDIO
+        preSpeechBuffer.addAll(amplifiedAudio.toList())
         val preSpeechMaxSize = (SAMPLE_RATE / 1000 * PRE_SPEECH_BUFFER_MS).toInt()
         while (preSpeechBuffer.size > preSpeechMaxSize) {
             preSpeechBuffer.removeFirst()
         }
         
-        // Run VAD processor
-        val vadState = vadProcessor?.process(audioData) ?: VADState.SILENCE
+        // Run VAD processor - USE AMPLIFIED AUDIO
+        val vadState = vadProcessor?.process(amplifiedAudio) ?: VADState.SILENCE
         
         // DEBUG LOG - VAD state
         if (vadState != VADState.SILENCE) {
@@ -765,8 +789,8 @@ class VoicePipelineManager(
                     speechBuffer.clear()
                     speechBuffer.addAll(preSpeechBuffer)
                     
-                    // Include the current frame
-                    speechBuffer.addAll(audioData.toList())
+                    // Include the current frame - USE AMPLIFIED AUDIO
+                    speechBuffer.addAll(amplifiedAudio.toList())
                     
                     currentState = PipelineState.SPEECH_DETECTED
                     Log.i(TAG, "Started collecting speech (pre-speech: ${preSpeechBuffer.size} + frame: ${audioData.size} samples)")
@@ -779,8 +803,8 @@ class VoicePipelineManager(
             
             VADState.SPEECH -> {
                 if (isCollectingSpeech) {
-                    // Add to speech buffer
-                    speechBuffer.addAll(audioData.toList())
+                    // Add to speech buffer - USE AMPLIFIED AUDIO
+                    speechBuffer.addAll(amplifiedAudio.toList())
                     
                     // Reset silence counter when speech detected
                     consecutiveSilenceFrames = 0
@@ -806,8 +830,8 @@ class VoicePipelineManager(
                 Log.d("TIMING", "1. VAD speech end detected at: ${System.currentTimeMillis()}")
                 
                 if (isCollectingSpeech) {
-                    // Include the final frame
-                    speechBuffer.addAll(audioData.toList())
+                    // Include the final frame - USE AMPLIFIED AUDIO
+                    speechBuffer.addAll(amplifiedAudio.toList())
                     
                     val speechDuration = System.currentTimeMillis() - speechStartTime
                     val durationMs = speechBuffer.size * 1000L / SAMPLE_RATE
@@ -1370,7 +1394,18 @@ class VoicePipelineManager(
                             Log.i(TAG, "LLM response complete, tokens: $tokenCount")
                             isLLMResponseComplete = true
                             
-                            val finalResponse = fullResponseText.toString()
+                            // CRITICAL FIX: Get clean response (truncate any role leakage)
+                            val cleanResponse = truncateAtRoleLeakage(fullResponseText.toString())
+                            
+                            // CRITICAL FIX: Ensure TTS buffer matches the clean response!
+                            // The TTS buffer might have accumulated more text than what's clean
+                            val currentTTSContent = ttsTextBuffer.toString()
+                            val cleanTTSContent = filterTTSText(cleanResponse)
+                            if (currentTTSContent != cleanTTSContent) {
+                                Log.w(TAG, "TTS buffer mismatch! Current: ${currentTTSContent.length}, Clean: ${cleanTTSContent.length} - FIXING")
+                                ttsTextBuffer.clear()
+                                ttsTextBuffer.append(cleanTTSContent)
+                            }
                             
                             // Start TTS if not already started
                             if (!isStreamingTTSActive && kokoroTTS?.isReady == true && ttsTextBuffer.isNotBlank()) {
@@ -1378,24 +1413,24 @@ class VoicePipelineManager(
                                 startStreamingTTS()
                             }
                             
-                            // Send final response to UI
+                            // Send CLEAN response to UI (not the raw response with potential leakage)
                             withContext(Dispatchers.Main) {
-                                onResponseUpdate?.invoke(finalResponse, true)
+                                onResponseUpdate?.invoke(cleanResponse, true)
                             }
                             
-                            // BUG FIX 4: Save conversation AND extract memories
+                            // BUG FIX 4: Save conversation AND extract memories (use clean response)
                             scope.launch(Dispatchers.IO) {
                                 try {
                                     memoryManager?.saveConversationExchange(
                                         userMessage = transcription,
-                                        assistantMessage = finalResponse
+                                        assistantMessage = cleanResponse
                                     )
                                     Log.d(TAG, "Conversation exchange saved to memory")
                                     
-                                    // BUG FIX 4: Extract and save memory-worthy facts
+                                    // BUG FIX 4: Extract and save memory-worthy facts (use clean response)
                                     memoryManager?.extractAndSave(
                                         userMessage = transcription,
-                                        llmResponse = finalResponse,
+                                        llmResponse = cleanResponse,
                                         mode = llmProvider?.displayName ?: "Offline"
                                     )
                                     Log.d(TAG, "Memory extraction completed")
@@ -1427,7 +1462,130 @@ class VoicePipelineManager(
                             } else {
                                 "" // No new content
                             }
+                            
+                            // CRITICAL FIX: Check if this token indicates role leakage
+                            // If so, stop generation immediately and don't add to response
+                            val checkText = fullResponseText.toString() + token
+                            if (detectRoleLeakage(checkText)) {
+                                Log.w(TAG, "ROLE LEAKAGE DETECTED in stream - STOPPING GENERATION")
+                                
+                                // Get clean response (truncate at leakage point)
+                                val cleanResponse = truncateAtRoleLeakage(fullResponseText.toString())
+                                
+                                // CRITICAL FIX: Also truncate TTS buffer to match display text!
+                                // Recalculate what TTS should speak based on clean response
+                                ttsTextBuffer.clear()
+                                ttsTextBuffer.append(filterTTSText(cleanResponse))
+                                Log.i(TAG, "TTS buffer truncated to match display: ${ttsTextBuffer.length} chars")
+                                
+                                // Stop LLM generation immediately
+                                llmBridge?.stopGeneration()
+                                isLLMResponseComplete = true
+                                
+                                // Start TTS if we have content
+                                if (!isStreamingTTSActive && kokoroTTS?.isReady == true && ttsTextBuffer.isNotBlank()) {
+                                    Log.i(TAG, "Starting TTS for truncated response")
+                                    startStreamingTTS()
+                                    
+                                    // Wait for TTS to finish before completing
+                                    Log.i(TAG, "Waiting for TTS to finish after role leakage detection...")
+                                    while (isStreamingTTSActive) {
+                                        delay(100)
+                                    }
+                                    Log.i(TAG, "TTS finished after role leakage detection")
+                                }
+                                
+                                // Send clean response to UI
+                                withContext(Dispatchers.Main) {
+                                    onResponseUpdate?.invoke(cleanResponse, true)
+                                }
+                                
+                                // BUG FIX 4: Save conversation (use clean response)
+                                scope.launch(Dispatchers.IO) {
+                                    try {
+                                        memoryManager?.saveConversationExchange(
+                                            userMessage = transcription,
+                                            assistantMessage = cleanResponse
+                                        )
+                                        memoryManager?.extractAndSave(
+                                            userMessage = transcription,
+                                            llmResponse = cleanResponse,
+                                            mode = llmProvider?.displayName ?: "Offline"
+                                        )
+                                    } catch (e: Exception) {
+                                        Log.w(TAG, "Failed to save conversation: ${e.message}")
+                                    }
+                                }
+                                
+                                // Clean up and return to listening
+                                if (isRunning.get()) {
+                                    llmBridge?.clearContext()
+                                }
+                                
+                                // Transition back to listening state
+                                delay(500)  // Small delay for smooth transition
+                                restartListening()
+                                return@collect
+                            }
+                            
                             fullResponseText.append(token)
+                            
+                            // CRITICAL FIX: Check if we've reached maximum response length
+                            // Force stop LLM generation once we have enough content for voice response
+                            val currentResponse = fullResponseText.toString()
+                            val sentenceCount = countSentences(currentResponse)
+                            if (currentResponse.length >= MAX_RESPONSE_CHARS || sentenceCount >= MAX_RESPONSE_SENTENCES) {
+                                Log.i(TAG, "MAX RESPONSE LENGTH REACHED: ${currentResponse.length} chars, $sentenceCount sentences - STOPPING LLM")
+                                
+                                // Get clean response
+                                val cleanResponse = truncateAtRoleLeakage(currentResponse)
+                                
+                                // CRITICAL FIX: Truncate TTS buffer to match what will be displayed!
+                                ttsTextBuffer.clear()
+                                ttsTextBuffer.append(filterTTSText(cleanResponse))
+                                Log.i(TAG, "TTS buffer truncated to match display: ${ttsTextBuffer.length} chars")
+                                
+                                // Stop LLM generation
+                                llmBridge?.stopGeneration()
+                                isLLMResponseComplete = true
+                                
+                                // Start TTS if not already started
+                                if (!isStreamingTTSActive && kokoroTTS?.isReady == true && ttsTextBuffer.isNotBlank()) {
+                                    Log.i(TAG, "Starting TTS for max-length response")
+                                    startStreamingTTS()
+                                    
+                                    // Wait for TTS to finish
+                                    while (isStreamingTTSActive) {
+                                        delay(100)
+                                    }
+                                    Log.i(TAG, "TTS finished for max-length response")
+                                }
+                                
+                                // Send final response to UI
+                                withContext(Dispatchers.Main) {
+                                    onResponseUpdate?.invoke(cleanResponse, true)
+                                }
+                                
+                                // Save conversation
+                                scope.launch(Dispatchers.IO) {
+                                    try {
+                                        memoryManager?.saveConversationExchange(
+                                            userMessage = transcription,
+                                            assistantMessage = cleanResponse
+                                        )
+                                    } catch (e: Exception) {
+                                        Log.w(TAG, "Failed to save conversation: ${e.message}")
+                                    }
+                                }
+                                
+                                // Clean up and return to listening
+                                if (isRunning.get()) {
+                                    llmBridge?.clearContext()
+                                }
+                                delay(500)
+                                restartListening()
+                                return@collect
+                            }
                             
                             // Add to TTS buffer (filter special tokens AND streaming partials)
                             if (token.isNotBlank()) {
@@ -1446,9 +1604,10 @@ class VoicePipelineManager(
                                 startStreamingTTS()
                             }
                             
-                            // Update UI
+                            // Update UI - show clean content only (truncate if leakage detected)
+                            val displayText = truncateAtRoleLeakage(fullResponseText.toString())
                             withContext(Dispatchers.Main) {
-                                onResponseUpdate?.invoke(fullResponseText.toString(), false)
+                                onResponseUpdate?.invoke(displayText, false)
                             }
                         }
                     }
@@ -1940,13 +2099,103 @@ class VoicePipelineManager(
      * CRITICAL FIX: Also TRUNCATES at end markers (like filterAiResponse) to prevent
      * TTS from speaking content that comes after <|im_end|> which is hidden from UI.
      */
+    /**
+     * CRITICAL FIX: Truncate response when model starts generating system/user role content.
+     * This prevents TTS from speaking hidden system prompts or context leakage.
+     */
+    private fun truncateAtRoleLeakage(text: String): String {
+        // IMMEDIATE TRUNCATION: If text starts with role markers, it's 100% leakage
+        val roleStartPatterns = listOf(
+            "user:", "user :", "[user]", "<|user|>", "<|im_start|>user",
+            "system:", "system :", "[system]", "<|system|>", "<|im_start|>system",
+            "assistant:", "assistant :", "[assistant]",
+            "you are a user interface", "youareauserinterface",
+            "your task is to", "yourtaskisto",
+            "type something here", "typesomethinghere"
+        )
+        
+        for (pattern in roleStartPatterns) {
+            val index = text.indexOf(pattern, ignoreCase = true)
+            if (index != -1) {
+                Log.w(TAG, "ROLE LEAKAGE DETECTED at index $index: '$pattern' - TRUNCATING")
+                return text.substring(0, index)
+            }
+        }
+        
+        // Also check for mid-text role transitions (model trying to start new conversation)
+        val midRolePatterns = listOf(
+            "<|im_start|>", "<|im_end|>", "|im_start|>", "|im_end|>",
+            "|im_end|", "|im_start|",  // Partial tokens
+            "im_end|", "im_start|",    // Even more partial
+            "</s>", "[/s]", "<|endoftext|>", "<|end|>"
+        )
+        
+        for (pattern in midRolePatterns) {
+            val index = text.indexOf(pattern, ignoreCase = true)
+            if (index != -1) {
+                Log.w(TAG, "ROLE TRANSITION DETECTED at index $index: '$pattern' - TRUNCATING")
+                return text.substring(0, index)
+            }
+        }
+        
+        // Also truncate at Chinese characters (system content leakage)
+        val chineseCharPattern = Regex("[\u4e00-\u9fff]")
+        val chineseMatch = chineseCharPattern.find(text)
+        if (chineseMatch != null) {
+            Log.w(TAG, "CHINESE CHARACTER DETECTED at index ${chineseMatch.range.first} - TRUNCATING")
+            return text.substring(0, chineseMatch.range.first)
+        }
+        
+        return text
+    }
+    
+    /**
+     * CRITICAL FIX: Detect if text contains role leakage patterns.
+     * Returns true if the model is generating system/user content.
+     */
+    private fun detectRoleLeakage(text: String): Boolean {
+        val leakagePatterns = listOf(
+            // Role markers
+            "user:", "user :", "[user]", "<|user|>", "<|im_start|>user",
+            "system:", "system :", "[system]", "<|system|>", "<|im_start|>system",
+            // System prompt content
+            "you are a user interface", "youareauserinterface",
+            "your task is to", "yourtaskisto",
+            "type something here", "typesomethinghere",
+            "qwen", "qwencoder",  // Model name references
+            "conversation mode", "text bubble",
+            // Chat template markers - various forms
+            "<|im_start|>", "<|im_end|>", "|im_start|>", "|im_end|>",
+            "|im_end|", "|im_start|",  // Partial tokens without brackets
+            "im_end|", "im_start|",    // Even more partial
+            "</s>", "[/s]", "<|endoftext|>", "<|end|>"
+        )
+        
+        for (pattern in leakagePatterns) {
+            if (text.contains(pattern, ignoreCase = true)) {
+                Log.w(TAG, "detectRoleLeakage: FOUND '$pattern' in text")
+                return true
+            }
+        }
+        
+        // Also detect non-ASCII content after valid English response (indicates system leakage)
+        // Look for Chinese/Japanese characters which indicate internal system content
+        val chineseCharPattern = Regex("[\u4e00-\u9fff]")  // Chinese characters
+        if (chineseCharPattern.containsMatchIn(text)) {
+            Log.w(TAG, "detectRoleLeakage: FOUND Chinese characters (system content leakage)")
+            return true
+        }
+        
+        return false
+    }
+    
     private fun filterTTSText(text: String): String {
         if (text.isBlank()) return ""
         
-        var filtered = text
+        // CRITICAL FIX: First check for role leakage and truncate immediately
+        var filtered = truncateAtRoleLeakage(text)
         
         // STEP 1: TRUNCATE at end markers - BUT ONLY if they're near the end of text
-        // This prevents cutting off valid content that might contain these substrings
         val endMarkers = listOf(
             "---EndConversation---", "--- End Conversation ---",
             "---End Context---", "--- End Context ---",
@@ -1985,13 +2234,14 @@ class VoicePipelineManager(
         filtered = filtered.replace("<|im_start|>", "")
         filtered = filtered.replace("|im_end|>", "")
         filtered = filtered.replace("|im_start|>", "")
+        filtered = filtered.replace("|im_end|", "")  // CRITICAL: catch |im_end|| pattern
+        filtered = filtered.replace("|im_start|", "")  // Catch partial start
         filtered = filtered.replace("<|im_end", "")
         filtered = filtered.replace("<|im_start", "")
         filtered = filtered.replace("<|", " ")
         filtered = filtered.replace("|>", " ")
         
         // STEP 4: Remove role markers only when they appear as standalone role indicators
-        // Must be at start AND followed by newline (not just space)
         filtered = filtered.replace(Regex("(?i)^\\s*system\\s*\n"), "")
         filtered = filtered.replace(Regex("(?i)^\\s*assistant\\s*\n"), "")
         filtered = filtered.replace(Regex("(?i)^\\s*user\\s*\n"), "")
@@ -2013,55 +2263,108 @@ class VoicePipelineManager(
     /**
      * Filter individual streaming tokens for TTS.
      * The model generates <|im_end|> as separate tokens: '<', '|', 'im', '_end', '|', '>'
+     * OR as: '|', 'im', '_end', '|' (partial without brackets)
      * This buffers and detects these patterns, returning null for partial tokens.
      */
     private fun filterStreamingTokenForTTS(token: String): String? {
         // Quick check: if token contains complete marker, remove it
-        if (token.contains("<|im_end|>") || token.contains("<|im_start|>")) {
-            return token.replace("<|im_end|>", "").replace("<|im_start|>", "")
+        if (token.contains("<|im_end|>") || token.contains("<|im_start|>") || 
+            token.contains("|im_end|") || token.contains("|im_start|")) {
+            return token.replace("<|im_end|>", "")
+                       .replace("<|im_start|>", "")
+                       .replace("|im_end|", "")
+                       .replace("|im_start|", "")
         }
         
-        // Check for individual components of <|im_end|>
         val trimmed = token.trim()
         
-        // Pattern detection: <|im_end|> breaks into: '<', '|', 'im', '_end', '|', '>'
+        // Pattern 1: Full <|im_end|> = '<', '|', 'im', '_end', '|', '>'
+        // Pattern 2: Partial |im_end| = '|', 'im', '_end', '|'
         when {
+            // Start of <|im_start|> or <|im_end|>
             trimmed == "<" -> {
                 streamingTokenBuffer.clear()
                 streamingTokenBuffer.append("<")
                 isCollectingImEnd = true
                 return null
             }
+            // Continuation of <|...
             isCollectingImEnd && trimmed == "|" && streamingTokenBuffer.toString() == "<" -> {
                 streamingTokenBuffer.append("|")
                 return null
             }
-            isCollectingImEnd && trimmed == "im" && streamingTokenBuffer.toString() == "<|" -> {
-                streamingTokenBuffer.append("im")
+            isCollectingImEnd && (trimmed == "im" || trimmed == "_end") && 
+                (streamingTokenBuffer.toString() == "<|" || streamingTokenBuffer.toString().endsWith("im")) -> {
+                streamingTokenBuffer.append(trimmed)
                 return null
             }
-            isCollectingImEnd && trimmed == "_end" && streamingTokenBuffer.toString() == "<|im" -> {
-                streamingTokenBuffer.append("_end")
-                return null
-            }
-            isCollectingImEnd && trimmed == "|" && streamingTokenBuffer.toString() == "<|im_end" -> {
+            isCollectingImEnd && trimmed == "|" && streamingTokenBuffer.toString().contains("im") -> {
                 streamingTokenBuffer.append("|")
                 return null
             }
-            isCollectingImEnd && trimmed == ">" && streamingTokenBuffer.toString() == "<|im_end|" -> {
+            isCollectingImEnd && trimmed == ">" && streamingTokenBuffer.toString().startsWith("<|") -> {
+                // Complete <|im_end|> or <|im_start|> - discard it
                 streamingTokenBuffer.clear()
                 isCollectingImEnd = false
                 return null
             }
+            // Pattern 2: |im_end| (starts with | instead of <|)
+            trimmed == "|" && !isCollectingImEnd -> {
+                streamingTokenBuffer.clear()
+                streamingTokenBuffer.append("|")
+                isCollectingImEnd = true
+                return null
+            }
+            isCollectingImEnd && trimmed == "im" && streamingTokenBuffer.toString() == "|" -> {
+                streamingTokenBuffer.append("im")
+                return null
+            }
+            isCollectingImEnd && trimmed == "_end" && streamingTokenBuffer.toString() == "|im" -> {
+                streamingTokenBuffer.append("_end")
+                return null
+            }
+            isCollectingImEnd && trimmed == "|" && streamingTokenBuffer.toString() == "|im_end" -> {
+                // Complete |im_end| - discard it
+                streamingTokenBuffer.clear()
+                isCollectingImEnd = false
+                return null
+            }
+            // If we're collecting but pattern doesn't match, flush buffer
             isCollectingImEnd -> {
                 val bufferContent = streamingTokenBuffer.toString()
                 streamingTokenBuffer.clear()
                 isCollectingImEnd = false
+                // Don't add this token if it looks like end marker
+                if (trimmed == "_end" || trimmed == "im_end" || trimmed.contains("im")) {
+                    return bufferContent
+                }
                 return bufferContent + token
             }
         }
         
         return token
+    }
+    
+    /**
+     * Count the number of complete sentences in text.
+     * Used to limit response length for voice mode.
+     */
+    private fun countSentences(text: String): Int {
+        if (text.length < 10) return 0
+        
+        var count = 0
+        for (i in 1 until text.length - 1) {
+            val char = text[i]
+            if (char == '.' || char == '!' || char == '?') {
+                // Check if it's a numbered list item (digit + .)
+                if (i > 0 && text[i-1].isDigit()) {
+                    val isAfterSpace = i == 1 || text[i-2] == ' '
+                    if (isAfterSpace) continue  // Skip "1." "2." etc.
+                }
+                count++
+            }
+        }
+        return count
     }
     
     private fun hasCompleteSentence(text: String): Boolean {

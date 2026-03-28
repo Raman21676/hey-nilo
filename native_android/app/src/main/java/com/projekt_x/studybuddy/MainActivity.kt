@@ -70,6 +70,8 @@ import com.projekt_x.studybuddy.bridge.ApiKeyStore
 import com.projekt_x.studybuddy.bridge.llm.*
 import com.projekt_x.studybuddy.model.ModelInfo
 import com.projekt_x.studybuddy.model.OfflineModelConfig
+import com.projekt_x.studybuddy.model.ConversationManager
+import com.projekt_x.studybuddy.model.Conversation
 import com.projekt_x.studybuddy.ui.OfflineModelPickerScreen
 import com.projekt_x.studybuddy.ui.ModelSetupView
 import com.projekt_x.studybuddy.ui.components.PerformanceStatusBar
@@ -354,6 +356,9 @@ fun HeyNiloApp(
     var currentMode by remember { mutableStateOf<AppMode>(AppMode.Offline) }
     var activeOnlineConfig by remember { mutableStateOf<ProviderConfig?>(null) }
     
+    // Quit confirmation dialog state
+    var showQuitDialog by remember { mutableStateOf(false) }
+    
     // Back navigation: When in chat view, go back to ModelSetupView instead of quitting
     BackHandler(enabled = isModelLoaded || activeOnlineConfig != null) {
         // Unload the model to properly return to setup
@@ -365,6 +370,39 @@ fun HeyNiloApp(
         activeOnlineConfig = null
         isVoiceModeActive = false
         Log.i(TAG, "Back pressed: Returning to ModelSetupView")
+    }
+    
+    // Quit confirmation when on setup screen
+    BackHandler(enabled = !isModelLoaded && activeOnlineConfig == null && !showQuitDialog) {
+        showQuitDialog = true
+    }
+    
+    // Conversation Manager
+    val conversationManager = remember { ConversationManager(context) }
+    var showConversationHistory by remember { mutableStateOf(false) }
+    var currentConversationId by remember { mutableStateOf<String?>(null) }
+    
+    // Quit confirmation dialog
+    if (showQuitDialog) {
+        AlertDialog(
+            onDismissRequest = { showQuitDialog = false },
+            title = { Text("Quit Hey-Nilo?") },
+            text = { Text("Are you sure you want to exit the app?") },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        (context as? ComponentActivity)?.finish()
+                    }
+                ) {
+                    Text("Quit", color = MaterialTheme.colorScheme.error)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showQuitDialog = false }) {
+                    Text("Cancel")
+                }
+            }
+        )
     }
     
     val scope = rememberCoroutineScope()
@@ -505,7 +543,9 @@ fun HeyNiloApp(
                     metricsState = metricsState,
                     onlineConfig = activeOnlineConfig,
                     isVoiceModeActive = isVoiceModeActive,
-                    onVoiceModeChange = { isVoiceModeActive = it }
+                    onVoiceModeChange = { isVoiceModeActive = it },
+                    conversationManager = conversationManager,
+                    currentMode = if (activeOnlineConfig != null) "online" else "offline"
                 )
             }
             
@@ -865,7 +905,9 @@ fun UnifiedChatView(
     metricsState: PerformanceMetricsState,
     onlineConfig: ProviderConfig?,
     isVoiceModeActive: Boolean,
-    onVoiceModeChange: (Boolean) -> Unit
+    onVoiceModeChange: (Boolean) -> Unit,
+    conversationManager: ConversationManager? = null,
+    currentMode: String = "offline"
 ) {
     val context = LocalContext.current
     val focusManager = LocalFocusManager.current
@@ -884,6 +926,35 @@ fun UnifiedChatView(
     var voiceResponse by remember { mutableStateOf("") }
     var isRecording by remember { mutableStateOf(false) }
     var audioLevel by remember { mutableFloatStateOf(0f) }
+    
+    // Conversation management states
+    var showConversationHistory by remember { mutableStateOf(false) }
+    var showNewChatConfirm by remember { mutableStateOf(false) }
+    var showMaxMessagesWarning by remember { mutableStateOf(false) }
+    var messageCount by remember { mutableStateOf(0) }
+    
+    // Initialize or load conversation
+    LaunchedEffect(currentMode) {
+        conversationManager?.let { cm ->
+            val existingConversations = cm.getConversations(currentMode)
+            if (existingConversations.isNotEmpty()) {
+                // Load the most recent conversation
+                cm.loadConversation(existingConversations.first().id, currentMode)
+                // Convert saved messages to UI messages
+                messages = existingConversations.first().messages.map { msg ->
+                    Message(
+                        content = msg.content,
+                        isUser = msg.role == "user",
+                        isStreaming = false
+                    )
+                }
+                messageCount = existingConversations.first().messages.size / 2 // Approximate Q&A pairs
+            } else {
+                // Create new conversation
+                cm.createNewConversation(currentMode)
+            }
+        }
+    }
     
     // FIX: Track permission state to re-initialize voice pipeline if needed
     var hasRecordPermission by remember { 
@@ -921,7 +992,7 @@ fun UnifiedChatView(
     }
     
     // Initialize voice pipeline
-    LaunchedEffect(onlineConfig) {
+    LaunchedEffect(onlineConfig, hasRecordPermission) {
         // Create provider based on mode
         val llmProvider: LLMProvider? = onlineConfig?.let { config ->
             val provider = OnlineLLMProvider(context, config.provider, config)
@@ -979,7 +1050,10 @@ fun UnifiedChatView(
             level
         }
         
-        vpm.initialize()
+        // Only initialize if we have permission - otherwise wait for permission callback
+        if (hasRecordPermission) {
+            vpm.initialize()
+        }
         voicePipelineManager = vpm
     }
     

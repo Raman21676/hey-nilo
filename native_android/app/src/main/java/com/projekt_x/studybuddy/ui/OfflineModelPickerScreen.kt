@@ -237,7 +237,16 @@ fun OfflineModelPickerScreen(
                                         DownloadManager.markComplete(model.id)
                                         downloadedModels = downloadedModels + (model.id to true)
                                         selectedModelId = model.id
-                                        snackbarMessage = "${model.displayName} downloaded successfully!"
+                                        snackbarMessage = "${model.displayName} downloaded!"
+                                        // CRITICAL FIX: Auto-load model after download completes
+                                        // This ensures the model is ready for use immediately
+                                        val modelsDir = java.io.File(context.getExternalFilesDir(null), "models")
+                                        val modelFile = java.io.File(modelsDir, model.fileName)
+                                        if (modelFile.exists()) {
+                                            Log.i(TAG, "Auto-loading model after download: ${model.displayName}")
+                                            // Notify parent to load the model
+                                            onModelSelected(model)
+                                        }
                                     } else {
                                         DownloadManager.markError(model.id, error ?: "Unknown error")
                                         snackbarMessage = "Download failed: $error"
@@ -337,7 +346,14 @@ fun OfflineModelPickerScreen(
                                         DownloadManager.markComplete(m.id)
                                         downloadedModels = downloadedModels + (m.id to true)
                                         selectedModelId = m.id
-                                        snackbarMessage = "${m.displayName} downloaded successfully!"
+                                        snackbarMessage = "${m.displayName} downloaded!"
+                                        // CRITICAL FIX: Auto-load model after download completes
+                                        val modelsDir = java.io.File(context.getExternalFilesDir(null), "models")
+                                        val modelFile = java.io.File(modelsDir, m.fileName)
+                                        if (modelFile.exists()) {
+                                            Log.i(TAG, "Auto-loading model after download: ${m.displayName}")
+                                            onModelSelected(m)
+                                        }
                                     } else {
                                         DownloadManager.markError(m.id, error ?: "Unknown error")
                                         snackbarMessage = "Download failed: $error"

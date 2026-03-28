@@ -12,6 +12,7 @@ import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Send
+import androidx.compose.material.icons.filled.Warning
 import androidx.activity.compose.BackHandler
 
 import androidx.compose.material3.*
@@ -32,6 +33,7 @@ import com.projekt_x.studybuddy.model.OfflineModelConfig
 import com.projekt_x.studybuddy.model.getAllModels
 import com.projekt_x.studybuddy.model.getRecommendedModel
 import com.projekt_x.studybuddy.bridge.DeviceInfo
+import com.projekt_x.studybuddy.bridge.llm.SystemPromptBuilder
 import kotlinx.coroutines.launch
 import java.io.File
 
@@ -111,6 +113,52 @@ fun ModelSetupView(
         }
     }
     
+    // CRITICAL FIX: Poll for model download completion and auto-load
+    // This handles the case where download finishes while user is away from picker
+    LaunchedEffect(Unit) {
+        while (true) {
+            kotlinx.coroutines.delay(2000) // Check every 2 seconds
+            
+            // If no model selected yet, check if one appeared
+            if (selectedOfflineModel == null) {
+                val modelsDir = File(context.getExternalFilesDir(null), "models")
+                val allModels = getAllModels()
+                val downloadedModel = allModels.find { model ->
+                    File(modelsDir, model.fileName).exists()
+                }
+                
+                downloadedModel?.let { model ->
+                    Log.i(TAG, "Detected newly downloaded model: ${model.displayName}")
+                    selectedOfflineModel = model
+                    selectedMode = AppMode.Offline
+                    
+                    // CRITICAL FIX: Auto-load the model immediately after detection
+                    if (!bridge.isLoaded()) {
+                        Log.i(TAG, "Auto-loading model after detection: ${model.displayName}")
+                        onLoading(true)
+                        try {
+                            val modelFile = File(modelsDir, model.fileName)
+                            val config = bridge.detectDeviceConfig()
+                            val success = bridge.loadModel(modelFile.absolutePath, config)
+                            if (success) {
+                                bridge.setSystemPrompt(SystemPromptBuilder.buildSystemPrompt())
+                                Log.i(TAG, "Model auto-loaded successfully, navigating to chat")
+                                onModelLoaded()
+                            } else {
+                                onError("Failed to auto-load model")
+                            }
+                        } catch (e: Exception) {
+                            Log.e(TAG, "Error auto-loading model", e)
+                            onError("Error loading model: ${e.message}")
+                        } finally {
+                            onLoading(false)
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
     // Show snackbar
     val snackbarHostState = remember { SnackbarHostState() }
     LaunchedEffect(snackbarMessage) {
@@ -153,6 +201,33 @@ fun ModelSetupView(
                     style = MaterialTheme.typography.bodyLarge,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
+                
+                Spacer(modifier = Modifier.height(16.dp))
+                
+                // AI Warning Banner
+                Surface(
+                    color = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.7f),
+                    shape = MaterialTheme.shapes.small,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Row(
+                        modifier = Modifier.padding(12.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Warning,
+                            contentDescription = "Warning",
+                            tint = MaterialTheme.colorScheme.onErrorContainer,
+                            modifier = Modifier.size(20.dp)
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = "AI can make mistakes. Always verify important information.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onErrorContainer
+                        )
+                    }
+                }
             }
             
             // Middle section: Mode selection cards

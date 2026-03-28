@@ -606,6 +606,12 @@ class VoicePipelineManager(
      * 3. Reset VADProcessor after SPEECH_END for clean separation between utterances
      */
     private fun processAudioWithVAD(audioData: ShortArray) {
+        // CRITICAL FIX: Skip ALL processing if TTS is speaking
+        // This prevents the TTS feedback loop where app listens to itself
+        if (currentState == PipelineState.SPEAKING) {
+            return
+        }
+        
         // Calculate audio level for visualization (always, even during non-listening states)
         val audioLevel = calculateAudioLevel(audioData)
         
@@ -1674,8 +1680,17 @@ class VoicePipelineManager(
         isStreamingTTSActive = true
         Log.i(TAG, "Starting TTS (QUEUE_ADD mode)")
         
-        // Don't stop recording! Just change state to SPEAKING to pause VAD processing
+        // CRITICAL FIX: Force state to SPEAKING and abort any ongoing speech collection
+        // This prevents TTS audio from being collected as "user speech"
         currentState = PipelineState.SPEAKING
+        
+        // Reset all speech collection state to prevent feedback loop
+        isCollectingSpeech = false
+        speechBuffer.clear()
+        preSpeechBuffer.clear()
+        consecutiveSilenceFrames = 0
+        bargeInConfirmFrames = 0
+        vadProcessor?.reset()
         
         // Notify audio recorder that TTS is speaking (for barge-in detection)
         audioRecorder?.setTTSSpeaking(true)

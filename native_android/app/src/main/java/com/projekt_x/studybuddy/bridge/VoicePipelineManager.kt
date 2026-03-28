@@ -120,6 +120,14 @@ class VoicePipelineManager(
         }
         
         try {
+            // CRITICAL: Wait for TTS to actually stop speaking
+            var waitCount = 0
+            while (kokoroTTS?.isSpeaking() == true && waitCount < 50) {
+                Log.i(TAG, "⏳ Waiting for TTS to finish speaking...")
+                delay(100)
+                waitCount++
+            }
+            
             val timeSinceTTS = System.currentTimeMillis() - lastTTSFinishedTime
             val cooldownRemaining = TTS_COOLDOWN_MS - timeSinceTTS
             
@@ -145,6 +153,25 @@ class VoicePipelineManager(
         // Only allow one transition at a time
         if (!isTransitioningToListening.compareAndSet(false, true)) {
             Log.d(TAG, "Transition already in progress, skipping immediate")
+            return
+        }
+        
+        // CRITICAL: Don't transition if TTS is still speaking
+        if (kokoroTTS?.isSpeaking() == true) {
+            Log.i(TAG, "⏳ TTS still speaking, delaying transition...")
+            scope.launch {
+                var waitCount = 0
+                while (kokoroTTS?.isSpeaking() == true && waitCount < 50) {
+                    delay(100)
+                    waitCount++
+                }
+                delay(TTS_COOLDOWN_MS)
+                if (isRunning.get() && currentState != PipelineState.LISTENING) {
+                    currentState = PipelineState.LISTENING
+                    Log.i(TAG, "🎤 State changed: LISTENING (after TTS finished)")
+                }
+                isTransitioningToListening.set(false)
+            }
             return
         }
         
@@ -609,6 +636,12 @@ class VoicePipelineManager(
         // CRITICAL FIX: Skip ALL processing if TTS is speaking
         // This prevents the TTS feedback loop where app listens to itself
         if (currentState == PipelineState.SPEAKING) {
+            return
+        }
+        
+        // EXTRA CHECK: Skip if TTS is actively speaking (even if state is wrong)
+        if (kokoroTTS?.isSpeaking() == true) {
+            Log.v(TAG, "Skipping audio - TTS is speaking")
             return
         }
         

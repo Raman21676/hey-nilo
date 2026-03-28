@@ -118,7 +118,8 @@ enum class ApiProvider {
     OPENAI,         // OpenAI GPT-4/GPT-3.5
     CLAUDE,         // Anthropic Claude
     DEEPSEEK,       // DeepSeek
-    KIMI            // Moonshot AI Kimi (uses Anthropic format)
+    KIMI,           // Moonshot AI Kimi (uses Anthropic format)
+    OPENROUTER      // OpenRouter (multi-provider, OpenAI-compatible)
 }
 
 /**
@@ -173,6 +174,7 @@ data class ProviderConfig(
                 ApiProvider.CLAUDE -> "claude-3-haiku-20240307"
                 ApiProvider.DEEPSEEK -> "deepseek-chat"
                 ApiProvider.KIMI -> "moonshot-v1-8k"
+                ApiProvider.OPENROUTER -> "nvidia/llama-3.1-nemotron-70b-instruct:free"
             }
         }
         
@@ -184,6 +186,7 @@ data class ProviderConfig(
                 ApiProvider.CLAUDE -> "https://api.anthropic.com/v1"
                 ApiProvider.DEEPSEEK -> "https://api.deepseek.com/v1"
                 ApiProvider.KIMI -> "https://api.moonshot.cn/anthropic/v1"
+                ApiProvider.OPENROUTER -> "https://openrouter.ai/api/v1"
             }
         }
     }

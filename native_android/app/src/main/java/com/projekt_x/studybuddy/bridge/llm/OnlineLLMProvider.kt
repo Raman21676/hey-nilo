@@ -36,6 +36,7 @@ class OnlineLLMProvider(
         ApiProvider.CLAUDE -> "Anthropic Claude"
         ApiProvider.DEEPSEEK -> "DeepSeek"
         ApiProvider.KIMI -> "Moonshot Kimi"
+        ApiProvider.OPENROUTER -> "OpenRouter"
         ApiProvider.OFFLINE -> "Offline"
     }
     
@@ -145,7 +146,7 @@ class OnlineLLMProvider(
         
         try {
             when (provider) {
-                ApiProvider.OPENAI, ApiProvider.DEEPSEEK -> {
+                ApiProvider.OPENAI, ApiProvider.DEEPSEEK, ApiProvider.OPENROUTER -> {
                     emitOpenAICompatibleStream(request, startTime, fullResponse)
                 }
                 ApiProvider.CLAUDE, ApiProvider.KIMI -> {
@@ -375,7 +376,7 @@ class OnlineLLMProvider(
      */
     private suspend fun makeApiRequest(request: CompletionRequest, stream: Boolean): LLMResponse? {
         return when (provider) {
-            ApiProvider.OPENAI, ApiProvider.DEEPSEEK -> {
+            ApiProvider.OPENAI, ApiProvider.DEEPSEEK, ApiProvider.OPENROUTER -> {
                 makeOpenAICompatibleRequest(request)
             }
             ApiProvider.CLAUDE, ApiProvider.KIMI -> {
@@ -593,6 +594,7 @@ class OnlineLLMProvider(
             ApiProvider.CLAUDE -> 200000  // Claude 3
             ApiProvider.DEEPSEEK -> 64000
             ApiProvider.KIMI -> 8192
+            ApiProvider.OPENROUTER -> 128000  // Varies by model
             ApiProvider.OFFLINE -> 2048
         }
     }

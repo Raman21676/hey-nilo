@@ -1639,10 +1639,10 @@ class VoicePipelineManager(
                                 }
                             }
                             
-                            // CRITICAL FIX: Only start TTS when LLM is complete
-                            // This ensures TTS speaks only finalBubbleText, not accumulated streaming text
-                            if (!isStreamingTTSActive && isLLMResponseComplete) {
-                                Log.i(TAG, "LLM complete, starting TTS for final text only")
+                            // CRITICAL FIX: Start TTS as soon as we have a complete sentence
+                            // TTS streams from finalBubbleText (or current response if not set yet)
+                            if (!isStreamingTTSActive && hasCompleteSentence(fullResponseText.toString())) {
+                                Log.i(TAG, "First sentence ready, starting TTS streaming")
                                 startStreamingTTS()
                             }
                             
@@ -1915,14 +1915,14 @@ class VoicePipelineManager(
      * Exit loop when isLLMResponseComplete is true and no text remains.
      */
     /**
-     * CRITICAL FIX: Simple TTS that speaks only finalBubbleText
-     * No streaming, no queuing - just speak the final text once
+     * CRITICAL FIX: Hybrid TTS - streams by sentence for low latency,
+     * but uses ONLY finalBubbleText as source of truth (no hidden content)
      */
     private fun startStreamingTTS() {
         if (isStreamingTTSActive || kokoroTTS?.isReady != true) return
         
         isStreamingTTSActive = true
-        Log.i(TAG, "Starting TTS (simple mode - only speaks finalBubbleText)")
+        Log.i(TAG, "Starting TTS (hybrid mode - streams sentences from finalBubbleText only)")
         
         // CRITICAL FIX: Force state to SPEAKING and abort any ongoing speech collection
         currentState = PipelineState.SPEAKING
@@ -1942,37 +1942,75 @@ class VoicePipelineManager(
         kokoroTTS?.stop()
         
         streamingTTSJob = scope.launch {
+            var lastSentToTTSIndex = 0  // Tracks what we've spoken from finalBubbleText
+            var isFirstChunk = true
+            val ttsStartTime = System.currentTimeMillis()
+            val MAX_TTS_WAIT_MS = 30000L
+            
             try {
-                // Wait for LLM to complete (either naturally or by stop)
-                var waitCount = 0
-                while (!isLLMResponseComplete && waitCount < 300) {
-                    delay(100)
-                    waitCount++
-                }
-                
-                // CRITICAL FIX: Use ONLY finalBubbleText as source of truth
-                // This ensures TTS speaks EXACTLY what's in the bubble, nothing more
-                val textToSpeak = if (finalBubbleText.isNotBlank()) {
-                    finalBubbleText
-                } else {
-                    // Fallback only if finalBubbleText not set
-                    truncateAtRoleLeakage(fullResponseText.toString())
-                }
-                
-                val filteredText = filterTTSText(textToSpeak)
-                
-                if (filteredText.isNotBlank()) {
-                    Log.i(TAG, "TTS: Speaking ${filteredText.length} chars from finalBubbleText only")
-                    Log.i(TAG, "TTS: Text='${filteredText.take(100)}${if (filteredText.length > 100) "..." else ""}'")
+                while (isActive) {
+                    // CRITICAL FIX: Always use finalBubbleText as source of truth
+                    // If not set yet, use current fullResponseText (will be truncated later)
+                    val sourceText = if (finalBubbleText.isNotBlank()) {
+                        finalBubbleText
+                    } else {
+                        truncateAtRoleLeakage(fullResponseText.toString())
+                    }
                     
-                    // Speak the text
-                    kokoroTTS?.speak(filteredText)
+                    // Check if there's new text to speak
+                    if (sourceText.length > lastSentToTTSIndex) {
+                        val unspokenText = sourceText.substring(lastSentToTTSIndex)
+                        
+                        // Look for sentence boundary
+                        val sentenceEnd = unspokenText.indexOfFirst { it == '.' || it == '!' || it == '?' }
+                        
+                        if (sentenceEnd != -1) {
+                            // Found complete sentence - speak it
+                            val sentence = unspokenText.substring(0, sentenceEnd + 1).trim()
+                            if (sentence.isNotBlank()) {
+                                val filtered = filterTTSText(sentence)
+                                if (filtered.isNotBlank()) {
+                                    val queueMode = if (isFirstChunk) TextToSpeech.QUEUE_FLUSH else TextToSpeech.QUEUE_ADD
+                                    Log.d(TAG, "TTS streaming: '$filtered'")
+                                    kokoroTTS?.speakQueued(filtered, queueMode)
+                                    isFirstChunk = false
+                                }
+                            }
+                            lastSentToTTSIndex += sentenceEnd + 1
+                        }
+                    }
                     
-                    // Wait for TTS to finish
-                    kokoroTTS?.waitForCompletion()
-                    Log.i(TAG, "TTS: Finished speaking")
-                } else {
-                    Log.w(TAG, "TTS: No text to speak")
+                    // Check if LLM is complete
+                    if (isLLMResponseComplete) {
+                        // Speak any remaining text from finalBubbleText
+                        val sourceText = if (finalBubbleText.isNotBlank()) finalBubbleText else truncateAtRoleLeakage(fullResponseText.toString())
+                        
+                        if (sourceText.length > lastSentToTTSIndex) {
+                            val remainder = sourceText.substring(lastSentToTTSIndex).trim()
+                            if (remainder.isNotBlank()) {
+                                val filtered = filterTTSText(remainder)
+                                if (filtered.isNotBlank()) {
+                                    val queueMode = if (isFirstChunk) TextToSpeech.QUEUE_FLUSH else TextToSpeech.QUEUE_ADD
+                                    Log.i(TAG, "TTS final remainder: '$filtered'")
+                                    kokoroTTS?.speakQueued(filtered, queueMode)
+                                }
+                            }
+                        }
+                        
+                        // Wait for all TTS to complete
+                        Log.i(TAG, "TTS: Waiting for completion...")
+                        kokoroTTS?.waitForCompletion()
+                        Log.i(TAG, "TTS: Finished")
+                        break
+                    }
+                    
+                    // Safety timeout
+                    if (System.currentTimeMillis() - ttsStartTime > MAX_TTS_WAIT_MS) {
+                        Log.w(TAG, "TTS timeout")
+                        break
+                    }
+                    
+                    delay(50)
                 }
                 
             } catch (e: Exception) {

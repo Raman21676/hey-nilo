@@ -679,7 +679,19 @@ Java_com_projekt_1x_studybuddy_LlamaBridge_nativeGenerateStream(
     int repeat_count = 0;
     const int MAX_REPEAT = 3;
     
+    // Hard timeout to prevent infinite generation loops
+    auto start_time = std::chrono::steady_clock::now();
+    const int MAX_GENERATION_SECONDS = 30;
+    
     while (n_gen < maxTokens && !g_state->should_stop) {
+        // Check hard timeout
+        auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(
+            std::chrono::steady_clock::now() - start_time).count();
+        if (elapsed > MAX_GENERATION_SECONDS) {
+            LOGW("HARD TIMEOUT: Generation stopped after %d seconds at token %d", 
+                 MAX_GENERATION_SECONDS, n_gen);
+            break;
+        }
         if (n_gen % 20 == 0 && n_gen > 0) {
             float temp = getCpuTemperature();
             if (temp > 75.0f) {

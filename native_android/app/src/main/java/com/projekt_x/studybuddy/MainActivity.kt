@@ -70,8 +70,6 @@ import com.projekt_x.studybuddy.bridge.ApiKeyStore
 import com.projekt_x.studybuddy.bridge.llm.*
 import com.projekt_x.studybuddy.model.ModelInfo
 import com.projekt_x.studybuddy.model.OfflineModelConfig
-import com.projekt_x.studybuddy.model.ConversationManager
-import com.projekt_x.studybuddy.model.Conversation
 import com.projekt_x.studybuddy.ui.OfflineModelPickerScreen
 import com.projekt_x.studybuddy.ui.ModelSetupView
 import com.projekt_x.studybuddy.ui.components.PerformanceStatusBar
@@ -377,11 +375,6 @@ fun HeyNiloApp(
         showQuitDialog = true
     }
     
-    // Conversation Manager
-    val conversationManager = remember { ConversationManager(context) }
-    var showConversationHistory by remember { mutableStateOf(false) }
-    var currentConversationId by remember { mutableStateOf<String?>(null) }
-    
     // Quit confirmation dialog
     if (showQuitDialog) {
         AlertDialog(
@@ -544,7 +537,6 @@ fun HeyNiloApp(
                     onlineConfig = activeOnlineConfig,
                     isVoiceModeActive = isVoiceModeActive,
                     onVoiceModeChange = { isVoiceModeActive = it },
-                    conversationManager = conversationManager,
                     currentMode = if (activeOnlineConfig != null) "online" else "offline"
                 )
             }
@@ -713,7 +705,7 @@ fun filterAiResponse(text: String): String {
         "---EndConversation---", "--- End Conversation ---",
         "---End Context---", "--- End Context ---",
         "[/s]", "</s>", "</s", "<|system|>", "<|assistant|>", "<|user|>",
-        "|im_end|>", "<|im_end|>", "<|im_start|>assistant"
+        "|im_end|", "|im_end|>", "<|im_end|>", "<|im_start|>assistant"
     )
     for (marker in endMarkers) {
         val index = filtered.indexOf(marker, ignoreCase = true)
@@ -754,6 +746,8 @@ fun filterAiResponse(text: String): String {
     filtered = filtered.replace("<|im_start|>", " ")
     filtered = filtered.replace("|im_end|>", " ")
     filtered = filtered.replace("|im_start|>", " ")
+    filtered = filtered.replace("|im_end|", " ")  // CRITICAL: Without < or >
+    filtered = filtered.replace("|im_start|", " ")  // CRITICAL: Without < or >
     filtered = filtered.replace("<|im_end", " ")
     filtered = filtered.replace("<|im_start", " ")
     filtered = filtered.replace("im_end|>", " ")
@@ -906,7 +900,6 @@ fun UnifiedChatView(
     onlineConfig: ProviderConfig?,
     isVoiceModeActive: Boolean,
     onVoiceModeChange: (Boolean) -> Unit,
-    conversationManager: ConversationManager? = null,
     currentMode: String = "offline"
 ) {
     val context = LocalContext.current
@@ -926,35 +919,6 @@ fun UnifiedChatView(
     var voiceResponse by remember { mutableStateOf("") }
     var isRecording by remember { mutableStateOf(false) }
     var audioLevel by remember { mutableFloatStateOf(0f) }
-    
-    // Conversation management states
-    var showConversationHistory by remember { mutableStateOf(false) }
-    var showNewChatConfirm by remember { mutableStateOf(false) }
-    var showMaxMessagesWarning by remember { mutableStateOf(false) }
-    var messageCount by remember { mutableStateOf(0) }
-    
-    // Initialize or load conversation
-    LaunchedEffect(currentMode) {
-        conversationManager?.let { cm ->
-            val existingConversations = cm.getConversations(currentMode)
-            if (existingConversations.isNotEmpty()) {
-                // Load the most recent conversation
-                cm.loadConversation(existingConversations.first().id, currentMode)
-                // Convert saved messages to UI messages
-                messages = existingConversations.first().messages.map { msg ->
-                    Message(
-                        content = msg.content,
-                        isUser = msg.role == "user",
-                        isStreaming = false
-                    )
-                }
-                messageCount = existingConversations.first().messages.size / 2 // Approximate Q&A pairs
-            } else {
-                // Create new conversation
-                cm.createNewConversation(currentMode)
-            }
-        }
-    }
     
     // FIX: Track permission state to re-initialize voice pipeline if needed
     var hasRecordPermission by remember { 

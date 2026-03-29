@@ -2,7 +2,7 @@
 
 **For**: AI Agents working on the Hey-Nilo project  
 **Purpose**: Complete project context and working guidelines  
-**Last Updated**: March 23, 2026
+**Last Updated**: March 29, 2026
 
 > **📋 RECENT SESSION**: See `SESSION_SUMMARY.md` for today's work (March 23, 2026) - includes history trimming, auto-scroll, token filtering, and voice mode fixes.  
 
@@ -39,7 +39,19 @@ cat TODO.md | grep -A 5 "Project Status Overview"
 
 ---
 
-## 🆕 Recent Changes (March 21, 2026)
+## 🆕 Recent Changes (March 29, 2026)
+
+### Dead Code Cleanup - Pre-Play Store
+- **Removed**: Unused `ConversationManager` (30 messages/chat limit, 3-chat FIFO)
+  - File deleted: `ConversationManager.kt`
+  - Removed from `MainActivity.kt`: import, instantiation, and related states
+  - Never fully integrated - `addMessage()` was never called
+- **Why**: Partially implemented feature from previous session, not visible to users
+- **Result**: Cleaner codebase, smaller APK, no orphaned SharedPreferences keys
+
+---
+
+## 📝 Previous Changes (March 21, 2026)
 
 ### Logo & UI Refresh
 - **New Logo**: Replaced panda with user's custom "Nilo" blue face logo

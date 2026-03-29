@@ -1370,11 +1370,18 @@ class VoicePipelineManager(
      * If LLM doesn't respond within 60 seconds, we timeout and restart listening.
      */
     private fun processWithLLMProvider(transcription: String) {
+        Log.d("NILO_DEBUG", "processWithLLM called. llmProvider=${llmProvider != null}, isAvailable=${llmProvider?.isAvailable()}")
+        Log.d("NILO_DEBUG", "currentState=$currentState, isRunning=${isRunning.get()}")
         llmProviderJob = scope.launch {
             try {
-                // Clear previous response text when NEW user query starts
+                // Hard reset all state before starting new generation
                 fullResponseText.clear()
-                finalBubbleText = ""  // Reset final bubble text
+                ttsTextBuffer.clear()  
+                isLLMResponseComplete = false
+                finalBubbleText = ""
+                streamingTokenBuffer.clear()
+                isCollectingImEnd = false
+                Log.d("NILO_DEBUG", "State reset complete, starting LLM call")
                 // NOTE: Don't clear context here - it was cleared after previous response
                 // This allows the model to maintain context for natural conversation
                 // Reset streaming token filter state
@@ -1626,103 +1633,74 @@ class VoicePipelineManager(
                             response.isComplete -> {
                                 Log.i(TAG, "LLM response complete, tokens: $tokenCount")
                                 
-                                // BUG FIX: Process final token if present (might contain last part of response)
+                                // BUG FIX: Process final token if present
                                 if (response.token != null && response.token.isNotBlank()) {
-                                    Log.d(TAG, "Processing final token: '${response.token}'")
                                     tokenCount++
                                     fullResponseText.append(response.token)
-                                    val filteredToken = filterTTSText(response.token)
-                                    if (filteredToken.isNotBlank()) {
-                                        ttsTextBuffer.append(filteredToken)
-                                    }
                                 }
                                 
                                 responseComplete = true
-                                isLLMResponseComplete = true  // Signal TTS loop to speak remaining text
                                 
-                                // CRITICAL FIX: Set finalBubbleText for TTS/UI sync
-                                val finalResponse = truncateAtRoleLeakage(fullResponseText.toString())
-                                finalBubbleText = finalResponse
+                                // STEP 1: Snapshot the bubble text
+                                finalBubbleText = truncateAtRoleLeakage(fullResponseText.toString())
                                 
-                                // CRITICAL FIX: Update TTS buffer to match finalBubbleText exactly
-                                ttsTextBuffer.clear()
-                                ttsTextBuffer.append(filterTTSText(finalBubbleText))
-                                
-                                // CRITICAL FIX: Transition to SPEAKING state when LLM completes
-                                // This ensures UI shows correct state even if TTS hasn't started yet
-                                transitionToState(PipelineState.SPEAKING)
-                                
-                                Log.i(TAG, "Final response length: ${finalResponse.length}, TTS buffer: ${ttsTextBuffer.length}")
-                                
-                                // If TTS hasn't started yet (short response), start it now
-                                if (!isStreamingTTSActive && kokoroTTS?.isReady == true && ttsTextBuffer.isNotBlank()) {
-                                    Log.i(TAG, "LLM complete, starting TTS for short response (${ttsTextBuffer.length} chars)")
-                                    startStreamingTTS()
-                                }
-                                // If TTS is already running, it will pick up remaining text via isLLMResponseComplete flag
-                                
-                                // Send FULL accumulated text on complete
+                                // STEP 2: Update UI one final time
                                 withContext(Dispatchers.Main) {
                                     onResponseUpdate?.invoke(finalBubbleText, true)
                                 }
                                 
-                                // BUG FIX 4: Save conversation AND extract memories
+                                // STEP 3: Cancel the LLM job so nothing else can generate
+                                llmProviderJob?.cancel()
+                                llmBridge?.stopGeneration()
+                                
+                                // STEP 4: Save conversation in background
                                 scope.launch(Dispatchers.IO) {
                                     try {
                                         memoryManager?.saveConversationExchange(
                                             userMessage = transcription,
-                                            assistantMessage = finalResponse
+                                            assistantMessage = finalBubbleText
                                         )
-                                        Log.d(TAG, "Conversation exchange saved to memory")
-                                        
-                                        // BUG FIX 4: Extract and save memory-worthy facts
                                         memoryManager?.extractAndSave(
                                             userMessage = transcription,
-                                            llmResponse = finalResponse,
+                                            llmResponse = finalBubbleText,
                                             mode = "Offline"
                                         )
-                                        Log.d(TAG, "Memory extraction completed")
                                     } catch (e: Exception) {
-                                        Log.w(TAG, "Failed to save conversation or extract memory: ${e.message}")
+                                        Log.w(TAG, "Failed to save conversation: ${e.message}")
                                     }
                                 }
                                 
-                                // CRITICAL FIX: Clear LLM context after response to prevent corruption for next turn
-                                // BUT only if we're going to continue listening
+                                // STEP 5: Clear LLM context for next turn
                                 if (isRunning.get()) {
                                     llmBridge?.clearContext()
-                                    Log.i(TAG, "LLM context cleared after response for clean next turn")
                                 }
                                 
-                                // NOTE: Don't clear fullResponseText here - it's cleared when NEW user speech starts
+                                // STEP 6: If TTS hasn't started yet (short response), start it now
+                                if (!isStreamingTTSActive && finalBubbleText.isNotBlank()) {
+                                    Log.i(TAG, "LLM complete, starting TTS for short response")
+                                    startStreamingTTS(finalBubbleText)
+                                } else if (!isStreamingTTSActive) {
+                                    // No TTS needed, go straight to listening
+                                    transitionToListening()
+                                }
+                                // If TTS is already running, it will handle completion in its finally block
                             }
                             response.token != null && !response.isComplete -> {
-                                // STREAMING TTS: Start speaking as soon as first sentence is ready
+                                // STREAMING: Collect tokens, update UI, start TTS when first sentence ready
                                 tokenCount++
                                 transitionToState(PipelineState.SPEAKING)
                                 fullResponseText.append(response.token)
                                 
-                                // Accumulate text for TTS (filter special tokens AND streaming partials)
-                                val token = response.token
-                                if (token.isNotBlank()) {
-                                    val streamingFiltered = filterStreamingTokenForTTS(token)
-                                    if (streamingFiltered != null && streamingFiltered.isNotBlank()) {
-                                        val filteredToken = filterTTSText(streamingFiltered)
-                                        if (filteredToken.isNotBlank()) {
-                                            ttsTextBuffer.append(filteredToken)
-                                        }
-                                    }
-                                }
-                                
-                                // STREAMING: Start TTS immediately when we have a complete sentence
-                                // Don't wait for full response - user gets bored waiting!
-                                if (!isStreamingTTSActive && hasCompleteSentence(ttsTextBuffer.toString())) {
-                                    Log.i(TAG, "First sentence ready (${ttsTextBuffer.length} chars), starting streaming TTS")
-                                    startStreamingTTS()
-                                }
-                                
+                                // Update UI in real time
                                 withContext(Dispatchers.Main) {
                                     onResponseUpdate?.invoke(fullResponseText.toString(), false)
+                                }
+                                
+                                // Start TTS as soon as we have a complete sentence (low latency)
+                                val currentText = truncateAtRoleLeakage(fullResponseText.toString())
+                                if (!isStreamingTTSActive && hasCompleteSentence(currentText)) {
+                                    Log.i(TAG, "First sentence ready, starting streaming TTS")
+                                    startStreamingTTS(currentText)
                                 }
                             }
                         }
@@ -1805,17 +1783,18 @@ class VoicePipelineManager(
     }
     
     /**
-     * Start TTS - FIXED for smooth continuous speech using QUEUE_ADD
-     * 
-     * CLAUDE FIX: Use QUEUE_ADD for seamless continuation instead of serial speakAndWait().
-     * Wait for first sentence, speak it with QUEUE_FLUSH, then queue rest with QUEUE_ADD.
-     * Exit loop when isLLMResponseComplete is true and no text remains.
-     */
-    /**
-     * CRITICAL FIX: Hybrid TTS - streams by sentence for low latency,
-     * but uses ONLY finalBubbleText as source of truth (no hidden content)
+     * DEPRECATED: Use startStreamingTTS(initialText: String) instead
      */
     private fun startStreamingTTS() {
+        // This overload is deprecated - use the one with initialText parameter
+    }
+    
+    /**
+     * STREAMING TTS: Speaks text as it arrives, waits for both LLM and TTS to complete
+     * Flow: Start with initial sentence → continue speaking new text → wait for LLM done → 
+     *       speak remaining → wait for TTS done → transition to LISTENING
+     */
+    private fun startStreamingTTS(initialText: String) {
         if (isStreamingTTSActive || kokoroTTS?.isReady != true) return
         
         isStreamingTTSActive = true

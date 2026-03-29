@@ -76,27 +76,29 @@ object QueryClassifier {
             else -> ResponseLength.MEDIUM
         }
         
+        // NOTE: Limits are now very high - LLM decides response length naturally
+        // Only role leakage detection will stop generation (not arbitrary limits)
         return when (length) {
             ResponseLength.SHORT -> ClassificationResult(
                 length = length,
-                maxTokens = 120,   // Increased from 80
-                maxSentences = 3,  // Increased from 2
-                maxChars = 250     // Increased from 150
+                maxTokens = 512,   // ~1-2 sentences for greetings
+                maxSentences = 50, // Very high - let LLM decide
+                maxChars = 2000    // Very high - let LLM decide
             )
             ResponseLength.MEDIUM -> ClassificationResult(
                 length = length,
-                maxTokens = 350,   // Increased from 200
-                maxSentences = 6,  // Increased from 4
-                maxChars = 500     // Increased from 300
+                maxTokens = 1024,  // ~4-6 sentences for explanations
+                maxSentences = 50, // Very high - let LLM decide
+                maxChars = 4000    // Very high - let LLM decide
             )
             ResponseLength.LONG -> ClassificationResult(
                 length = length,
-                maxTokens = 600,   // Increased from 400
-                maxSentences = 10, // Increased from 8
-                maxChars = 900     // Increased from 600
+                maxTokens = 2048,  // For detailed responses, stories, etc.
+                maxSentences = 100,// Very high - let LLM decide
+                maxChars = 8000    // Very high - let LLM decide
             )
         }.also {
-            Log.d(TAG, "Query classified as ${it.length}: '$query' -> maxTokens=${it.maxTokens}, maxSentences=${it.maxSentences}")
+            Log.d(TAG, "Query classified as ${it.length}: '$query' -> maxTokens=${it.maxTokens} (LLM decides actual length)")
         }
     }
     

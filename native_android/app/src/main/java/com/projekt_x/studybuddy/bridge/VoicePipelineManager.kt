@@ -1347,9 +1347,18 @@ class VoicePipelineManager(
      */
     private fun processWithLLM(transcription: String) {
         // Use LLMProvider if available, otherwise fall back to queue
-        if (llmProvider?.isAvailable() == true) {
-            processWithLLMProvider(transcription)
+        if (llmProvider != null) {
+            if (llmProvider.isAvailable()) {
+                Log.i(TAG, "Using LLMProvider: ${llmProvider.displayName}")
+                processWithLLMProvider(transcription)
+            } else {
+                Log.e(TAG, "LLMProvider (${llmProvider.displayName}) not available - API key may be missing")
+                onError?.invoke("${llmProvider.displayName} not available. Please check your API key in settings.")
+                transitionToState(PipelineState.ERROR)
+                scope.launch { restartListening() }
+            }
         } else {
+            Log.i(TAG, "No LLMProvider, using legacy queue (offline mode)")
             processWithLegacyQueue(transcription)
         }
     }
@@ -1373,11 +1382,11 @@ class VoicePipelineManager(
                 isCollectingImEnd = false
                 
                 // BUG FIX 5: Use shared system prompt builder for consistent identity + memory
-                val fullSystemPrompt = SystemPromptBuilder.buildSystemPrompt(memoryManager, maxTokens = 300)
+                val fullSystemPrompt = SystemPromptBuilder.buildSystemPrompt(memoryManager, maxTokens = 500)
                 
                 // CRITICAL FIX: Classify query to determine appropriate response length
                 currentQueryClassification = QueryClassifier.classify(transcription)
-                val dynamicMaxTokens = currentQueryClassification?.maxTokens ?: 200
+                val dynamicMaxTokens = currentQueryClassification?.maxTokens ?: 1024
                 val dynamicMaxSentences = currentQueryClassification?.maxSentences ?: 3
                 val dynamicMaxChars = currentQueryClassification?.maxChars ?: 200
                 
@@ -1413,8 +1422,10 @@ class VoicePipelineManager(
                         }
                         response.isError -> {
                             transitionToState(PipelineState.ERROR)
+                            val errorMsg = response.error ?: "Unknown error"
+                            Log.e(TAG, "Online provider error: $errorMsg")
                             withContext(Dispatchers.Main) {
-                                onError?.invoke("LLM Error: ${response.error}")
+                                onError?.invoke(errorMsg)
                             }
                         }
                         response.isComplete -> {
@@ -1495,133 +1506,11 @@ class VoicePipelineManager(
                                 "" // No new content
                             }
                             
-                            // CRITICAL FIX: Check if this token indicates role leakage
-                            // If so, stop generation immediately and don't add to response
-                            val checkText = fullResponseText.toString() + token
-                            if (detectRoleLeakage(checkText)) {
-                                Log.w(TAG, "ROLE LEAKAGE DETECTED in stream - STOPPING GENERATION")
-                                
-                                // CRITICAL FIX: Store final bubble text (truncate at leakage point)
-                                val cleanResponse = truncateAtRoleLeakage(fullResponseText.toString())
-                                finalBubbleText = cleanResponse  // Single source of truth!
-                                
-                                // CRITICAL FIX: Clear TTS buffer and set to EXACTLY the bubble text
-                                ttsTextBuffer.clear()
-                                ttsTextBuffer.append(filterTTSText(finalBubbleText))
-                                Log.i(TAG, "TTS buffer set to match bubble EXACTLY: ${ttsTextBuffer.length} chars")
-                                
-                                // Force stop LLM generation immediately
-                                Log.i(TAG, "Force stopping LLM generation due to role leakage...")
-                                llmBridge?.stopGeneration()
-                                isLLMResponseComplete = true
-                                
-                                // CRITICAL FIX: Don't start TTS here - it already started when first sentence was ready!
-                                // TTS will naturally complete speaking from finalBubbleText
-                                Log.i(TAG, "Role leakage stopped - TTS will complete naturally, returning to LISTENING")
-                                
-                                // Send final bubble text to UI
-                                withContext(Dispatchers.Main) {
-                                    onResponseUpdate?.invoke(finalBubbleText, true)
-                                }
-                                
-                                // BUG FIX 4: Save conversation (use final bubble text)
-                                scope.launch(Dispatchers.IO) {
-                                    try {
-                                        memoryManager?.saveConversationExchange(
-                                            userMessage = transcription,
-                                            assistantMessage = finalBubbleText
-                                        )
-                                        memoryManager?.extractAndSave(
-                                            userMessage = transcription,
-                                            llmResponse = finalBubbleText,
-                                            mode = llmProvider?.displayName ?: "Offline"
-                                        )
-                                    } catch (e: Exception) {
-                                        Log.w(TAG, "Failed to save conversation: ${e.message}")
-                                    }
-                                }
-                                
-                                // Clean up and return to listening
-                                if (isRunning.get()) {
-                                    llmBridge?.clearContext()
-                                }
-                                
-                                // Reset for next query
-                                currentQueryClassification = null
-                                
-                                // CRITICAL: Cancel job and exit flow immediately - don't wait for anything!
-                                llmProviderJob?.cancel()
-                                isListeningForNextQuery.set(true)
-                                transitionToState(PipelineState.LISTENING)
-                                Log.i(TAG, "Role leakage detected - returning to LISTENING immediately for next question")
-                                return@collect
-                            }
-                            
                             // Always add token to fullResponseText FIRST
                             fullResponseText.append(token)
                             
-                            // CRITICAL FIX: Check max length AFTER appending token
-                            val currentResponse = fullResponseText.toString()
-                            val currentSentenceCount = countSentences(currentResponse)
-                            val maxCharsLimit = currentQueryClassification?.maxChars ?: MAX_RESPONSE_CHARS
-                            val maxSentencesLimit = currentQueryClassification?.maxSentences ?: MAX_RESPONSE_SENTENCES
-                            
-                            val exceedsChars = currentResponse.length >= maxCharsLimit
-                            val exceedsSentences = currentSentenceCount >= maxSentencesLimit
-                            
-                            // CRITICAL FIX: Only stop if we exceed limits AND end with complete sentence
-                            if (exceedsChars || exceedsSentences) {
-                                val trimmedResponse = currentResponse.trim()
-                                val lastChar = trimmedResponse.lastOrNull()
-                                
-                                // Check if ends with proper sentence ending (not numbered list)
-                                val endsWithPunctuation = lastChar == '.' || lastChar == '!' || lastChar == '?'
-                                val endsWithNumberedList = trimmedResponse.matches(Regex(".*\\d\\.$"))
-                                val endsWithCompleteSentence = endsWithPunctuation && !endsWithNumberedList
-                                
-                                if (currentSentenceCount > 0 && endsWithCompleteSentence) {
-                                    // Safe to stop - we have complete sentences and end properly
-                                    Log.i(TAG, "MAX RESPONSE LENGTH REACHED: ${currentResponse.length} chars, $currentSentenceCount sentences - STOPPING")
-                                    
-                                    val cleanResponse = truncateAtRoleLeakage(currentResponse)
-                                    finalBubbleText = cleanResponse
-                                    
-                                    ttsTextBuffer.clear()
-                                    ttsTextBuffer.append(filterTTSText(finalBubbleText))
-                                    
-                                    llmBridge?.stopGeneration()
-                                    isLLMResponseComplete = true
-                                    
-                                    withContext(Dispatchers.Main) {
-                                        onResponseUpdate?.invoke(finalBubbleText, true)
-                                    }
-                                    
-                                    scope.launch(Dispatchers.IO) {
-                                        try {
-                                            memoryManager?.saveConversationExchange(
-                                                userMessage = transcription,
-                                                assistantMessage = finalBubbleText
-                                            )
-                                        } catch (e: Exception) {
-                                            Log.w(TAG, "Failed to save conversation: ${e.message}")
-                                        }
-                                    }
-                                    
-                                    if (isRunning.get()) {
-                                        llmBridge?.clearContext()
-                                    }
-                                    
-                                    currentQueryClassification = null
-                                    llmProviderJob?.cancel()
-                                    isListeningForNextQuery.set(true)
-                                    transitionToState(PipelineState.LISTENING)
-                                    Log.i(TAG, "Max length reached - returning to LISTENING")
-                                    return@collect
-                                } else {
-                                    // Don't stop yet - continue until we get a complete sentence
-                                    Log.d(TAG, "Exceeded limit but not at sentence boundary - continuing (chars: ${currentResponse.length}, sentences: $currentSentenceCount)")
-                                }
-                            }
+                            // NOTE: We no longer force-stop LLM on role leakage detection
+                            // The LLM completes naturally, and we truncate at display/speak time
                             
                             // CRITICAL FIX: Add token to TTS buffer FIRST
                             // This ensures ALL text that appears in the bubble also gets added to TTS buffer
@@ -1681,11 +1570,11 @@ class VoicePipelineManager(
                 isCollectingImEnd = false
                 
                 // BUG FIX 5: Use shared system prompt builder for consistent identity + memory
-                val fullSystemPrompt = SystemPromptBuilder.buildSystemPrompt(memoryManager, maxTokens = 300)
+                val fullSystemPrompt = SystemPromptBuilder.buildSystemPrompt(memoryManager, maxTokens = 500)
                 
                 // CRITICAL FIX: Classify query to determine appropriate response length (same as LLMProvider path)
                 currentQueryClassification = QueryClassifier.classify(transcription)
-                val dynamicMaxTokens = currentQueryClassification?.maxTokens ?: 200
+                val dynamicMaxTokens = currentQueryClassification?.maxTokens ?: 1024
                 val dynamicMaxSentences = currentQueryClassification?.maxSentences ?: 3
                 
                 Log.i(TAG, "Sending to LLM (legacy queue) with system prompt length: ${fullSystemPrompt.length}")
@@ -1751,11 +1640,18 @@ class VoicePipelineManager(
                                 responseComplete = true
                                 isLLMResponseComplete = true  // Signal TTS loop to speak remaining text
                                 
+                                // CRITICAL FIX: Set finalBubbleText for TTS/UI sync
+                                val finalResponse = truncateAtRoleLeakage(fullResponseText.toString())
+                                finalBubbleText = finalResponse
+                                
+                                // CRITICAL FIX: Update TTS buffer to match finalBubbleText exactly
+                                ttsTextBuffer.clear()
+                                ttsTextBuffer.append(filterTTSText(finalBubbleText))
+                                
                                 // CRITICAL FIX: Transition to SPEAKING state when LLM completes
                                 // This ensures UI shows correct state even if TTS hasn't started yet
                                 transitionToState(PipelineState.SPEAKING)
                                 
-                                val finalResponse = fullResponseText.toString()
                                 Log.i(TAG, "Final response length: ${finalResponse.length}, TTS buffer: ${ttsTextBuffer.length}")
                                 
                                 // If TTS hasn't started yet (short response), start it now
@@ -1767,7 +1663,7 @@ class VoicePipelineManager(
                                 
                                 // Send FULL accumulated text on complete
                                 withContext(Dispatchers.Main) {
-                                    onResponseUpdate?.invoke(finalResponse, true)
+                                    onResponseUpdate?.invoke(finalBubbleText, true)
                                 }
                                 
                                 // BUG FIX 4: Save conversation AND extract memories
@@ -1950,9 +1846,10 @@ class VoicePipelineManager(
             
             try {
                 while (isActive) {
-                    // CRITICAL FIX: Always use finalBubbleText as source of truth
-                    // If not set yet, use current fullResponseText (will be truncated later)
-                    val sourceText = if (finalBubbleText.isNotBlank()) {
+                    // CRITICAL FIX: During streaming, use fullResponseText which keeps growing
+                    // Only use finalBubbleText when LLM is complete (isLLMResponseComplete)
+                    // finalBubbleText was being set early and causing TTS to miss new tokens
+                    val sourceText = if (isLLMResponseComplete && finalBubbleText.isNotBlank()) {
                         finalBubbleText
                     } else {
                         truncateAtRoleLeakage(fullResponseText.toString())
@@ -1983,8 +1880,8 @@ class VoicePipelineManager(
                     
                     // Check if LLM is complete
                     if (isLLMResponseComplete) {
-                        // Speak any remaining text from finalBubbleText
-                        val sourceText = if (finalBubbleText.isNotBlank()) finalBubbleText else truncateAtRoleLeakage(fullResponseText.toString())
+                        // Speak any remaining text from finalBubbleText (now safe to use as source of truth)
+                        val sourceText = finalBubbleText.ifBlank { truncateAtRoleLeakage(fullResponseText.toString()) }
                         
                         if (sourceText.length > lastSentToTTSIndex) {
                             val remainder = sourceText.substring(lastSentToTTSIndex).trim()
@@ -2296,7 +2193,11 @@ class VoicePipelineManager(
         filtered = filtered.replace("</s>", "")
         filtered = filtered.replace("<s>", "")
         
-        // STEP 6: Clean up any remaining angle brackets and dashes that might be spoken
+        // STEP 6: Replace ellipsis with space (TTS shouldn't say "dot dot dot")
+        filtered = filtered.replace("...", " ")
+        filtered = filtered.replace("…", " ")  // Unicode ellipsis
+        
+        // STEP 7: Clean up any remaining angle brackets and dashes that might be spoken
         filtered = filtered.replace(Regex("<[^>]*>"), " ")
         filtered = filtered.replace(Regex("-{3,}"), " ")  // 3+ dashes
         

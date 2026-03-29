@@ -1482,12 +1482,9 @@ class VoicePipelineManager(
                                 llmBridge?.stopGeneration()
                                 isLLMResponseComplete = true
                                 
-                                // Start TTS with final bubble text (FIRE AND FORGET - don't wait!)
-                                if (!isStreamingTTSActive && kokoroTTS?.isReady == true && finalBubbleText.isNotBlank()) {
-                                    Log.i(TAG, "Starting TTS for truncated response (${finalBubbleText.length} chars)")
-                                    startStreamingTTS()
-                                    // CRITICAL: Don't wait for TTS - let user ask next question immediately!
-                                }
+                                // CRITICAL FIX: Don't start TTS here - it already started when first sentence was ready!
+                                // TTS will naturally complete speaking from finalBubbleText
+                                Log.i(TAG, "Role leakage stopped - TTS will complete naturally, returning to LISTENING")
                                 
                                 // Send final bubble text to UI
                                 withContext(Dispatchers.Main) {
@@ -1560,12 +1557,10 @@ class VoicePipelineManager(
                                 llmBridge?.stopGeneration()
                                 isLLMResponseComplete = true
                                 
-                                // Start TTS with the FINAL bubble text (FIRE AND FORGET - don't wait!)
-                                if (!isStreamingTTSActive && kokoroTTS?.isReady == true && finalBubbleText.isNotBlank()) {
-                                    Log.i(TAG, "Starting TTS for max-length response (${finalBubbleText.length} chars)")
-                                    startStreamingTTS()
-                                    // CRITICAL: Don't wait for TTS here - let user ask next question immediately!
-                                }
+                                // CRITICAL FIX: Don't start TTS here - it already started when first sentence was ready!
+                                // TTS will naturally complete speaking from finalBubbleText because
+                                // isLLMResponseComplete is now true (see startStreamingTTS loop)
+                                Log.i(TAG, "Max length reached - TTS will complete naturally, returning to LISTENING")
                                 
                                 // Send final response to UI
                                 withContext(Dispatchers.Main) {

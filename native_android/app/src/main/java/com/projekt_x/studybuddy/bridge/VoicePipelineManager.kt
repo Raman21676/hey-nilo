@@ -1262,6 +1262,11 @@ class VoicePipelineManager(
     fun restartForNewQuestion() {
         Log.i(TAG, "🔄 Restarting voice mode for new question (HARD RESET)")
         
+        // CRITICAL FIX: Reset isListeningForNextQuery FIRST before stopping anything
+        // This prevents race conditions where stopTTS/stopGeneration callbacks
+        // set isListeningForNextQuery=true AFTER we reset it, blocking the transition
+        isListeningForNextQuery.set(false)
+        
         // Stop any ongoing processes
         stopTTS()
         stopGeneration()
@@ -1319,10 +1324,6 @@ class VoicePipelineManager(
                 startRecording()
             }
         }
-        
-        // CRITICAL FIX: Force immediate transition to LISTENING without waiting
-        // User pressed X button - they want to ask next question NOW, not wait!
-        isListeningForNextQuery.set(false)  // Reset so we can transition
         
         // CRITICAL FIX: Reset from ANY state (including ERROR) back to LISTENING
         if (isRunning.get()) {

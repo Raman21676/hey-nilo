@@ -2,9 +2,9 @@
 
 **For**: AI Agents working on the Hey-Nilo project  
 **Purpose**: Complete project context and working guidelines  
-**Last Updated**: March 29, 2026
+**Last Updated**: March 30, 2026
 
-> **📋 RECENT SESSION**: See `SESSION_SUMMARY.md` for today's work (March 23, 2026) - includes history trimming, auto-scroll, token filtering, and voice mode fixes.  
+> **📋 RECENT SESSION**: See `logs/session-2025-03-30.md` for today's work (March 30, 2026) - CRITICAL: Voice pipeline TTS/LLM sync issues, China question freeze fixed, state machine problems documented.  
 
 > **⚠️ IMPORTANT**: Read this entire document before writing any code. This is your source of truth for the project.
 
@@ -39,15 +39,45 @@ cat TODO.md | grep -A 5 "Project Status Overview"
 
 ---
 
-## 🆕 Recent Changes (March 29, 2026)
+## 🆕 Recent Changes (March 30, 2026)
 
-### Dead Code Cleanup - Pre-Play Store
+### Voice Pipeline Critical Fixes - UNSTABLE ⚠️
+**Status**: Partially working - TTS/LLM sync still has issues  
+**Commit**: `38a9a79` pushed to GitHub  
+**See detailed log**: `logs/session-2025-03-30.md`
+
+#### 1. C++ Hard Timeout (CRITICAL FIX)
+- **File**: `native_android/app/src/main/cpp/ai_chat_jni.cpp`
+- **Problem**: Qwen model enters infinite loop generating Chinese tokens on "China" questions
+- **Fix**: Added 30-second wall-clock timeout in generation loop
+- **Code**:
+```cpp
+auto start_time = std::chrono::steady_clock::now();
+while (n_gen < maxTokens && !g_state->should_stop) {
+    auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(
+        std::chrono::steady_clock::now() - start_time).count();
+    if (elapsed > 30) { break; }
+```
+
+#### 2. Sequential Pipeline Architecture
+- **Goal**: Strict flow: LLM generates → TTS speaks → TTS done → LISTENING
+- **Implementation**: `startStreamingTTS()` now waits for TTS completion before transitioning
+- **Issue**: Still not perfect - TTS sometimes doesn't start until LLM completes
+
+#### 3. State Machine Hardening
+- Added debug logs: `NILO_DEBUG` prefix for tracking state transitions
+- Hard reset of all buffers at start of each LLM call
+- `isLLMResponseComplete` flag properly reset
+
+#### 4. Token Filtering Fixes
+- Added `|im_end|` and `|im_start|` (without brackets) to `filterAiResponse()` in MainActivity.kt
+- **Still seeing**: Model generates Chinese text for China questions (filtered but visible in logs)
+
+### Dead Code Cleanup - Pre-Play Store (March 29, 2026)
 - **Removed**: Unused `ConversationManager` (30 messages/chat limit, 3-chat FIFO)
   - File deleted: `ConversationManager.kt`
   - Removed from `MainActivity.kt`: import, instantiation, and related states
-  - Never fully integrated - `addMessage()` was never called
-- **Why**: Partially implemented feature from previous session, not visible to users
-- **Result**: Cleaner codebase, smaller APK, no orphaned SharedPreferences keys
+- **Why**: Partially implemented feature, never fully integrated
 
 ---
 

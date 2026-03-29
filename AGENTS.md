@@ -654,3 +654,196 @@ If you're stuck:
 - Test TTS/UI sync fix
 - Consider switching to online STT for better accuracy
 
+
+---
+
+## 🆕 Latest Development Session (March 29, 2026 - Evening Session)
+
+### Current Work: Voice Pipeline Critical Fixes - COMPLETE
+
+**Status**: ✅ Voice mode fully functional. App can recover from ERROR state via X button.
+
+**Git Commit**: `3133877`
+
+---
+
+### Problems Encountered & Solutions
+
+#### **Problem #1: CRITICAL - App stuck in ERROR state, voice mode broken**
+
+**Symptom**: 
+- App continuously showing `state: ERROR` in logs
+- No speech detection or TTS response
+- X button not recovering from ERROR state
+- Voice mode completely non-functional
+
+**Root Cause Analysis**:
+Race condition in `restartForNewQuestion()` function:
+1. `isListeningForNextQuery.set(false)` was called AFTER `stopTTS()` and `stopGeneration()`
+2. These functions trigger async cancellation callbacks
+3. Callbacks could set `isListeningForNextQuery = true` AFTER the reset
+4. `transitionToState(PipelineState.LISTENING)` would then be BLOCKED by the guard in `transitionToState()`
+5. App stuck in ERROR state permanently
+
+**Attempted Solutions**:
+1. ✅ **FINAL FIX** (commit `3133877`): Move `isListeningForNextQuery.set(false)` to BEGINNING of function, before any stop calls
+2. ✅ Removed duplicate reset at end of function (was redundant)
+
+**Code Change** (VoicePipelineManager.kt line ~1262):
+```kotlin
+fun restartForNewQuestion() {
+    Log.i(TAG, "🔄 Restarting voice mode for new question (HARD RESET)")
+    
+    // CRITICAL FIX: Reset isListeningForNextQuery FIRST before stopping anything
+    // This prevents race conditions where stopTTS/stopGeneration callbacks
+    // set isListeningForNextQuery=true AFTER we reset it, blocking the transition
+    isListeningForNextQuery.set(false)  // <-- MOVED HERE (was after stop calls)
+    
+    // Stop any ongoing processes
+    stopTTS()
+    stopGeneration()
+    // ... rest of function
+}
+```
+
+**Verification**:
+- ✅ App initializes correctly (IDLE → LISTENING)
+- ✅ Speech detected (LISTENING → SPEECH_DETECTED)
+- ✅ Transcription works (SPEECH_DETECTED → TRANSCRIBING → LISTENING)
+- ✅ X button visible during THINKING, SPEAKING, and ERROR states
+- ✅ X button can recover from ERROR state back to LISTENING
+
+---
+
+#### **Problem #2: Responses ending mid-word or at numbered lists**
+
+**Symptom**: Responses were cutting off at exactly 200 chars even if mid-word, or stopping at "1." which looked incomplete.
+
+**Root Cause**: `stopGeneration()` was called immediately when char limit reached, regardless of sentence boundaries.
+
+**Solution** (commit `f58d32c`):
+- Check if response ends with complete sentence (., !, ?) before stopping
+- Don't treat numbered lists ("1.", "2.") as sentence endings
+- Continue collecting tokens until sentence boundary is reached
+
+**Code**:
+```kotlin
+val endsWithPunctuation = lastChar == '.' || lastChar == '!' || lastChar == '?'
+val endsWithNumberedList = trimmedResponse.matches(Regex(".*\\d\\.$"))
+val endsWithCompleteSentence = endsWithPunctuation && !endsWithNumberedList
+
+if (currentSentenceCount > 0 && endsWithCompleteSentence) {
+    // Safe to stop - we have complete sentences and end properly
+    stopGeneration()
+    transitionToState(PipelineState.LISTENING)
+} else {
+    // Don't stop yet - continue until we get a complete sentence
+}
+```
+
+---
+
+#### **Problem #3: X button not visible during THINKING state**
+
+**Symptom**: Couldn't interrupt the assistant while it was "thinking" (generating response).
+
+**Solution** (commit `88a45d9`):
+- Updated `canStop` condition in MainActivity.kt to include THINKING state
+- Also added ERROR state for voice mode recovery
+
+**Code** (MainActivity.kt):
+```kotlin
+val isThinking = pipelineState == VoicePipelineManager.Companion.PipelineState.THINKING
+val isSpeaking = pipelineState == VoicePipelineManager.Companion.PipelineState.SPEAKING
+val isError = pipelineState == VoicePipelineManager.Companion.PipelineState.ERROR
+val canStop = isGenerating || isThinking || isSpeaking || (isVoiceModeActive && isError)
+```
+
+---
+
+### Today's Complete Activity Log
+
+**Session Date**: March 29, 2026 (Evening)
+**Device**: Samsung Galaxy Tab A7 Lite (3GB RAM, Android 14)
+**Build Type**: Debug APK
+
+#### Activities Performed:
+1. ✅ Investigated ERROR state stuck issue
+2. ✅ Analyzed race condition in `restartForNewQuestion()`
+3. ✅ Identified `isListeningForNextQuery` timing issue
+4. ✅ Applied fix: Moved reset to beginning of function
+5. ✅ Built and deployed debug APK
+6. ✅ Tested app functionality
+7. ✅ Verified X button recovery works
+8. ✅ Committed and pushed to GitHub (commit `3133877`)
+
+#### Key Files Modified:
+- `native_android/app/src/main/java/com/projekt_x/studybuddy/bridge/VoicePipelineManager.kt`
+
+#### Key Debugging Commands Used:
+```bash
+# Build and deploy
+./gradlew :app:assembleDebug
+adb install -r app-debug.apk
+
+# Monitor logs
+adb logcat -d -s VoicePipelineManager
+adb logcat -d --pid=$(adb shell pidof com.projekt_x.studybuddy)
+
+# Check state transitions
+adb logcat -d | grep -E "(State changed|ERROR|restartForNew)"
+```
+
+---
+
+### Voice Pipeline State Machine Reference
+
+**States (in order)**:
+1. `IDLE` - Pipeline not running
+2. `LISTENING` - Waiting for speech (mic active)
+3. `SPEECH_DETECTED` - VAD detected speech start
+4. `TRANSCRIBING` - Processing audio with Whisper STT
+5. `THINKING` - LLM generating response
+6. `SPEAKING` - TTS playing response
+7. `ERROR` - Something went wrong
+
+**Important Guards**:
+- `isListeningForNextQuery`: When true, blocks transitions to THINKING/SPEAKING
+- Purpose: Prevent race conditions when returning to LISTENING after response
+- Must be reset to false before calling `transitionToState(LISTENING)`
+
+---
+
+### For Next AI Agent Session
+
+**Current Status**: 
+- ✅ Voice mode fully functional
+- ✅ Can recover from ERROR state via X button
+- ✅ Responses complete at sentence boundaries
+- ⚠️ May need future improvements to TTS quality or STT accuracy
+
+**Potential Future Work**:
+1. Consider switching from Whisper tiny to base model for better STT accuracy
+2. Consider online STT (Google Speech-to-Text API) as fallback
+3. Add more sophisticated hallucination filtering
+4. Optimize response length limits based on query complexity
+
+**Important Context**:
+- The `isListeningForNextQuery` atomic boolean is CRITICAL for state machine integrity
+- Always reset it BEFORE any async operations that might trigger callbacks
+- The `transitionToState()` function has a guard that blocks transitions when this flag is true
+
+---
+
+### Session Archive
+
+**Previous Sessions**:
+- See `logs/session-2026-03-23.md` for earlier voice pipeline work
+- See `logs/session-2026-03-21.md` for logo/UI refresh
+
+**For Next Session**:
+1. Read this updated AGENTS.md
+2. Check TODO.md for current tasks
+3. Review any new issues in GitHub
+4. Test voice mode thoroughly before making changes
+

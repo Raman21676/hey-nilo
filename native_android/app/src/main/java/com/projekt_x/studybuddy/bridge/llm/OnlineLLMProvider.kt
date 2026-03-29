@@ -261,8 +261,23 @@ class OnlineLLMProvider(
                             val json = JSONObject(data)
                             val choices = json.getJSONArray("choices")
                             if (choices.length() > 0) {
-                                val delta = choices.getJSONObject(0).optJSONObject("delta")
-                                val content = delta?.optString("content", "") ?: ""
+                                val choice = choices.getJSONObject(0)
+                                
+                                // Check for finish_reason first
+                                val finishReason = choice.optString("finish_reason", null)
+                                if (finishReason != null && finishReason != "null") {
+                                    Log.d(TAG, "Stream finished with reason: $finishReason")
+                                    // Don't emit, let the [DONE] handler finish
+                                    continue
+                                }
+                                
+                                val delta = choice.optJSONObject("delta")
+                                // CRITICAL FIX: Handle delta as JSONObject or check if it exists
+                                val content = if (delta != null && delta.has("content")) {
+                                    delta.optString("content", "")
+                                } else {
+                                    "" // Empty delta or no content field
+                                }
                                 
                                 if (content.isNotEmpty()) {
                                     fullResponse.append(content)
@@ -276,7 +291,9 @@ class OnlineLLMProvider(
                                 }
                             }
                         } catch (e: Exception) {
-                            Log.w(TAG, "Failed to parse SSE data: $data")
+                            // CRITICAL FIX: Log error but DON'T emit error - just skip this chunk
+                            // The stream might recover from parsing errors
+                            Log.w(TAG, "Failed to parse SSE data chunk: ${e.message}")
                         }
                     }
                 }

@@ -168,10 +168,20 @@ class OfflineLLMProvider(
         val errorChannel = Channel<String?>(1)
         
         try {
+            // CRITICAL FIX: Use maxTokens from request instead of hardcoded 256
+            val maxTokens = request.maxTokens ?: 256
+            val userQuery = request.messages.lastOrNull { it.role == MessageRole.USER }?.content ?: ""
+            
+            // DIAGNOSTIC LOG - Verify maxTokens is reaching this point
+            Log.d("NILO_DEBUG", "Query: $userQuery")
+            Log.d("NILO_DEBUG", "MaxTokens being passed to LLM: $maxTokens")
+            Log.d(TAG, "Starting generation with maxTokens=$maxTokens (request specified)")
+            
             // Start generation in background
             currentGenerationJob = scope.launch(Dispatchers.IO) {
                 try {
-                    llamaBridge?.generate(prompt, object : StreamingCallback {
+                    // CRITICAL FIX: Use generateWithMaxTokens to respect the request's maxTokens
+                    llamaBridge?.generateWithMaxTokens(prompt, maxTokens, object : StreamingCallback {
                         override fun onToken(token: String) {
                             tokenChannel.trySend(token)
                         }

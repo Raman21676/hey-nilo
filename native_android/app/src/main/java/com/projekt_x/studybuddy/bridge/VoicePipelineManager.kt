@@ -214,6 +214,13 @@ class VoicePipelineManager(
     private var kokoroTTS: KokoroTTSBridge? = null  // Kokoro TTS via Sherpa-ONNX AAR
     private var fullResponseText = StringBuilder()  // Accumulate LLM response for TTS
     
+    // CRITICAL FIX: Single source of truth for bubble and TTS
+    // When LLM is stopped (max length reached), this stores the exact text shown in bubble
+    private var finalBubbleText: String = ""
+    
+    // Track current query classification for dynamic response limits
+    private var currentQueryClassification: QueryClassifier.ClassificationResult? = null
+    
     // Streaming TTS state
     private var streamingTTSJob: Job? = null
     private val ttsTextBuffer = StringBuilder()  // Raw text waiting to be spoken
@@ -1346,6 +1353,7 @@ class VoicePipelineManager(
             try {
                 // Clear previous response text when NEW user query starts
                 fullResponseText.clear()
+                finalBubbleText = ""  // Reset final bubble text
                 // NOTE: Don't clear context here - it was cleared after previous response
                 // This allows the model to maintain context for natural conversation
                 // Reset streaming token filter state
@@ -1355,8 +1363,15 @@ class VoicePipelineManager(
                 // BUG FIX 5: Use shared system prompt builder for consistent identity + memory
                 val fullSystemPrompt = SystemPromptBuilder.buildSystemPrompt(memoryManager, maxTokens = 300)
                 
+                // CRITICAL FIX: Classify query to determine appropriate response length
+                currentQueryClassification = QueryClassifier.classify(transcription)
+                val dynamicMaxTokens = currentQueryClassification?.maxTokens ?: 200
+                val dynamicMaxSentences = currentQueryClassification?.maxSentences ?: 3
+                val dynamicMaxChars = currentQueryClassification?.maxChars ?: 200
+                
                 Log.i(TAG, "Sending to LLM Provider: '$transcription'")
                 Log.i(TAG, "System prompt length: ${fullSystemPrompt.length} chars")
+                Log.i(TAG, "Query classified as ${currentQueryClassification?.length}, maxTokens=$dynamicMaxTokens, maxSentences=$dynamicMaxSentences")
                 
                 // Prepare streaming TTS
                 ttsTextBuffer.clear()
@@ -1364,12 +1379,12 @@ class VoicePipelineManager(
                 ttsStartTime = System.currentTimeMillis()
                 isStreamingTTSActive = false
                 
-                // Build completion request
+                // Build completion request with DYNAMIC maxTokens based on query classification
                 val request = CompletionRequest(
                     messages = listOf(ChatMessage.user(transcription)),
                     systemPrompt = fullSystemPrompt,
                     memoryContext = null, // Already included in systemPrompt via SystemPromptBuilder
-                    maxTokens = 256,
+                    maxTokens = dynamicMaxTokens,  // CRITICAL FIX: Use dynamic limit based on query type
                     stream = true,
                     stopSequences = listOf("<|im_end|>", "</s>", "<|endoftext|>", "<|user|>", "User:")
                 )
@@ -1396,41 +1411,39 @@ class VoicePipelineManager(
                             
                             // CRITICAL FIX: Get clean response (truncate any role leakage)
                             val cleanResponse = truncateAtRoleLeakage(fullResponseText.toString())
+                            finalBubbleText = cleanResponse  // Store as single source of truth
                             
-                            // CRITICAL FIX: Ensure TTS buffer matches the clean response!
-                            // The TTS buffer might have accumulated more text than what's clean
-                            val currentTTSContent = ttsTextBuffer.toString()
-                            val cleanTTSContent = filterTTSText(cleanResponse)
-                            if (currentTTSContent != cleanTTSContent) {
-                                Log.w(TAG, "TTS buffer mismatch! Current: ${currentTTSContent.length}, Clean: ${cleanTTSContent.length} - FIXING")
-                                ttsTextBuffer.clear()
-                                ttsTextBuffer.append(cleanTTSContent)
-                            }
+                            // CRITICAL FIX: TTS buffer MUST match the bubble text exactly!
+                            // Clear any accumulated content and use only finalBubbleText
+                            val cleanTTSContent = filterTTSText(finalBubbleText)
+                            ttsTextBuffer.clear()
+                            ttsTextBuffer.append(cleanTTSContent)
+                            Log.i(TAG, "TTS buffer set to match finalBubbleText EXACTLY: ${ttsTextBuffer.length} chars")
                             
-                            // Start TTS if not already started
-                            if (!isStreamingTTSActive && kokoroTTS?.isReady == true && ttsTextBuffer.isNotBlank()) {
-                                Log.i(TAG, "LLM complete, starting TTS for short response")
+                            // CRITICAL FIX: Start TTS now that LLM is complete and we have final text
+                            if (!isStreamingTTSActive && kokoroTTS?.isReady == true && finalBubbleText.isNotBlank()) {
+                                Log.i(TAG, "LLM complete, starting TTS for final response (${finalBubbleText.length} chars)")
                                 startStreamingTTS()
                             }
                             
-                            // Send CLEAN response to UI (not the raw response with potential leakage)
+                            // Send finalBubbleText to UI (single source of truth)
                             withContext(Dispatchers.Main) {
-                                onResponseUpdate?.invoke(cleanResponse, true)
+                                onResponseUpdate?.invoke(finalBubbleText, true)
                             }
                             
-                            // BUG FIX 4: Save conversation AND extract memories (use clean response)
+                            // BUG FIX 4: Save conversation AND extract memories (use finalBubbleText)
                             scope.launch(Dispatchers.IO) {
                                 try {
                                     memoryManager?.saveConversationExchange(
                                         userMessage = transcription,
-                                        assistantMessage = cleanResponse
+                                        assistantMessage = finalBubbleText
                                     )
                                     Log.d(TAG, "Conversation exchange saved to memory")
                                     
-                                    // BUG FIX 4: Extract and save memory-worthy facts (use clean response)
+                                    // BUG FIX 4: Extract and save memory-worthy facts (use finalBubbleText)
                                     memoryManager?.extractAndSave(
                                         userMessage = transcription,
-                                        llmResponse = cleanResponse,
+                                        llmResponse = finalBubbleText,
                                         mode = llmProvider?.displayName ?: "Offline"
                                     )
                                     Log.d(TAG, "Memory extraction completed")
@@ -1445,6 +1458,9 @@ class VoicePipelineManager(
                                 llmBridge?.clearContext()
                                 Log.i(TAG, "LLM context cleared after response for clean next turn")
                             }
+                            
+                            // Reset for next query
+                            currentQueryClassification = null
                         }
                         response.isStreaming -> {
                             tokenCount++
@@ -1469,22 +1485,24 @@ class VoicePipelineManager(
                             if (detectRoleLeakage(checkText)) {
                                 Log.w(TAG, "ROLE LEAKAGE DETECTED in stream - STOPPING GENERATION")
                                 
-                                // Get clean response (truncate at leakage point)
+                                // CRITICAL FIX: Store final bubble text (truncate at leakage point)
                                 val cleanResponse = truncateAtRoleLeakage(fullResponseText.toString())
+                                finalBubbleText = cleanResponse  // Single source of truth!
                                 
-                                // CRITICAL FIX: Also truncate TTS buffer to match display text!
-                                // Recalculate what TTS should speak based on clean response
+                                // CRITICAL FIX: Clear TTS buffer and set to EXACTLY the bubble text
                                 ttsTextBuffer.clear()
-                                ttsTextBuffer.append(filterTTSText(cleanResponse))
-                                Log.i(TAG, "TTS buffer truncated to match display: ${ttsTextBuffer.length} chars")
+                                ttsTextBuffer.append(filterTTSText(finalBubbleText))
+                                Log.i(TAG, "TTS buffer set to match bubble EXACTLY: ${ttsTextBuffer.length} chars")
                                 
-                                // Stop LLM generation immediately
+                                // Force stop LLM generation immediately
+                                Log.i(TAG, "Force stopping LLM generation due to role leakage...")
                                 llmBridge?.stopGeneration()
+                                llmProviderJob?.cancel()  // Also cancel the coroutine job
                                 isLLMResponseComplete = true
                                 
-                                // Start TTS if we have content
-                                if (!isStreamingTTSActive && kokoroTTS?.isReady == true && ttsTextBuffer.isNotBlank()) {
-                                    Log.i(TAG, "Starting TTS for truncated response")
+                                // Start TTS with final bubble text
+                                if (!isStreamingTTSActive && kokoroTTS?.isReady == true && finalBubbleText.isNotBlank()) {
+                                    Log.i(TAG, "Starting TTS for truncated response (${finalBubbleText.length} chars)")
                                     startStreamingTTS()
                                     
                                     // Wait for TTS to finish before completing
@@ -1495,21 +1513,21 @@ class VoicePipelineManager(
                                     Log.i(TAG, "TTS finished after role leakage detection")
                                 }
                                 
-                                // Send clean response to UI
+                                // Send final bubble text to UI
                                 withContext(Dispatchers.Main) {
-                                    onResponseUpdate?.invoke(cleanResponse, true)
+                                    onResponseUpdate?.invoke(finalBubbleText, true)
                                 }
                                 
-                                // BUG FIX 4: Save conversation (use clean response)
+                                // BUG FIX 4: Save conversation (use final bubble text)
                                 scope.launch(Dispatchers.IO) {
                                     try {
                                         memoryManager?.saveConversationExchange(
                                             userMessage = transcription,
-                                            assistantMessage = cleanResponse
+                                            assistantMessage = finalBubbleText
                                         )
                                         memoryManager?.extractAndSave(
                                             userMessage = transcription,
-                                            llmResponse = cleanResponse,
+                                            llmResponse = finalBubbleText,
                                             mode = llmProvider?.displayName ?: "Offline"
                                         )
                                     } catch (e: Exception) {
@@ -1522,36 +1540,53 @@ class VoicePipelineManager(
                                     llmBridge?.clearContext()
                                 }
                                 
+                                // Reset for next query
+                                currentQueryClassification = null
+                                
                                 // Transition back to listening state
                                 delay(500)  // Small delay for smooth transition
                                 restartListening()
                                 return@collect
                             }
                             
+                            // CRITICAL FIX: Check max length BEFORE appending token - more aggressive stopping
+                            val projectedResponse = fullResponseText.toString() + token
+                            val projectedSentenceCount = countSentences(projectedResponse)
+                            val maxCharsLimit = currentQueryClassification?.maxChars ?: MAX_RESPONSE_CHARS
+                            val maxSentencesLimit = currentQueryClassification?.maxSentences ?: MAX_RESPONSE_SENTENCES
+                            val wouldExceedLimit = projectedResponse.length >= maxCharsLimit || projectedSentenceCount >= maxSentencesLimit
+                            
+                            // Always add token to fullResponseText first (so TTS buffer gets it too)
                             fullResponseText.append(token)
                             
-                            // CRITICAL FIX: Check if we've reached maximum response length
-                            // Force stop LLM generation once we have enough content for voice response
+                            // CRITICAL FIX: Check if we've exceeded limits AFTER appending
                             val currentResponse = fullResponseText.toString()
                             val sentenceCount = countSentences(currentResponse)
-                            if (currentResponse.length >= MAX_RESPONSE_CHARS || sentenceCount >= MAX_RESPONSE_SENTENCES) {
+                            
+                            if (currentResponse.length >= maxCharsLimit || sentenceCount >= maxSentencesLimit || wouldExceedLimit) {
                                 Log.i(TAG, "MAX RESPONSE LENGTH REACHED: ${currentResponse.length} chars, $sentenceCount sentences - STOPPING LLM")
+                                Log.i(TAG, "Limits were: maxChars=$maxCharsLimit, maxSentences=$maxSentencesLimit for ${currentQueryClassification?.length} query")
                                 
-                                // Get clean response
+                                // CRITICAL FIX: Store the EXACT bubble text as single source of truth
                                 val cleanResponse = truncateAtRoleLeakage(currentResponse)
+                                finalBubbleText = cleanResponse  // This is the ONLY text TTS should speak!
                                 
-                                // CRITICAL FIX: Truncate TTS buffer to match what will be displayed!
+                                // CRITICAL FIX: Clear TTS buffer and set it to EXACTLY the bubble text
+                                // This ensures TTS speaks ONLY what's in the bubble, nothing more
                                 ttsTextBuffer.clear()
-                                ttsTextBuffer.append(filterTTSText(cleanResponse))
-                                Log.i(TAG, "TTS buffer truncated to match display: ${ttsTextBuffer.length} chars")
+                                ttsTextBuffer.append(filterTTSText(finalBubbleText))
+                                Log.i(TAG, "TTS buffer set to match bubble EXACTLY: ${ttsTextBuffer.length} chars")
+                                Log.i(TAG, "Final bubble text: '${finalBubbleText.take(100)}${if (finalBubbleText.length > 100) "..." else ""}'")
                                 
-                                // Stop LLM generation
+                                // Force stop LLM generation - CRITICAL to prevent background generation
+                                Log.i(TAG, "Force stopping LLM generation...")
                                 llmBridge?.stopGeneration()
+                                llmProviderJob?.cancel()  // Also cancel the coroutine job
                                 isLLMResponseComplete = true
                                 
-                                // Start TTS if not already started
-                                if (!isStreamingTTSActive && kokoroTTS?.isReady == true && ttsTextBuffer.isNotBlank()) {
-                                    Log.i(TAG, "Starting TTS for max-length response")
+                                // Start TTS with the FINAL bubble text
+                                if (!isStreamingTTSActive && kokoroTTS?.isReady == true && finalBubbleText.isNotBlank()) {
+                                    Log.i(TAG, "Starting TTS for max-length response (${finalBubbleText.length} chars)")
                                     startStreamingTTS()
                                     
                                     // Wait for TTS to finish
@@ -1563,7 +1598,7 @@ class VoicePipelineManager(
                                 
                                 // Send final response to UI
                                 withContext(Dispatchers.Main) {
-                                    onResponseUpdate?.invoke(cleanResponse, true)
+                                    onResponseUpdate?.invoke(finalBubbleText, true)
                                 }
                                 
                                 // Save conversation
@@ -1571,7 +1606,7 @@ class VoicePipelineManager(
                                     try {
                                         memoryManager?.saveConversationExchange(
                                             userMessage = transcription,
-                                            assistantMessage = cleanResponse
+                                            assistantMessage = finalBubbleText
                                         )
                                     } catch (e: Exception) {
                                         Log.w(TAG, "Failed to save conversation: ${e.message}")
@@ -1582,25 +1617,32 @@ class VoicePipelineManager(
                                 if (isRunning.get()) {
                                     llmBridge?.clearContext()
                                 }
+                                
+                                // Reset for next query
+                                currentQueryClassification = null
+                                
                                 delay(500)
                                 restartListening()
                                 return@collect
                             }
                             
-                            // Add to TTS buffer (filter special tokens AND streaming partials)
+                            // CRITICAL FIX: Add token to TTS buffer FIRST (before any length checks that might skip it)
+                            // This ensures ALL text that appears in the bubble also gets added to TTS buffer
                             if (token.isNotBlank()) {
                                 val streamingFiltered = filterStreamingTokenForTTS(token)
                                 if (streamingFiltered != null && streamingFiltered.isNotBlank()) {
                                     val filteredToken = filterTTSText(streamingFiltered)
                                     if (filteredToken.isNotBlank()) {
                                         ttsTextBuffer.append(filteredToken)
+                                        Log.v(TAG, "Added to TTS buffer: '$filteredToken' (buffer now ${ttsTextBuffer.length} chars)")
                                     }
                                 }
                             }
                             
-                            // Start TTS when we have a complete sentence
-                            if (!isStreamingTTSActive && hasCompleteSentence(ttsTextBuffer.toString())) {
-                                Log.i(TAG, "First sentence ready (${ttsTextBuffer.length} chars), starting streaming TTS")
+                            // CRITICAL FIX: Only start TTS when LLM is complete
+                            // This ensures TTS speaks only finalBubbleText, not accumulated streaming text
+                            if (!isStreamingTTSActive && isLLMResponseComplete) {
+                                Log.i(TAG, "LLM complete, starting TTS for final text only")
                                 startStreamingTTS()
                             }
                             
@@ -1644,14 +1686,20 @@ class VoicePipelineManager(
                 // BUG FIX 5: Use shared system prompt builder for consistent identity + memory
                 val fullSystemPrompt = SystemPromptBuilder.buildSystemPrompt(memoryManager, maxTokens = 300)
                 
+                // CRITICAL FIX: Classify query to determine appropriate response length (same as LLMProvider path)
+                currentQueryClassification = QueryClassifier.classify(transcription)
+                val dynamicMaxTokens = currentQueryClassification?.maxTokens ?: 200
+                val dynamicMaxSentences = currentQueryClassification?.maxSentences ?: 3
+                
                 Log.i(TAG, "Sending to LLM (legacy queue) with system prompt length: ${fullSystemPrompt.length}")
+                Log.i(TAG, "Query classified as ${currentQueryClassification?.length}, maxTokens=$dynamicMaxTokens")
                 
                 val requestId = System.currentTimeMillis().toString()
                 val request = InferenceQueue.Request(
                     id = requestId,
                     prompt = transcription, // User message only
                     systemPrompt = fullSystemPrompt, // BUG FIX 3 & 5: Include identity + memory
-                    maxTokens = 256,
+                    maxTokens = dynamicMaxTokens,  // CRITICAL FIX: Use dynamic limit based on query type
                     priority = InferenceQueue.Priority.HIGH
                 )
                 
@@ -1866,14 +1914,17 @@ class VoicePipelineManager(
      * Wait for first sentence, speak it with QUEUE_FLUSH, then queue rest with QUEUE_ADD.
      * Exit loop when isLLMResponseComplete is true and no text remains.
      */
+    /**
+     * CRITICAL FIX: Simple TTS that speaks only finalBubbleText
+     * No streaming, no queuing - just speak the final text once
+     */
     private fun startStreamingTTS() {
         if (isStreamingTTSActive || kokoroTTS?.isReady != true) return
         
         isStreamingTTSActive = true
-        Log.i(TAG, "Starting TTS (QUEUE_ADD mode)")
+        Log.i(TAG, "Starting TTS (simple mode - only speaks finalBubbleText)")
         
         // CRITICAL FIX: Force state to SPEAKING and abort any ongoing speech collection
-        // This prevents TTS audio from being collected as "user speech"
         currentState = PipelineState.SPEAKING
         
         // Reset all speech collection state to prevent feedback loop
@@ -1887,94 +1938,41 @@ class VoicePipelineManager(
         // Notify audio recorder that TTS is speaking (for barge-in detection)
         audioRecorder?.setTTSSpeaking(true)
         
-        // FLUSH any previous TTS
+        // CRITICAL FIX: STOP any previous TTS and clear queue
         kokoroTTS?.stop()
         
         streamingTTSJob = scope.launch {
-            var isFirstChunk = true
-            var ttsCompleted = false
-            val ttsStartTime = System.currentTimeMillis()
-            val MAX_TTS_WAIT_MS = 15000L  // Maximum 15 seconds for TTS loop
-            
             try {
-                while (isActive) {
-                    val currentLength = ttsTextBuffer.length
-                    val availableLength = currentLength - lastSpokenPosition
+                // Wait for LLM to complete (either naturally or by stop)
+                var waitCount = 0
+                while (!isLLMResponseComplete && waitCount < 300) {
+                    delay(100)
+                    waitCount++
+                }
+                
+                // CRITICAL FIX: Use ONLY finalBubbleText as source of truth
+                // This ensures TTS speaks EXACTLY what's in the bubble, nothing more
+                val textToSpeak = if (finalBubbleText.isNotBlank()) {
+                    finalBubbleText
+                } else {
+                    // Fallback only if finalBubbleText not set
+                    truncateAtRoleLeakage(fullResponseText.toString())
+                }
+                
+                val filteredText = filterTTSText(textToSpeak)
+                
+                if (filteredText.isNotBlank()) {
+                    Log.i(TAG, "TTS: Speaking ${filteredText.length} chars from finalBubbleText only")
+                    Log.i(TAG, "TTS: Text='${filteredText.take(100)}${if (filteredText.length > 100) "..." else ""}'")
                     
-                    val availableText = if (availableLength > 0) 
-                        ttsTextBuffer.substring(lastSpokenPosition, currentLength) 
-                    else ""
+                    // Speak the text
+                    kokoroTTS?.speak(filteredText)
                     
-                    // Find a complete sentence to speak
-                    val (speakableText, breakPoint) = findSpeakableChunk(availableText)
-                    
-                    if (speakableText != null && speakableText.isNotBlank()) {
-                        // CLAUDE FIX: Use QUEUE_FLUSH for first chunk, QUEUE_ADD for rest
-                        val queueMode = if (isFirstChunk) {
-                            TextToSpeech.QUEUE_FLUSH
-                        } else {
-                            TextToSpeech.QUEUE_ADD  // Seamless continuation!
-                        }
-                        
-                        Log.d(TAG, "TTS queueing: '$speakableText' (mode: ${if (isFirstChunk) "FLUSH" else "ADD"})")
-                        
-                        // Fire-and-forget (don't wait) - let Android TTS handle the queuing
-                        kokoroTTS?.speakQueued(text = speakableText, queueMode = queueMode)
-                        
-                        lastSpokenPosition += breakPoint
-                        lastWordSentTime = System.currentTimeMillis()
-                        isFirstChunk = false
-                        
-                        // Small delay to let TTS engine process
-                        delay(30)  // Reduced from 50ms to 30ms
-                    } else if (isLLMResponseComplete && availableLength == 0) {
-                        // All text spoken and LLM is complete - we're done!
-                        Log.i(TAG, "TTS: All text spoken, waiting for completion...")
-                        
-                        // Wait a bit for last TTS to start, then track completion
-                        delay(100)  // Reduced from 200ms to 100ms
-                        
-                        // Wait for TTS to actually finish speaking
-                        kokoroTTS?.waitForCompletion()
-                        
-                        Log.i(TAG, "TTS: Finished speaking all text")
-                        break  // Exit loop → triggers finally → sets LISTENING
-                    } else if (isLLMResponseComplete && availableLength > 0) {
-                        // LLM done but we have remaining text that didn't end with punctuation
-                        val rawRemaining = availableText.trim()
-                        val remaining = filterTTSText(rawRemaining)
-                        val totalText = ttsTextBuffer.toString()
-                        Log.i(TAG, "TTS: LLM complete, total=${totalText.length}, spoken=$lastSpokenPosition, remaining=${remaining.length} chars")
-                        Log.i(TAG, "TTS: Remainder text: '${remaining.take(100)}${if (remaining.length > 100) "..." else ""}'")
-                        if (remaining.isNotBlank()) {
-                            val queueMode = if (isFirstChunk) TextToSpeech.QUEUE_FLUSH else TextToSpeech.QUEUE_ADD
-                            Log.d(TAG, "TTS speaking final remainder with $queueMode: '$remaining'")
-                            kokoroTTS?.speakQueued(
-                                text = remaining,
-                                queueMode = queueMode
-                            )
-                            lastSpokenPosition = ttsTextBuffer.length
-                            isFirstChunk = false
-                            
-                            // Wait for completion
-                            delay(150)  // Reduced from 300ms to 150ms
-                            kokoroTTS?.waitForCompletion()
-                            Log.i(TAG, "TTS: finished speaking remainder")
-                        } else {
-                            Log.d(TAG, "TTS: remaining text is blank, skipping")
-                        }
-                        break
-                    } else {
-                        // No text ready yet, wait
-                        delay(20)
-                        
-                        // SAFETY: Break if TTS has been running too long (prevents infinite loop)
-                        val ttsElapsed = System.currentTimeMillis() - ttsStartTime
-                        if (ttsElapsed > MAX_TTS_WAIT_MS) {
-                            Log.w(TAG, "TTS loop timeout after ${ttsElapsed}ms, forcing exit")
-                            break
-                        }
-                    }
+                    // Wait for TTS to finish
+                    kokoroTTS?.waitForCompletion()
+                    Log.i(TAG, "TTS: Finished speaking")
+                } else {
+                    Log.w(TAG, "TTS: No text to speak")
                 }
                 
             } catch (e: Exception) {
@@ -1999,14 +1997,15 @@ class VoicePipelineManager(
                 isProcessingSTT = false
                 consecutiveSilenceFrames = 0
                 ttsTextBuffer.clear()
-                // NOTE: Don't clear fullResponseText here - it's cleared when NEW user speech starts
-                // This prevents text from disappearing after TTS finishes
                 
                 // Reset VAD processor for clean state - CRITICAL for auto-listening
                 vadProcessor?.reset()
                 
                 // Clear LLM context for next utterance
                 llmBridge?.clearContext()
+                
+                // Reset for next query
+                currentQueryClassification = null
                 
                 // CRITICAL FIX: Reset listening timer so timeout doesn't fire immediately
                 listeningStartTime = System.currentTimeMillis()
@@ -2018,7 +2017,6 @@ class VoicePipelineManager(
                 }
                 
                 // CRITICAL FIX: Wait for TTS cooldown before resuming listening
-                // This prevents acoustic echo from being detected as user speech
                 val timeSinceTTS = System.currentTimeMillis() - lastTTSFinishedTime
                 val cooldownRemaining = TTS_COOLDOWN_MS - timeSinceTTS
                 if (cooldownRemaining > 0) {
@@ -2047,9 +2045,11 @@ class VoicePipelineManager(
     /**
      * Find a complete sentence/phrase to speak from available text
      * Returns Pair(speakableText, breakPoint) or Pair(null, 0) if no complete sentence found
+     * 
+     * CRITICAL FIX: Now also returns partial text if it's substantial (>30 chars) to prevent skipping
      */
-    private fun findSpeakableChunk(availableText: String): Pair<String?, Int> {
-        if (availableText.length < 10) return Pair(null, 0)  // Need some content
+    private fun findSpeakableChunk(availableText: String, isFinal: Boolean = false): Pair<String?, Int> {
+        if (availableText.length < 5) return Pair(null, 0)  // Reduced from 10 to 5
         
         // Look for sentence boundaries (.!? followed by space or end)
         for (i in 1 until availableText.length - 1) {
@@ -2075,17 +2075,27 @@ class VoicePipelineManager(
             }
         }
         
-        // If buffer is getting large (>200 chars), force speak at comma
-        if (availableText.length > 200) {
+        // If buffer is getting large (>150 chars), force speak at comma or any natural break
+        if (availableText.length > 150) {
             for (i in availableText.length - 1 downTo maxOf(availableText.length - 50, 0)) {
-                if (availableText[i] == ',' || availableText[i] == ';') {
+                if (availableText[i] == ',' || availableText[i] == ';' || availableText[i] == ' ') {
                     val breakPoint = i + 1
                     val rawText = availableText.substring(0, breakPoint).trim()
-                    val speakableText = filterTTSText(rawText)
-                    Log.d(TAG, "findSpeakableChunk: forced break at comma: '$speakableText'")
-                    return Pair(speakableText, breakPoint)
+                    if (rawText.length >= 20) {  // Only speak if we have enough content
+                        val speakableText = filterTTSText(rawText)
+                        Log.d(TAG, "findSpeakableChunk: forced break at ${availableText[i]}: '$speakableText'")
+                        return Pair(speakableText, breakPoint)
+                    }
                 }
             }
+        }
+        
+        // CRITICAL FIX: If this is the final call and we have substantial text, speak it anyway
+        // This prevents text without ending punctuation from being skipped
+        if (isFinal && availableText.length >= 10) {
+            val speakableText = filterTTSText(availableText.trim())
+            Log.d(TAG, "findSpeakableChunk: FINAL - speaking remaining text: '$speakableText'")
+            return Pair(speakableText, availableText.length)
         }
         
         Log.v(TAG, "findSpeakableChunk: no chunk found in '${availableText.take(50)}...'")

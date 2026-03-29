@@ -562,6 +562,9 @@ Java_com_projekt_1x_studybuddy_LlamaBridge_nativeGenerateStream(
     std::string promptStr(prompt);
     const llama_vocab* vocab = llama_model_get_vocab(g_state->model);
     
+    // DIAGNOSTIC LOG: Verify maxTokens is being received correctly
+    LOGI("NILO_DEBUG: nativeGenerateStream called with maxTokens=%d", (int)maxTokens);
+    
     // SAFETY CHECK: Detect if prompt is already formatted (should be raw user message)
     if (promptStr.find("<|im_start|>") != std::string::npos ||
         promptStr.find("<|im_end|>") != std::string::npos) {

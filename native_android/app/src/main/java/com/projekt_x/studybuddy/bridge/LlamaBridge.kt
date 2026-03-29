@@ -278,6 +278,9 @@ class LlamaBridge(private val context: Context) : BaseBridge() {
         }
 
         updateState(State.BUSY)
+        // DIAGNOSTIC LOG
+        Log.d("NILO_DEBUG", "LlamaBridge.generateWithMaxTokens: maxTokens=$maxTokens")
+        
         Log.i(TAG, "Starting generation with maxTokens=$maxTokens")
         
         currentGenerationJob = scope.launch {
@@ -675,6 +678,7 @@ class LlamaBridge(private val context: Context) : BaseBridge() {
     /**
      * Generate with Flow-based API (backward compatible)
      * CRITICAL FIX: Pass raw user message to C++, which handles prompt formatting
+     * CRITICAL FIX: Now properly uses maxTokens parameter (was being ignored!)
      */
     fun generateStream(prompt: String, maxTokens: Int = 256): kotlinx.coroutines.flow.Flow<String> = 
         kotlinx.coroutines.flow.flow {
@@ -685,10 +689,13 @@ class LlamaBridge(private val context: Context) : BaseBridge() {
             // If we format it here, C++ will wrap it again, causing double-prompt corruption!
             val rawPrompt = prompt
             
+            // DIAGNOSTIC LOG
+            Log.d("NILO_DEBUG", "generateStream called with maxTokens=$maxTokens")
+            
             // Launch generation in a separate coroutine so it doesn't block the flow
             val generationJob = scope.launch {
-                // Pass raw prompt to native layer
-                generate(rawPrompt, object : StreamingCallback {
+                // CRITICAL FIX: Use generateWithMaxTokens instead of generate to respect maxTokens!
+                generateWithMaxTokens(rawPrompt, maxTokens, object : StreamingCallback {
                     override fun onToken(token: String) {
                         channel.trySend(token)
                     }

@@ -1319,11 +1319,13 @@ class VoicePipelineManager(
             }
         }
         
-        // Ensure we're still running and go back to LISTENING state
-        if (isRunning.get()) {
-            Log.i(TAG, "🎤 Returning to LISTENING state for new question")
-            transitionToListeningImmediate()
-        } else {
+        // CRITICAL FIX: Force immediate transition to LISTENING without waiting
+        // User pressed X button - they want to ask next question NOW, not wait!
+        isListeningForNextQuery.set(false)  // Reset so we can transition
+        if (isRunning.get() && currentState != PipelineState.LISTENING) {
+            Log.i(TAG, "🎤 FORCE: Returning to LISTENING state for new question")
+            transitionToState(PipelineState.LISTENING)
+        } else if (!isRunning.get()) {
             // If somehow stopped, restart the voice conversation
             Log.i(TAG, "🎤 Voice pipeline was stopped, restarting...")
             startVoiceConversation()

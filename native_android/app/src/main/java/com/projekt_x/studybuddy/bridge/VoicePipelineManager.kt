@@ -1409,6 +1409,10 @@ class VoicePipelineManager(
                             Log.i(TAG, "LLM response complete, tokens: $tokenCount")
                             isLLMResponseComplete = true
                             
+                            // CRITICAL FIX: Transition to SPEAKING state when LLM completes
+                            // This ensures UI shows correct state even if TTS hasn't started yet
+                            currentState = PipelineState.SPEAKING
+                            
                             // CRITICAL FIX: Get clean response (truncate any role leakage)
                             val cleanResponse = truncateAtRoleLeakage(fullResponseText.toString())
                             finalBubbleText = cleanResponse  // Store as single source of truth
@@ -1753,6 +1757,10 @@ class VoicePipelineManager(
                                 
                                 responseComplete = true
                                 isLLMResponseComplete = true  // Signal TTS loop to speak remaining text
+                                
+                                // CRITICAL FIX: Transition to SPEAKING state when LLM completes
+                                // This ensures UI shows correct state even if TTS hasn't started yet
+                                currentState = PipelineState.SPEAKING
                                 
                                 val finalResponse = fullResponseText.toString()
                                 Log.i(TAG, "Final response length: ${finalResponse.length}, TTS buffer: ${ttsTextBuffer.length}")

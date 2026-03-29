@@ -16,6 +16,7 @@ import java.io.FileOutputStream
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicReference
 
 /**
  * Production-Grade Voice Pipeline Manager
@@ -138,7 +139,7 @@ class VoicePipelineManager(
             // CRITICAL FIX: Transition immediately when TTS finishes - no cooldown delay!
             // The cooldown was causing "Nilo is speaking..." to persist after speech completed
             if (isRunning.get() && currentState != PipelineState.LISTENING) {
-                currentState = PipelineState.LISTENING
+                transitionToState(PipelineState.LISTENING)
                 Log.i(TAG, "🎤 State changed: LISTENING (TTS finished)")
             }
         } finally {
@@ -168,7 +169,7 @@ class VoicePipelineManager(
                 }
                 // CRITICAL FIX: No cooldown delay - transition immediately when TTS finishes!
                 if (isRunning.get() && currentState != PipelineState.LISTENING) {
-                    currentState = PipelineState.LISTENING
+                    transitionToState(PipelineState.LISTENING)
                     Log.i(TAG, "🎤 State changed: LISTENING (TTS finished)")
                 }
                 isTransitioningToListening.set(false)
@@ -178,7 +179,7 @@ class VoicePipelineManager(
         
         // CRITICAL FIX: Transition immediately - no cooldown delay!
         if (isRunning.get() && currentState != PipelineState.LISTENING) {
-            currentState = PipelineState.LISTENING
+            transitionToState(PipelineState.LISTENING)
             Log.i(TAG, "🎤 State changed: LISTENING (immediate)")
         }
         isTransitioningToListening.set(false)
@@ -276,16 +277,38 @@ class VoicePipelineManager(
         Log.d(TAG, "Audio focus released")
     }
     
-    // Current state
-    private var currentState = PipelineState.IDLE
+    // Current state - CRITICAL FIX: Use AtomicReference for thread safety
+    private val currentStateAtomic = AtomicReference(PipelineState.IDLE)
+    private var currentState: PipelineState
+        get() = currentStateAtomic.get()
         set(value) {
-            field = value
-            Log.i(TAG, "State changed: $value")
-            // Always notify UI on Main thread regardless of which thread set the state
-            scope.launch(Dispatchers.Main.immediate) {
-                onStateChange?.invoke(value)
+            val oldValue = currentStateAtomic.getAndSet(value)
+            if (oldValue != value) {
+                Log.i(TAG, "State changed: $oldValue -> $value")
+                // Always notify UI on Main thread regardless of which thread set the state
+                scope.launch(Dispatchers.Main.immediate) {
+                    onStateChange?.invoke(value)
+                }
             }
         }
+    
+    /**
+     * CRITICAL FIX: Once we transition to LISTENING for next query, prevent other coroutines
+     * from overwriting it back to SPEAKING/THINKING. This fixes the race condition where
+     * max-length sets LISTENING but TTS or LLM coroutine overwrites it.
+     */
+    private val isListeningForNextQuery = AtomicBoolean(false)
+    
+    private fun transitionToState(newState: PipelineState): Boolean {
+        // If we're listening for next query, only allow transitions to IDLE or ERROR
+        if (isListeningForNextQuery.get() && newState != PipelineState.LISTENING && 
+            newState != PipelineState.IDLE && newState != PipelineState.ERROR) {
+            Log.w(TAG, "BLOCKED state change to $newState - currently listening for next query")
+            return false
+        }
+        currentState = newState
+        return true
+    }
     
     /**
      * Initialize the entire pipeline
@@ -770,6 +793,10 @@ class VoicePipelineManager(
                     speechStartTime = System.currentTimeMillis()
                     consecutiveSilenceFrames = 0  // Reset silence counter
                     
+                    // CRITICAL FIX: Reset listening flag so state transitions work for new query
+                    isListeningForNextQuery.set(false)
+                    Log.d(TAG, "Reset isListeningForNextQuery for new query")
+                    
                     // Move pre-speech buffer to speech buffer
                     speechBuffer.clear()
                     speechBuffer.addAll(preSpeechBuffer)
@@ -777,7 +804,7 @@ class VoicePipelineManager(
                     // Include the current frame - USE AMPLIFIED AUDIO
                     speechBuffer.addAll(amplifiedAudio.toList())
                     
-                    currentState = PipelineState.SPEECH_DETECTED
+                    transitionToState(PipelineState.SPEECH_DETECTED)
                     Log.i(TAG, "Started collecting speech (pre-speech: ${preSpeechBuffer.size} + frame: ${audioData.size} samples)")
                 } else {
                     // Subsequent SPEECH_START frames during confirmation period
@@ -1023,7 +1050,7 @@ class VoicePipelineManager(
         
         val durationMs = speechArray.size * 1000 / SAMPLE_RATE
         Log.i(TAG, "Sending ${speechArray.size} samples (${durationMs}ms) to STT")
-        currentState = PipelineState.TRANSCRIBING
+        transitionToState(PipelineState.TRANSCRIBING)
         
         // Process with STT - track job so we can cancel it if needed
         sttJob = scope.launch(Dispatchers.IO) {
@@ -1044,7 +1071,7 @@ class VoicePipelineManager(
                     
                     // Process with LLM if available
                     if (llmBridge != null && queue != null) {
-                        currentState = PipelineState.THINKING
+                        transitionToState(PipelineState.THINKING)
                         processWithLLM(transcription)
                     }
                 } else {
@@ -1056,7 +1083,7 @@ class VoicePipelineManager(
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "STT processing failed", e)
-                currentState = PipelineState.ERROR
+                transitionToState(PipelineState.ERROR)
                 withContext(Dispatchers.Main) {
                     onError?.invoke("STT failed: ${e.message}")
                 }
@@ -1153,7 +1180,7 @@ class VoicePipelineManager(
         
         Log.w(TAG, "CRITICAL: stopConversation() called - setting isRunning=false")
         isRunning.set(false)
-        currentState = PipelineState.IDLE
+        transitionToState(PipelineState.IDLE)
         
         // Stop audio recording
         audioRecorder?.stopRecording()
@@ -1207,7 +1234,7 @@ class VoicePipelineManager(
         llmBridge?.stopGeneration()
         // Reset state
         isLLMResponseComplete = false
-        currentState = PipelineState.IDLE
+        transitionToState(PipelineState.IDLE)
     }
     
     /**
@@ -1379,7 +1406,7 @@ class VoicePipelineManager(
                             isFirstToken = false
                         }
                         response.isError -> {
-                            currentState = PipelineState.ERROR
+                            transitionToState(PipelineState.ERROR)
                             withContext(Dispatchers.Main) {
                                 onError?.invoke("LLM Error: ${response.error}")
                             }
@@ -1390,7 +1417,7 @@ class VoicePipelineManager(
                             
                             // CRITICAL FIX: Transition to SPEAKING state when LLM completes
                             // This ensures UI shows correct state even if TTS hasn't started yet
-                            currentState = PipelineState.SPEAKING
+                            transitionToState(PipelineState.SPEAKING)
                             
                             // CRITICAL FIX: Get clean response (truncate any role leakage)
                             val cleanResponse = truncateAtRoleLeakage(fullResponseText.toString())
@@ -1447,7 +1474,7 @@ class VoicePipelineManager(
                         }
                         response.isStreaming -> {
                             tokenCount++
-                            currentState = PipelineState.SPEAKING
+                            transitionToState(PipelineState.SPEAKING)
                             
                             // Append token to response
                             val newText = response.text
@@ -1518,7 +1545,8 @@ class VoicePipelineManager(
                                 
                                 // CRITICAL: Cancel job and exit flow immediately - don't wait for anything!
                                 llmProviderJob?.cancel()
-                                currentState = PipelineState.LISTENING
+                                isListeningForNextQuery.set(true)
+                                transitionToState(PipelineState.LISTENING)
                                 Log.i(TAG, "Role leakage detected - returning to LISTENING immediately for next question")
                                 return@collect
                             }
@@ -1589,7 +1617,8 @@ class VoicePipelineManager(
                                 
                                 // CRITICAL: Cancel job and exit flow immediately - don't wait for anything!
                                 llmProviderJob?.cancel()
-                                currentState = PipelineState.LISTENING
+                                isListeningForNextQuery.set(true)
+                                transitionToState(PipelineState.LISTENING)
                                 Log.i(TAG, "Max length reached - returning to LISTENING immediately for next question")
                                 return@collect
                             }
@@ -1624,7 +1653,7 @@ class VoicePipelineManager(
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "LLM Provider processing failed", e)
-                currentState = PipelineState.ERROR
+                transitionToState(PipelineState.ERROR)
                 withContext(Dispatchers.Main) {
                     onError?.invoke("Processing failed: ${e.message}")
                 }
@@ -1699,7 +1728,7 @@ class VoicePipelineManager(
                         
                         when {
                             response.error != null -> {
-                                currentState = PipelineState.ERROR
+                                transitionToState(PipelineState.ERROR)
                                 responseComplete = true
                                 withContext(Dispatchers.Main) {
                                     onError?.invoke("LLM Error: ${response.error}")
@@ -1724,7 +1753,7 @@ class VoicePipelineManager(
                                 
                                 // CRITICAL FIX: Transition to SPEAKING state when LLM completes
                                 // This ensures UI shows correct state even if TTS hasn't started yet
-                                currentState = PipelineState.SPEAKING
+                                transitionToState(PipelineState.SPEAKING)
                                 
                                 val finalResponse = fullResponseText.toString()
                                 Log.i(TAG, "Final response length: ${finalResponse.length}, TTS buffer: ${ttsTextBuffer.length}")
@@ -1774,7 +1803,7 @@ class VoicePipelineManager(
                             response.token != null && !response.isComplete -> {
                                 // STREAMING TTS: Start speaking as soon as first sentence is ready
                                 tokenCount++
-                                currentState = PipelineState.SPEAKING
+                                transitionToState(PipelineState.SPEAKING)
                                 fullResponseText.append(response.token)
                                 
                                 // Accumulate text for TTS (filter special tokens AND streaming partials)
@@ -1804,7 +1833,7 @@ class VoicePipelineManager(
                     }
             } catch (e: Exception) {
                 Log.e(TAG, "LLM processing failed", e)
-                currentState = PipelineState.ERROR
+                transitionToState(PipelineState.ERROR)
                 withContext(Dispatchers.Main) {
                     onError?.invoke("Processing failed: ${e.message}")
                 }
@@ -1897,7 +1926,7 @@ class VoicePipelineManager(
         Log.i(TAG, "Starting TTS (hybrid mode - streams sentences from finalBubbleText only)")
         
         // CRITICAL FIX: Force state to SPEAKING and abort any ongoing speech collection
-        currentState = PipelineState.SPEAKING
+        transitionToState(PipelineState.SPEAKING)
         
         // Reset all speech collection state to prevent feedback loop
         isCollectingSpeech = false

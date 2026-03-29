@@ -1572,8 +1572,12 @@ class VoicePipelineManager(
                                 // CRITICAL FIX: Check if response ENDS with a complete sentence
                                 // Not just if it contains one - this prevents cutting off mid-sentence
                                 val trimmedResponse = currentResponse.trim()
-                                val endsWithCompleteSentence = trimmedResponse.isNotEmpty() && 
-                                    (trimmedResponse.last() == '.' || trimmedResponse.last() == '!' || trimmedResponse.last() == '?')
+                                // CRITICAL FIX: Also check that it's not a numbered list item (1., 2., etc.)
+                                val lastChar = trimmedResponse.lastOrNull()
+                                val endsWithPunctuation = lastChar == '.' || lastChar == '!' || lastChar == '?'
+                                // Check if it ends with a numbered list pattern (digit followed by period)
+                                val endsWithNumberedList = trimmedResponse.matches(Regex(".*\\d\\.$"))
+                                val endsWithCompleteSentence = endsWithPunctuation && !endsWithNumberedList
                                 
                                 if (currentSentenceCount == 0) {
                                     // No complete sentence yet, continue collecting

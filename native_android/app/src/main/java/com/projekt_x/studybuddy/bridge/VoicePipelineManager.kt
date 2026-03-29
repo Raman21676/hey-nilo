@@ -1234,7 +1234,8 @@ class VoicePipelineManager(
         llmBridge?.stopGeneration()
         // Reset state
         isLLMResponseComplete = false
-        transitionToState(PipelineState.IDLE)
+        // CRITICAL FIX: Don't transition here - let the caller decide
+        // This was causing race conditions with restartForNewQuestion()
     }
     
     /**

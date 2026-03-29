@@ -1275,7 +1275,10 @@ fun UnifiedChatView(
                     
                     // Send button - becomes STOP button during generation or TTS
                     val isSpeaking = pipelineState == VoicePipelineManager.Companion.PipelineState.SPEAKING
-                    val canStop = isGenerating || isSpeaking
+                    val isError = pipelineState == VoicePipelineManager.Companion.PipelineState.ERROR
+                    // CRITICAL FIX: Show X button in voice mode during SPEAKING or ERROR state
+                    // This allows user to stop/resume even when something goes wrong
+                    val canStop = isGenerating || isSpeaking || (isVoiceModeActive && isError)
                     
                     if (canStop) {
                         IconButton(

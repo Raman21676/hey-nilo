@@ -2026,11 +2026,13 @@ class VoicePipelineManager(
                     isRunning.set(true)
                 }
                 
-                // CRITICAL FIX: No cooldown wait - transition immediately when TTS finishes!
-                // This fixes "Nilo is speaking..." persisting after speech is done
-                
-                // Resume listening by changing state back to LISTENING
-                transitionToListening()
+                // CRITICAL FIX: Only transition to LISTENING if we're not already there
+                // This prevents the TTS finally block from overriding the max-length handler
+                if (currentState != PipelineState.LISTENING) {
+                    transitionToListening()
+                } else {
+                    Log.i(TAG, "TTS finished - already in LISTENING state, no transition needed")
+                }
                 
                 // Ensure audio recorder is still running
                 if (audioRecorder?.isRecording() != true) {

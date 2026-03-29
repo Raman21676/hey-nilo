@@ -1556,55 +1556,37 @@ class VoicePipelineManager(
                                 return@collect
                             }
                             
-                            // CRITICAL FIX: Check max length BEFORE appending token
-                            val projectedResponse = fullResponseText.toString() + token
-                            val projectedSentenceCount = countSentences(projectedResponse)
+                            // Always add token to fullResponseText FIRST
+                            fullResponseText.append(token)
+                            
+                            // CRITICAL FIX: Check max length AFTER appending token
+                            val currentResponse = fullResponseText.toString()
+                            val currentSentenceCount = countSentences(currentResponse)
                             val maxCharsLimit = currentQueryClassification?.maxChars ?: MAX_RESPONSE_CHARS
                             val maxSentencesLimit = currentQueryClassification?.maxSentences ?: MAX_RESPONSE_SENTENCES
-                            val wouldExceedLimit = projectedResponse.length >= maxCharsLimit || projectedSentenceCount >= maxSentencesLimit
                             
-                            // CRITICAL FIX: Only stop if we have at least one complete sentence
-                            // This prevents cutting off mid-sentence
-                            if (wouldExceedLimit) {
-                                val currentResponse = fullResponseText.toString()
-                                val currentSentenceCount = countSentences(currentResponse)
-                                
-                                // CRITICAL FIX: Check if response ENDS with a complete sentence
-                                // Not just if it contains one - this prevents cutting off mid-sentence
+                            val exceedsChars = currentResponse.length >= maxCharsLimit
+                            val exceedsSentences = currentSentenceCount >= maxSentencesLimit
+                            
+                            // CRITICAL FIX: Only stop if we exceed limits AND end with complete sentence
+                            if (exceedsChars || exceedsSentences) {
                                 val trimmedResponse = currentResponse.trim()
-                                // CRITICAL FIX: Also check that it's not a numbered list item (1., 2., etc.)
                                 val lastChar = trimmedResponse.lastOrNull()
+                                
+                                // Check if ends with proper sentence ending (not numbered list)
                                 val endsWithPunctuation = lastChar == '.' || lastChar == '!' || lastChar == '?'
-                                // Check if it ends with a numbered list pattern (digit followed by period)
                                 val endsWithNumberedList = trimmedResponse.matches(Regex(".*\\d\\.$"))
                                 val endsWithCompleteSentence = endsWithPunctuation && !endsWithNumberedList
                                 
-                                if (currentSentenceCount == 0) {
-                                    // No complete sentence yet, continue collecting
-                                    Log.d(TAG, "Would exceed limit but no complete sentence yet - continuing")
-                                } else if (token.contains(Regex("[.!?]"))) {
-                                    // This token completes a sentence, add it then stop
-                                    Log.i(TAG, "Max limit reached but completing current sentence")
-                                    fullResponseText.append(token)
-                                    // Continue to stop logic below
-                                } else if (endsWithCompleteSentence) {
-                                    // We already end with a complete sentence, safe to stop
-                                    Log.i(TAG, "MAX RESPONSE LENGTH REACHED: ${currentResponse.length} chars, $currentSentenceCount sentences - STOPPING at sentence boundary")
-                                    // Continue to stop logic below without adding token
-                                } else {
-                                    // Don't stop yet - we're in the middle of a sentence
-                                    Log.d(TAG, "Would exceed limit but response doesn't end with complete sentence - continuing")
-                                    // Continue collecting until we get a sentence ending
-                                }
-                                
-                                if (currentSentenceCount > 0 && (token.contains(Regex("[.!?]")) || endsWithCompleteSentence)) {
-                                    // CRITICAL FIX: Store the EXACT bubble text as single source of truth
+                                if (currentSentenceCount > 0 && endsWithCompleteSentence) {
+                                    // Safe to stop - we have complete sentences and end properly
+                                    Log.i(TAG, "MAX RESPONSE LENGTH REACHED: ${currentResponse.length} chars, $currentSentenceCount sentences - STOPPING")
+                                    
                                     val cleanResponse = truncateAtRoleLeakage(currentResponse)
                                     finalBubbleText = cleanResponse
                                     
                                     ttsTextBuffer.clear()
                                     ttsTextBuffer.append(filterTTSText(finalBubbleText))
-                                    Log.i(TAG, "TTS buffer set to match bubble EXACTLY: ${ttsTextBuffer.length} chars")
                                     
                                     llmBridge?.stopGeneration()
                                     isLLMResponseComplete = true
@@ -1634,11 +1616,11 @@ class VoicePipelineManager(
                                     transitionToState(PipelineState.LISTENING)
                                     Log.i(TAG, "Max length reached - returning to LISTENING")
                                     return@collect
+                                } else {
+                                    // Don't stop yet - continue until we get a complete sentence
+                                    Log.d(TAG, "Exceeded limit but not at sentence boundary - continuing (chars: ${currentResponse.length}, sentences: $currentSentenceCount)")
                                 }
                             }
-                            
-                            // Always add token to fullResponseText
-                            fullResponseText.append(token)
                             
                             // CRITICAL FIX: Add token to TTS buffer FIRST
                             // This ensures ALL text that appears in the bubble also gets added to TTS buffer

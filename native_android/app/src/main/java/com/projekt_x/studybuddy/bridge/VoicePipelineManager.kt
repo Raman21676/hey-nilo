@@ -1568,9 +1568,14 @@ class VoicePipelineManager(
                             if (wouldExceedLimit) {
                                 val currentResponse = fullResponseText.toString()
                                 val currentSentenceCount = countSentences(currentResponse)
-                                val hasCompleteSentence = currentSentenceCount > 0
                                 
-                                if (!hasCompleteSentence) {
+                                // CRITICAL FIX: Check if response ENDS with a complete sentence
+                                // Not just if it contains one - this prevents cutting off mid-sentence
+                                val trimmedResponse = currentResponse.trim()
+                                val endsWithCompleteSentence = trimmedResponse.isNotEmpty() && 
+                                    (trimmedResponse.last() == '.' || trimmedResponse.last() == '!' || trimmedResponse.last() == '?')
+                                
+                                if (currentSentenceCount == 0) {
                                     // No complete sentence yet, continue collecting
                                     Log.d(TAG, "Would exceed limit but no complete sentence yet - continuing")
                                 } else if (token.contains(Regex("[.!?]"))) {
@@ -1578,13 +1583,17 @@ class VoicePipelineManager(
                                     Log.i(TAG, "Max limit reached but completing current sentence")
                                     fullResponseText.append(token)
                                     // Continue to stop logic below
-                                } else {
-                                    // Skip this token and stop (we already have complete sentences)
+                                } else if (endsWithCompleteSentence) {
+                                    // We already end with a complete sentence, safe to stop
                                     Log.i(TAG, "MAX RESPONSE LENGTH REACHED: ${currentResponse.length} chars, $currentSentenceCount sentences - STOPPING at sentence boundary")
                                     // Continue to stop logic below without adding token
+                                } else {
+                                    // Don't stop yet - we're in the middle of a sentence
+                                    Log.d(TAG, "Would exceed limit but response doesn't end with complete sentence - continuing")
+                                    // Continue collecting until we get a sentence ending
                                 }
                                 
-                                if (hasCompleteSentence) {
+                                if (currentSentenceCount > 0 && (token.contains(Regex("[.!?]")) || endsWithCompleteSentence)) {
                                     // CRITICAL FIX: Store the EXACT bubble text as single source of truth
                                     val cleanResponse = truncateAtRoleLeakage(currentResponse)
                                     finalBubbleText = cleanResponse

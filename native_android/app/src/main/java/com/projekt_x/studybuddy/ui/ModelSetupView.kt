@@ -173,14 +173,15 @@ fun ModelSetupView(
             modifier = Modifier
                 .fillMaxSize()
                 .verticalScroll(rememberScrollState())
-                .padding(24.dp),
+                .padding(horizontal = 24.dp)
+                .padding(top = 4.dp, bottom = 16.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.Top
         ) {
             // Top section: Logo and title
             Column(
                 horizontalAlignment = Alignment.CenterHorizontally,
-                modifier = Modifier.padding(top = 8.dp)
+                modifier = Modifier.padding(top = 0.dp)
             ) {
                 Image(
                     painter = painterResource(id = R.drawable.app_logo),

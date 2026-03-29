@@ -1501,20 +1501,13 @@ class VoicePipelineManager(
                                 // Force stop LLM generation immediately
                                 Log.i(TAG, "Force stopping LLM generation due to role leakage...")
                                 llmBridge?.stopGeneration()
-                                llmProviderJob?.cancel()  // Also cancel the coroutine job
                                 isLLMResponseComplete = true
                                 
-                                // Start TTS with final bubble text
+                                // Start TTS with final bubble text (FIRE AND FORGET - don't wait!)
                                 if (!isStreamingTTSActive && kokoroTTS?.isReady == true && finalBubbleText.isNotBlank()) {
                                     Log.i(TAG, "Starting TTS for truncated response (${finalBubbleText.length} chars)")
                                     startStreamingTTS()
-                                    
-                                    // Wait for TTS to finish before completing
-                                    Log.i(TAG, "Waiting for TTS to finish after role leakage detection...")
-                                    while (isStreamingTTSActive) {
-                                        delay(100)
-                                    }
-                                    Log.i(TAG, "TTS finished after role leakage detection")
+                                    // CRITICAL: Don't wait for TTS - let user ask next question immediately!
                                 }
                                 
                                 // Send final bubble text to UI
@@ -1547,9 +1540,10 @@ class VoicePipelineManager(
                                 // Reset for next query
                                 currentQueryClassification = null
                                 
-                                // Transition back to listening state
-                                delay(500)  // Small delay for smooth transition
-                                restartListening()
+                                // CRITICAL: Cancel job and exit flow immediately - don't wait for anything!
+                                llmProviderJob?.cancel()
+                                currentState = PipelineState.LISTENING
+                                Log.i(TAG, "Role leakage detected - returning to LISTENING immediately for next question")
                                 return@collect
                             }
                             
@@ -1585,19 +1579,13 @@ class VoicePipelineManager(
                                 // Force stop LLM generation - CRITICAL to prevent background generation
                                 Log.i(TAG, "Force stopping LLM generation...")
                                 llmBridge?.stopGeneration()
-                                llmProviderJob?.cancel()  // Also cancel the coroutine job
                                 isLLMResponseComplete = true
                                 
-                                // Start TTS with the FINAL bubble text
+                                // Start TTS with the FINAL bubble text (FIRE AND FORGET - don't wait!)
                                 if (!isStreamingTTSActive && kokoroTTS?.isReady == true && finalBubbleText.isNotBlank()) {
                                     Log.i(TAG, "Starting TTS for max-length response (${finalBubbleText.length} chars)")
                                     startStreamingTTS()
-                                    
-                                    // Wait for TTS to finish
-                                    while (isStreamingTTSActive) {
-                                        delay(100)
-                                    }
-                                    Log.i(TAG, "TTS finished for max-length response")
+                                    // CRITICAL: Don't wait for TTS here - let user ask next question immediately!
                                 }
                                 
                                 // Send final response to UI
@@ -1605,7 +1593,7 @@ class VoicePipelineManager(
                                     onResponseUpdate?.invoke(finalBubbleText, true)
                                 }
                                 
-                                // Save conversation
+                                // Save conversation (fire and forget)
                                 scope.launch(Dispatchers.IO) {
                                     try {
                                         memoryManager?.saveConversationExchange(
@@ -1625,8 +1613,10 @@ class VoicePipelineManager(
                                 // Reset for next query
                                 currentQueryClassification = null
                                 
-                                delay(500)
-                                restartListening()
+                                // CRITICAL: Cancel job and exit flow immediately - don't wait for anything!
+                                llmProviderJob?.cancel()
+                                currentState = PipelineState.LISTENING
+                                Log.i(TAG, "Max length reached - returning to LISTENING immediately for next question")
                                 return@collect
                             }
                             

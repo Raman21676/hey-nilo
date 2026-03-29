@@ -127,25 +127,19 @@ class VoicePipelineManager(
         }
         
         try {
-            // CRITICAL: Wait for TTS to actually stop speaking
+            // Wait for TTS to actually stop speaking (but don't add extra cooldown)
             var waitCount = 0
             while (kokoroTTS?.isSpeaking() == true && waitCount < 50) {
                 Log.i(TAG, "⏳ Waiting for TTS to finish speaking...")
-                delay(100)
+                delay(50)
                 waitCount++
             }
             
-            val timeSinceTTS = System.currentTimeMillis() - lastTTSFinishedTime
-            val cooldownRemaining = TTS_COOLDOWN_MS - timeSinceTTS
-            
-            if (cooldownRemaining > 0 && lastTTSFinishedTime > 0) {
-                Log.i(TAG, "⏳ TTS cooldown: waiting ${cooldownRemaining}ms before listening...")
-                delay(cooldownRemaining)
-            }
-            
+            // CRITICAL FIX: Transition immediately when TTS finishes - no cooldown delay!
+            // The cooldown was causing "Nilo is speaking..." to persist after speech completed
             if (isRunning.get() && currentState != PipelineState.LISTENING) {
                 currentState = PipelineState.LISTENING
-                Log.i(TAG, "🎤 State changed: LISTENING")
+                Log.i(TAG, "🎤 State changed: LISTENING (TTS finished)")
             }
         } finally {
             isTransitioningToListening.set(false)
@@ -163,42 +157,26 @@ class VoicePipelineManager(
             return
         }
         
-        // CRITICAL: Don't transition if TTS is still speaking
+        // If TTS is still speaking, wait for it then transition immediately
         if (kokoroTTS?.isSpeaking() == true) {
-            Log.i(TAG, "⏳ TTS still speaking, delaying transition...")
+            Log.i(TAG, "⏳ TTS still speaking, will transition when done...")
             scope.launch {
                 var waitCount = 0
-                while (kokoroTTS?.isSpeaking() == true && waitCount < 50) {
-                    delay(100)
+                while (kokoroTTS?.isSpeaking() == true && waitCount < 100) {
+                    delay(50)
                     waitCount++
                 }
-                delay(TTS_COOLDOWN_MS)
+                // CRITICAL FIX: No cooldown delay - transition immediately when TTS finishes!
                 if (isRunning.get() && currentState != PipelineState.LISTENING) {
                     currentState = PipelineState.LISTENING
-                    Log.i(TAG, "🎤 State changed: LISTENING (after TTS finished)")
+                    Log.i(TAG, "🎤 State changed: LISTENING (TTS finished)")
                 }
                 isTransitioningToListening.set(false)
             }
             return
         }
         
-        val timeSinceTTS = System.currentTimeMillis() - lastTTSFinishedTime
-        val cooldownRemaining = TTS_COOLDOWN_MS - timeSinceTTS
-        
-        if (cooldownRemaining > 0 && lastTTSFinishedTime > 0) {
-            Log.i(TAG, "⏳ TTS cooldown needed: ${cooldownRemaining}ms (will wait in coroutine)")
-            // Launch in coroutine to handle the delay
-            scope.launch {
-                delay(cooldownRemaining)
-                if (isRunning.get() && currentState != PipelineState.LISTENING) {
-                    currentState = PipelineState.LISTENING
-                    Log.i(TAG, "🎤 State changed: LISTENING (after cooldown)")
-                }
-                isTransitioningToListening.set(false)
-            }
-            return
-        }
-        
+        // CRITICAL FIX: Transition immediately - no cooldown delay!
         if (isRunning.get() && currentState != PipelineState.LISTENING) {
             currentState = PipelineState.LISTENING
             Log.i(TAG, "🎤 State changed: LISTENING (immediate)")
@@ -2052,13 +2030,8 @@ class VoicePipelineManager(
                     isRunning.set(true)
                 }
                 
-                // CRITICAL FIX: Wait for TTS cooldown before resuming listening
-                val timeSinceTTS = System.currentTimeMillis() - lastTTSFinishedTime
-                val cooldownRemaining = TTS_COOLDOWN_MS - timeSinceTTS
-                if (cooldownRemaining > 0) {
-                    Log.i(TAG, "Waiting ${cooldownRemaining}ms for TTS cooldown before listening...")
-                    delay(cooldownRemaining)
-                }
+                // CRITICAL FIX: No cooldown wait - transition immediately when TTS finishes!
+                // This fixes "Nilo is speaking..." persisting after speech is done
                 
                 // Resume listening by changing state back to LISTENING
                 transitionToListening()

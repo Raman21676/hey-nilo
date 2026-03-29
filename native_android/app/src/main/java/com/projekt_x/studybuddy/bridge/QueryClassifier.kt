@@ -79,21 +79,21 @@ object QueryClassifier {
         return when (length) {
             ResponseLength.SHORT -> ClassificationResult(
                 length = length,
-                maxTokens = 80,
-                maxSentences = 2,
-                maxChars = 150
+                maxTokens = 120,   // Increased from 80
+                maxSentences = 3,  // Increased from 2
+                maxChars = 250     // Increased from 150
             )
             ResponseLength.MEDIUM -> ClassificationResult(
                 length = length,
-                maxTokens = 200,
-                maxSentences = 4,
-                maxChars = 300
+                maxTokens = 350,   // Increased from 200
+                maxSentences = 6,  // Increased from 4
+                maxChars = 500     // Increased from 300
             )
             ResponseLength.LONG -> ClassificationResult(
                 length = length,
-                maxTokens = 400,
-                maxSentences = 8,
-                maxChars = 600
+                maxTokens = 600,   // Increased from 400
+                maxSentences = 10, // Increased from 8
+                maxChars = 900     // Increased from 600
             )
         }.also {
             Log.d(TAG, "Query classified as ${it.length}: '$query' -> maxTokens=${it.maxTokens}, maxSentences=${it.maxSentences}")

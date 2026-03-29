@@ -1556,79 +1556,78 @@ class VoicePipelineManager(
                                 return@collect
                             }
                             
-                            // CRITICAL FIX: Check max length BEFORE appending token - more aggressive stopping
+                            // CRITICAL FIX: Check max length BEFORE appending token
                             val projectedResponse = fullResponseText.toString() + token
                             val projectedSentenceCount = countSentences(projectedResponse)
                             val maxCharsLimit = currentQueryClassification?.maxChars ?: MAX_RESPONSE_CHARS
                             val maxSentencesLimit = currentQueryClassification?.maxSentences ?: MAX_RESPONSE_SENTENCES
                             val wouldExceedLimit = projectedResponse.length >= maxCharsLimit || projectedSentenceCount >= maxSentencesLimit
                             
-                            // Always add token to fullResponseText first (so TTS buffer gets it too)
-                            fullResponseText.append(token)
-                            
-                            // CRITICAL FIX: Check if we've exceeded limits AFTER appending
-                            val currentResponse = fullResponseText.toString()
-                            val sentenceCount = countSentences(currentResponse)
-                            
-                            if (currentResponse.length >= maxCharsLimit || sentenceCount >= maxSentencesLimit || wouldExceedLimit) {
-                                Log.i(TAG, "MAX RESPONSE LENGTH REACHED: ${currentResponse.length} chars, $sentenceCount sentences - STOPPING LLM")
-                                Log.i(TAG, "Limits were: maxChars=$maxCharsLimit, maxSentences=$maxSentencesLimit for ${currentQueryClassification?.length} query")
+                            // CRITICAL FIX: Only stop if we have at least one complete sentence
+                            // This prevents cutting off mid-sentence
+                            if (wouldExceedLimit) {
+                                val currentResponse = fullResponseText.toString()
+                                val currentSentenceCount = countSentences(currentResponse)
+                                val hasCompleteSentence = currentSentenceCount > 0
                                 
-                                // CRITICAL FIX: Store the EXACT bubble text as single source of truth
-                                val cleanResponse = truncateAtRoleLeakage(currentResponse)
-                                finalBubbleText = cleanResponse  // This is the ONLY text TTS should speak!
-                                
-                                // CRITICAL FIX: Clear TTS buffer and set it to EXACTLY the bubble text
-                                // This ensures TTS speaks ONLY what's in the bubble, nothing more
-                                ttsTextBuffer.clear()
-                                ttsTextBuffer.append(filterTTSText(finalBubbleText))
-                                Log.i(TAG, "TTS buffer set to match bubble EXACTLY: ${ttsTextBuffer.length} chars")
-                                Log.i(TAG, "Final bubble text: '${finalBubbleText.take(100)}${if (finalBubbleText.length > 100) "..." else ""}'")
-                                
-                                // Force stop LLM generation - CRITICAL to prevent background generation
-                                Log.i(TAG, "Force stopping LLM generation...")
-                                llmBridge?.stopGeneration()
-                                isLLMResponseComplete = true
-                                
-                                // CRITICAL FIX: Don't start TTS here - it already started when first sentence was ready!
-                                // TTS will naturally complete speaking from finalBubbleText because
-                                // isLLMResponseComplete is now true (see startStreamingTTS loop)
-                                Log.i(TAG, "Max length reached - TTS will complete naturally, returning to LISTENING")
-                                
-                                // Send final response to UI
-                                withContext(Dispatchers.Main) {
-                                    onResponseUpdate?.invoke(finalBubbleText, true)
+                                if (!hasCompleteSentence) {
+                                    // No complete sentence yet, continue collecting
+                                    Log.d(TAG, "Would exceed limit but no complete sentence yet - continuing")
+                                } else if (token.contains(Regex("[.!?]"))) {
+                                    // This token completes a sentence, add it then stop
+                                    Log.i(TAG, "Max limit reached but completing current sentence")
+                                    fullResponseText.append(token)
+                                    // Continue to stop logic below
+                                } else {
+                                    // Skip this token and stop (we already have complete sentences)
+                                    Log.i(TAG, "MAX RESPONSE LENGTH REACHED: ${currentResponse.length} chars, $currentSentenceCount sentences - STOPPING at sentence boundary")
+                                    // Continue to stop logic below without adding token
                                 }
                                 
-                                // Save conversation (fire and forget)
-                                scope.launch(Dispatchers.IO) {
-                                    try {
-                                        memoryManager?.saveConversationExchange(
-                                            userMessage = transcription,
-                                            assistantMessage = finalBubbleText
-                                        )
-                                    } catch (e: Exception) {
-                                        Log.w(TAG, "Failed to save conversation: ${e.message}")
+                                if (hasCompleteSentence) {
+                                    // CRITICAL FIX: Store the EXACT bubble text as single source of truth
+                                    val cleanResponse = truncateAtRoleLeakage(currentResponse)
+                                    finalBubbleText = cleanResponse
+                                    
+                                    ttsTextBuffer.clear()
+                                    ttsTextBuffer.append(filterTTSText(finalBubbleText))
+                                    Log.i(TAG, "TTS buffer set to match bubble EXACTLY: ${ttsTextBuffer.length} chars")
+                                    
+                                    llmBridge?.stopGeneration()
+                                    isLLMResponseComplete = true
+                                    
+                                    withContext(Dispatchers.Main) {
+                                        onResponseUpdate?.invoke(finalBubbleText, true)
                                     }
+                                    
+                                    scope.launch(Dispatchers.IO) {
+                                        try {
+                                            memoryManager?.saveConversationExchange(
+                                                userMessage = transcription,
+                                                assistantMessage = finalBubbleText
+                                            )
+                                        } catch (e: Exception) {
+                                            Log.w(TAG, "Failed to save conversation: ${e.message}")
+                                        }
+                                    }
+                                    
+                                    if (isRunning.get()) {
+                                        llmBridge?.clearContext()
+                                    }
+                                    
+                                    currentQueryClassification = null
+                                    llmProviderJob?.cancel()
+                                    isListeningForNextQuery.set(true)
+                                    transitionToState(PipelineState.LISTENING)
+                                    Log.i(TAG, "Max length reached - returning to LISTENING")
+                                    return@collect
                                 }
-                                
-                                // Clean up and return to listening
-                                if (isRunning.get()) {
-                                    llmBridge?.clearContext()
-                                }
-                                
-                                // Reset for next query
-                                currentQueryClassification = null
-                                
-                                // CRITICAL: Cancel job and exit flow immediately - don't wait for anything!
-                                llmProviderJob?.cancel()
-                                isListeningForNextQuery.set(true)
-                                transitionToState(PipelineState.LISTENING)
-                                Log.i(TAG, "Max length reached - returning to LISTENING immediately for next question")
-                                return@collect
                             }
                             
-                            // CRITICAL FIX: Add token to TTS buffer FIRST (before any length checks that might skip it)
+                            // Always add token to fullResponseText
+                            fullResponseText.append(token)
+                            
+                            // CRITICAL FIX: Add token to TTS buffer FIRST
                             // This ensures ALL text that appears in the bubble also gets added to TTS buffer
                             if (token.isNotBlank()) {
                                 val streamingFiltered = filterStreamingTokenForTTS(token)

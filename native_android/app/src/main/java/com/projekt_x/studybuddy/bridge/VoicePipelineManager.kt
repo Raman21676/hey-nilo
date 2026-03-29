@@ -1261,8 +1261,9 @@ class VoicePipelineManager(
         // Cancel any pending jobs
         llmProviderJob?.cancel()
         llmProviderJob = null
-        streamingTTSJob?.cancel()
-        streamingTTSJob = null
+        // CRITICAL FIX: Don't cancel TTS job - let it finish speaking!
+        // streamingTTSJob?.cancel()
+        // streamingTTSJob = null
         sttJob?.cancel()
         sttJob = null
         

@@ -1466,10 +1466,10 @@ class VoicePipelineManager(
                             ttsTextBuffer.append(cleanTTSContent)
                             Log.i(TAG, "TTS buffer set to match finalBubbleText EXACTLY: ${ttsTextBuffer.length} chars")
                             
-                            // CRITICAL FIX: Start TTS now that LLM is complete and we have final text
-                            if (!isStreamingTTSActive && kokoroTTS?.isReady == true && finalBubbleText.isNotBlank()) {
-                                Log.i(TAG, "LLM complete, starting TTS for final response (${finalBubbleText.length} chars)")
-                                startStreamingTTS()
+                            // CRITICAL FIX: Start TTS if not already active (for short responses that never triggered streaming)
+                            if (!isStreamingTTSActive && finalBubbleText.isNotBlank()) {
+                                Log.i(TAG, "LLM complete but TTS not started yet - starting now (${finalBubbleText.length} chars)")
+                                startStreamingTTS(finalBubbleText)
                             }
                             
                             // Send finalBubbleText to UI (single source of truth)
@@ -1545,11 +1545,11 @@ class VoicePipelineManager(
                                 }
                             }
                             
-                            // CRITICAL FIX: DO NOT start TTS during streaming - wait for LLM to complete
-                            // Starting TTS mid-stream causes repeated restarts and "Nilo is listening" interruptions
-                            if (!isStreamingTTSActive && isLLMResponseComplete && hasCompleteSentence(fullResponseText.toString())) {
-                                Log.i(TAG, "LLM complete, starting TTS for final response")
-                                startStreamingTTS()
+                            // CRITICAL FIX: Start TTS as soon as we have a complete sentence (streaming TTS)
+                            val currentText = truncateAtRoleLeakage(fullResponseText.toString())
+                            if (!isStreamingTTSActive && hasCompleteSentence(currentText)) {
+                                Log.i(TAG, "First sentence ready, starting TTS streaming")
+                                startStreamingTTS(currentText)
                             }
                             
                             // Update UI - show clean content only (truncate if leakage detected)
@@ -1690,15 +1690,14 @@ class VoicePipelineManager(
                                     llmBridge?.clearContext()
                                 }
                                 
-                                // STEP 6: If TTS hasn't started yet (short response), start it now
+                                // STEP 6: Mark LLM complete - streaming TTS will finish speaking remaining text
+                                Log.d(TAG, "NILO_DEBUG: isComplete fired - LLM response complete, ${finalBubbleText.length} chars")
+                                isLLMResponseComplete = true
+                                
+                                // Start TTS if not already active and we have text
                                 if (!isStreamingTTSActive && finalBubbleText.isNotBlank()) {
-                                    Log.i(TAG, "LLM complete, starting TTS for short response")
                                     startStreamingTTS(finalBubbleText)
-                                } else if (!isStreamingTTSActive) {
-                                    // No TTS needed, go straight to listening
-                                    transitionToListening()
                                 }
-                                // If TTS is already running, it will handle completion in its finally block
                             }
                             response.token != null && !response.isComplete -> {
                                 // STREAMING: Collect tokens, update UI, start TTS when first sentence ready
@@ -1712,10 +1711,10 @@ class VoicePipelineManager(
                                     onResponseUpdate?.invoke(fullResponseText.toString(), false)
                                 }
                                 
-                                // CRITICAL FIX: DO NOT start TTS during streaming - wait for LLM to complete
+                                // Start TTS as soon as we have a complete sentence (low latency)
                                 val currentText = truncateAtRoleLeakage(fullResponseText.toString())
-                                if (!isStreamingTTSActive && isLLMResponseComplete && hasCompleteSentence(currentText)) {
-                                    Log.i(TAG, "LLM complete, starting TTS")
+                                if (!isStreamingTTSActive && hasCompleteSentence(currentText)) {
+                                    Log.i(TAG, "First sentence ready, starting streaming TTS")
                                     startStreamingTTS(currentText)
                                 }
                             }
@@ -1737,7 +1736,6 @@ class VoicePipelineManager(
     /**
      * Restart listening after error or when TTS is not available
      * This is a fallback function for error recovery.
-     * For normal TTS flow, we use seamless transition (see finally block in startStreamingTTS).
      * Uses atomic flag to prevent concurrent restarts from multiple threads.
      */
     private suspend fun restartListening() {
@@ -1799,22 +1797,22 @@ class VoicePipelineManager(
     }
     
     /**
-     * DEPRECATED: Use startStreamingTTS(initialText: String) instead
-     */
-    private fun startStreamingTTS() {
-        // This overload is deprecated - use the one with initialText parameter
-    }
-    
-    /**
      * STREAMING TTS: Speaks text as it arrives, waits for both LLM and TTS to complete
      * Flow: Start with initial sentence → continue speaking new text → wait for LLM done → 
      *       speak remaining → wait for TTS done → transition to LISTENING
      */
     private fun startStreamingTTS(initialText: String) {
-        if (isStreamingTTSActive || kokoroTTS?.isReady != true) return
+        if (isStreamingTTSActive) {
+            Log.w(TAG, "TTS already active, skipping")
+            return
+        }
+        if (kokoroTTS?.isReady != true) {
+            Log.e(TAG, "TTS not ready! kokoroTTS=$kokoroTTS, isReady=${kokoroTTS?.isReady}")
+            return
+        }
         
         isStreamingTTSActive = true
-        Log.i(TAG, "Starting TTS (hybrid mode - streams sentences from finalBubbleText only)")
+        Log.i(TAG, "Starting TTS streaming with initial text (${initialText.length} chars)")
         
         // CRITICAL FIX: Force state to SPEAKING and abort any ongoing speech collection
         transitionToState(PipelineState.SPEAKING)
@@ -1837,29 +1835,9 @@ class VoicePipelineManager(
             var lastSentToTTSIndex = 0  // Tracks what we've spoken from finalBubbleText
             var isFirstChunk = true
             
-            // CRITICAL FIX: Time-based TTS completion (isSpeaking() API is broken on this device)
-            // Calculate expected speaking duration from text length: ~15 chars per second (faster)
-            val expectedSpeakingMs = ((finalBubbleText.length / 15.0) * 1000).toLong()
-                .coerceIn(1500L, 20000L) // min 1.5s, max 20s
-            
-            Log.d(TAG, "NILO_DEBUG: TTS started, expected duration: ${expectedSpeakingMs}ms for ${finalBubbleText.length} chars")
-            
-            // Simple time-based transition - no dependency on broken isSpeaking() API
-            val timingJob = scope.launch {
-                delay(expectedSpeakingMs)
-                Log.d(TAG, "NILO_DEBUG: TTS duration elapsed (${expectedSpeakingMs}ms), transitioning to LISTENING")
-                if (currentState == PipelineState.SPEAKING) {
-                    isStreamingTTSActive = false
-                    transitionToListening()
-                }
-            }
-            
             try {
-                
                 while (isActive) {
-                    // CRITICAL FIX: During streaming, use fullResponseText which keeps growing
-                    // Only use finalBubbleText when LLM is complete (isLLMResponseComplete)
-                    // finalBubbleText was being set early and causing TTS to miss new tokens
+                    // Use the appropriate source text
                     val sourceText = if (isLLMResponseComplete && finalBubbleText.isNotBlank()) {
                         finalBubbleText
                     } else {
@@ -1891,7 +1869,7 @@ class VoicePipelineManager(
                     
                     // Check if LLM is complete
                     if (isLLMResponseComplete) {
-                        // Speak any remaining text from finalBubbleText (now safe to use as source of truth)
+                        // Speak any remaining text from finalBubbleText
                         val sourceText = finalBubbleText.ifBlank { truncateAtRoleLeakage(fullResponseText.toString()) }
                         
                         if (sourceText.length > lastSentToTTSIndex) {
@@ -1906,14 +1884,12 @@ class VoicePipelineManager(
                             }
                         }
                         
-                        // CRITICAL FIX: Time-based completion - waitForCompletion() removed
-                        // TTS timing is handled by timingJob coroutine above
-                        // Just wait a small buffer for final audio to finish
-                        delay(500)
-                        Log.i(TAG, "NILO_DEBUG: TTS Finished normally")
-                        
-                        // Cancel timing job since we completed normally
-                        timingJob.cancel()
+                        // CRITICAL FIX: Calculate wait time based on remaining text length
+                        val remainingText = sourceText.substring(lastSentToTTSIndex)
+                        val waitTimeMs = ((remainingText.length / 15.0) * 1000).toLong().coerceIn(1500L, 20000L)
+                        Log.d(TAG, "NILO_DEBUG: LLM complete, waiting ${waitTimeMs}ms for TTS to finish")
+                        delay(waitTimeMs)
+                        Log.i(TAG, "NILO_DEBUG: TTS streaming complete")
                         break
                     }
                     
@@ -1923,17 +1899,12 @@ class VoicePipelineManager(
             } catch (e: Exception) {
                 Log.e(TAG, "TTS error: ${e.message}")
             } finally {
-                // Cancel timing job
-                timingJob.cancel()
-                
                 isStreamingTTSActive = false
                 lastSpokenPosition = 0
                 isLLMResponseComplete = false  // Reset for next utterance
                 
                 // Notify audio recorder that TTS stopped
                 audioRecorder?.setTTSSpeaking(false)
-                
-                Log.i(TAG, "NILO_DEBUG: TTS finished - preparing for next utterance (timing job cancelled)")
                 
                 // CRITICAL FIX: Record when TTS finished to prevent echo detection
                 lastTTSFinishedTime = System.currentTimeMillis()
@@ -1946,7 +1917,7 @@ class VoicePipelineManager(
                 consecutiveSilenceFrames = 0
                 ttsTextBuffer.clear()
                 
-                // Reset VAD processor for clean state - CRITICAL for auto-listening
+                // Reset VAD processor for clean state
                 vadProcessor?.reset()
                 
                 // Clear LLM context for next utterance
@@ -1964,12 +1935,9 @@ class VoicePipelineManager(
                     isRunning.set(true)
                 }
                 
-                // CRITICAL FIX: Only transition to LISTENING if we're not already there
-                // This prevents the TTS finally block from overriding the max-length handler
+                // Transition to LISTENING
                 if (currentState != PipelineState.LISTENING) {
                     transitionToListening()
-                } else {
-                    Log.i(TAG, "TTS finished - already in LISTENING state, no transition needed")
                 }
                 
                 // Ensure audio recorder is still running

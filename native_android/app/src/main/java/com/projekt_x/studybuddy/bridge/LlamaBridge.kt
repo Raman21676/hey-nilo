@@ -112,8 +112,17 @@ class LlamaBridge(private val context: Context) : BaseBridge() {
     override fun release(): Boolean {
         return safeRelease {
             try {
-                // Cancel any ongoing generation
-                currentGenerationJob?.cancel()
+                // CRITICAL FIX: Stop generation first and wait for job to complete
+                stopGeneration()
+                
+                // Wait for the job to actually finish (with timeout)
+                currentGenerationJob?.let { job ->
+                    runBlocking {
+                        withTimeoutOrNull(1000) {
+                            job.join()
+                        }
+                    }
+                }
                 currentGenerationJob = null
                 
                 // Release native resources

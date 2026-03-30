@@ -853,6 +853,20 @@ extern "C" JNIEXPORT void JNICALL
 Java_com_projekt_1x_studybuddy_LlamaBridge_unload(JNIEnv* env, jobject /*thiz*/) {
     LOGI("Unloading model");
     if (g_state) {
+        // CRITICAL FIX: Signal generation to stop first
+        g_state->should_stop = true;
+        
+        // Wait a brief moment for generation loop to notice should_stop
+        // This prevents race condition where unload happens mid-generation
+        int wait_count = 0;
+        while (g_state->is_generating && wait_count < 50) {  // Max 500ms wait
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            wait_count++;
+        }
+        if (g_state->is_generating) {
+            LOGW("Generation still active after wait, proceeding with cleanup anyway");
+        }
+        
         g_state->cleanup();
         g_state.reset();
     }

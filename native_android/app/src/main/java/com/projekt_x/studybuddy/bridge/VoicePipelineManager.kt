@@ -1884,10 +1884,12 @@ class VoicePipelineManager(
                             }
                         }
                         
-                        // CRITICAL FIX: Calculate wait time based on remaining text length
-                        val remainingText = sourceText.substring(lastSentToTTSIndex)
-                        val waitTimeMs = ((remainingText.length / 15.0) * 1000).toLong().coerceIn(1500L, 20000L)
-                        Log.d(TAG, "NILO_DEBUG: LLM complete, waiting ${waitTimeMs}ms for TTS to finish")
+                        // CRITICAL FIX: Calculate wait time based on ALL text that was spoken
+                        // NOTE: TTS speechRate is 0.82 (slower than normal), so we use 12 chars/sec
+                        // We wait for the entire finalBubbleText, not just remaining, because TTS has a queue
+                        val totalTextLength = finalBubbleText.length
+                        val waitTimeMs = ((totalTextLength / 12.0) * 1000).toLong().coerceIn(3000L, 25000L)
+                        Log.d(TAG, "NILO_DEBUG: LLM complete, waiting ${waitTimeMs}ms for TTS to finish (total: ${totalTextLength} chars)")
                         delay(waitTimeMs)
                         Log.i(TAG, "NILO_DEBUG: TTS streaming complete")
                         break

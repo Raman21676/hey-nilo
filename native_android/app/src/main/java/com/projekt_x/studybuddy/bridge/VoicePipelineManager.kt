@@ -121,6 +121,13 @@ class VoicePipelineManager(
      * Uses atomic flag to prevent race conditions from multiple coroutines
      */
     private suspend fun transitionToListening() {
+        // CRITICAL FIX: Only reset TTS flags, NOT the text buffers!
+        // Text buffers are cleared at the START of a new question in processWithLLMProvider()
+        // Clearing them here would wipe out the displayed response!
+        isStreamingTTSActive = false
+        isLLMResponseComplete = false
+        // DO NOT clear: finalBubbleText, fullResponseText, ttsTextBuffer
+        
         // Only allow one transition at a time
         if (!isTransitioningToListening.compareAndSet(false, true)) {
             Log.d(TAG, "Transition already in progress, skipping")
@@ -140,7 +147,7 @@ class VoicePipelineManager(
             // The cooldown was causing "Nilo is speaking..." to persist after speech completed
             if (isRunning.get() && currentState != PipelineState.LISTENING) {
                 transitionToState(PipelineState.LISTENING)
-                Log.i(TAG, "🎤 State changed: LISTENING (TTS finished)")
+                Log.i(TAG, "NILO_DEBUG: State changed: LISTENING (TTS finished)")
             }
         } finally {
             isTransitioningToListening.set(false)
@@ -152,6 +159,12 @@ class VoicePipelineManager(
      * Also uses atomic flag and cooldown check
      */
     private fun transitionToListeningImmediate() {
+        // CRITICAL FIX: Only reset TTS flags, NOT the text buffers!
+        // Text buffers are cleared at the START of a new question in processWithLLMProvider()
+        isStreamingTTSActive = false
+        isLLMResponseComplete = false
+        // DO NOT clear: finalBubbleText, fullResponseText, ttsTextBuffer
+        
         // Only allow one transition at a time
         if (!isTransitioningToListening.compareAndSet(false, true)) {
             Log.d(TAG, "Transition already in progress, skipping immediate")
@@ -711,16 +724,15 @@ class VoicePipelineManager(
         // Motorbike horn (~200ms) will NOT trigger, human speech (~960ms+) WILL trigger
         // ========================================================================
         if (currentState == PipelineState.SPEAKING) {
-            // CRITICAL FIX: Skip barge-in detection if TTS is actively speaking OR 
-            // if TTS finished recently (prevents acoustic echo from being detected)
-            val isTTSSpeaking = kokoroTTS?.isSpeaking() == true
+            // CRITICAL FIX: Skip barge-in detection during TTS cooldown
+            // isSpeaking() API is broken on this device, use time-based cooldown only
             val timeSinceTTS = System.currentTimeMillis() - lastTTSFinishedTime
             val inTTSCooldown = timeSinceTTS < TTS_COOLDOWN_MS
             
-            if (isTTSSpeaking || inTTSCooldown) {
-                // TTS is speaking or just finished, reset barge-in counter
+            if (inTTSCooldown) {
+                // TTS just finished, reset barge-in counter
                 if (bargeInConfirmFrames > 0) {
-                    Log.v(TAG, "Barge-in reset: TTS speaking=$isTTSSpeaking, cooldown=$inTTSCooldown (${timeSinceTTS}ms)")
+                    Log.v(TAG, "Barge-in reset: cooldown=$inTTSCooldown (${timeSinceTTS}ms)")
                 }
                 bargeInConfirmFrames = 0
                 return
@@ -1461,6 +1473,7 @@ class VoicePipelineManager(
                             }
                             
                             // Send finalBubbleText to UI (single source of truth)
+                            Log.d(TAG, "NILO_DEBUG: onResponseUpdate FINAL: ${finalBubbleText.length} chars, isComplete=true")
                             withContext(Dispatchers.Main) {
                                 onResponseUpdate?.invoke(finalBubbleText, true)
                             }
@@ -1532,15 +1545,16 @@ class VoicePipelineManager(
                                 }
                             }
                             
-                            // CRITICAL FIX: Start TTS as soon as we have a complete sentence
-                            // TTS streams from finalBubbleText (or current response if not set yet)
-                            if (!isStreamingTTSActive && hasCompleteSentence(fullResponseText.toString())) {
-                                Log.i(TAG, "First sentence ready, starting TTS streaming")
+                            // CRITICAL FIX: DO NOT start TTS during streaming - wait for LLM to complete
+                            // Starting TTS mid-stream causes repeated restarts and "Nilo is listening" interruptions
+                            if (!isStreamingTTSActive && isLLMResponseComplete && hasCompleteSentence(fullResponseText.toString())) {
+                                Log.i(TAG, "LLM complete, starting TTS for final response")
                                 startStreamingTTS()
                             }
                             
                             // Update UI - show clean content only (truncate if leakage detected)
                             val displayText = truncateAtRoleLeakage(fullResponseText.toString())
+                            Log.d(TAG, "NILO_DEBUG: onResponseUpdate STREAM: ${displayText.length} chars, isComplete=false")
                             withContext(Dispatchers.Main) {
                                 onResponseUpdate?.invoke(displayText, false)
                             }
@@ -1645,6 +1659,7 @@ class VoicePipelineManager(
                                 finalBubbleText = truncateAtRoleLeakage(fullResponseText.toString())
                                 
                                 // STEP 2: Update UI one final time
+                                Log.d(TAG, "NILO_DEBUG: onResponseUpdate LEGACY_FINAL: ${finalBubbleText.length} chars")
                                 withContext(Dispatchers.Main) {
                                     onResponseUpdate?.invoke(finalBubbleText, true)
                                 }
@@ -1692,14 +1707,15 @@ class VoicePipelineManager(
                                 fullResponseText.append(response.token)
                                 
                                 // Update UI in real time
+                                Log.d(TAG, "NILO_DEBUG: onResponseUpdate LEGACY_STREAM: ${fullResponseText.length} chars")
                                 withContext(Dispatchers.Main) {
                                     onResponseUpdate?.invoke(fullResponseText.toString(), false)
                                 }
                                 
-                                // Start TTS as soon as we have a complete sentence (low latency)
+                                // CRITICAL FIX: DO NOT start TTS during streaming - wait for LLM to complete
                                 val currentText = truncateAtRoleLeakage(fullResponseText.toString())
-                                if (!isStreamingTTSActive && hasCompleteSentence(currentText)) {
-                                    Log.i(TAG, "First sentence ready, starting streaming TTS")
+                                if (!isStreamingTTSActive && isLLMResponseComplete && hasCompleteSentence(currentText)) {
+                                    Log.i(TAG, "LLM complete, starting TTS")
                                     startStreamingTTS(currentText)
                                 }
                             }
@@ -1820,10 +1836,26 @@ class VoicePipelineManager(
         streamingTTSJob = scope.launch {
             var lastSentToTTSIndex = 0  // Tracks what we've spoken from finalBubbleText
             var isFirstChunk = true
-            val ttsStartTime = System.currentTimeMillis()
-            val MAX_TTS_WAIT_MS = 30000L
+            
+            // CRITICAL FIX: Time-based TTS completion (isSpeaking() API is broken on this device)
+            // Calculate expected speaking duration from text length: ~15 chars per second (faster)
+            val expectedSpeakingMs = ((finalBubbleText.length / 15.0) * 1000).toLong()
+                .coerceIn(1500L, 20000L) // min 1.5s, max 20s
+            
+            Log.d(TAG, "NILO_DEBUG: TTS started, expected duration: ${expectedSpeakingMs}ms for ${finalBubbleText.length} chars")
+            
+            // Simple time-based transition - no dependency on broken isSpeaking() API
+            val timingJob = scope.launch {
+                delay(expectedSpeakingMs)
+                Log.d(TAG, "NILO_DEBUG: TTS duration elapsed (${expectedSpeakingMs}ms), transitioning to LISTENING")
+                if (currentState == PipelineState.SPEAKING) {
+                    isStreamingTTSActive = false
+                    transitionToListening()
+                }
+            }
             
             try {
+                
                 while (isActive) {
                     // CRITICAL FIX: During streaming, use fullResponseText which keeps growing
                     // Only use finalBubbleText when LLM is complete (isLLMResponseComplete)
@@ -1874,16 +1906,14 @@ class VoicePipelineManager(
                             }
                         }
                         
-                        // Wait for all TTS to complete
-                        Log.i(TAG, "TTS: Waiting for completion...")
-                        kokoroTTS?.waitForCompletion()
-                        Log.i(TAG, "TTS: Finished")
-                        break
-                    }
-                    
-                    // Safety timeout
-                    if (System.currentTimeMillis() - ttsStartTime > MAX_TTS_WAIT_MS) {
-                        Log.w(TAG, "TTS timeout")
+                        // CRITICAL FIX: Time-based completion - waitForCompletion() removed
+                        // TTS timing is handled by timingJob coroutine above
+                        // Just wait a small buffer for final audio to finish
+                        delay(500)
+                        Log.i(TAG, "NILO_DEBUG: TTS Finished normally")
+                        
+                        // Cancel timing job since we completed normally
+                        timingJob.cancel()
                         break
                     }
                     
@@ -1893,6 +1923,9 @@ class VoicePipelineManager(
             } catch (e: Exception) {
                 Log.e(TAG, "TTS error: ${e.message}")
             } finally {
+                // Cancel timing job
+                timingJob.cancel()
+                
                 isStreamingTTSActive = false
                 lastSpokenPosition = 0
                 isLLMResponseComplete = false  // Reset for next utterance
@@ -1900,7 +1933,7 @@ class VoicePipelineManager(
                 // Notify audio recorder that TTS stopped
                 audioRecorder?.setTTSSpeaking(false)
                 
-                Log.i(TAG, "TTS finished - preparing for next utterance")
+                Log.i(TAG, "NILO_DEBUG: TTS finished - preparing for next utterance (timing job cancelled)")
                 
                 // CRITICAL FIX: Record when TTS finished to prevent echo detection
                 lastTTSFinishedTime = System.currentTimeMillis()

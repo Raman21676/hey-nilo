@@ -30,6 +30,11 @@ class KokoroTTSBridge(private val context: Context) {
     private val pendingUtterances = mutableSetOf<String>()
     private val utteranceLock = Object()
     
+    // CRITICAL FIX: Track last utterance time for fallback completion detection
+    // Some Android TTS engines don't fire onDone reliably
+    private var lastUtteranceStartTime: Long = 0
+    private var lastUtteranceExpectedDurationMs: Long = 0
+    
     /**
      * Initialize Android System TTS
      * FIXED: Properly waits for async callback completion
@@ -176,7 +181,7 @@ class KokoroTTSBridge(private val context: Context) {
     /**
      * Speak text with queue mode
      * Use QUEUE_FLUSH for first utterance, QUEUE_ADD for seamless continuation
-     * FIXED: Properly track all utterances with a single listener
+     * FIXED: Properly track all utterances with timing for fallback completion detection
      */
     fun speakQueued(text: String, queueMode: Int = TextToSpeech.QUEUE_ADD) {
         if (!isReady || androidTts == null) {
@@ -197,12 +202,14 @@ class KokoroTTSBridge(private val context: Context) {
                 pendingUtterances.add(utteranceId)
             }
             
+            // CRITICAL FIX: Track timing for fallback completion detection
+            // Estimate ~70ms per char at speech rate 0.82
+            lastUtteranceStartTime = System.currentTimeMillis()
+            lastUtteranceExpectedDurationMs = (cleanText.length * 70L).coerceIn(1000L, 10000L)
+            
             // VOICE FIX: Ensure pitch and rate are set before each speak
             androidTts?.setPitch(1.05f)
             androidTts?.setSpeechRate(0.82f)
-            
-            // CRITICAL FIX: Listener is set up ONCE in initialize(), not here
-            // Setting it here would replace the listener and break tracking for queued utterances
             
             val result = androidTts?.speak(cleanText, queueMode, null, utteranceId)
             if (result == TextToSpeech.ERROR) {
@@ -211,7 +218,7 @@ class KokoroTTSBridge(private val context: Context) {
                     pendingUtterances.remove(utteranceId)
                 }
             } else {
-                Log.d(TAG, "TTS queued: '${cleanText.take(50)}...' (mode: ${if (queueMode == TextToSpeech.QUEUE_FLUSH) "FLUSH" else "ADD"}, id: ${utteranceId.take(8)})")
+                Log.d(TAG, "TTS queued: '${cleanText.take(50)}...' (mode: ${if (queueMode == TextToSpeech.QUEUE_FLUSH) "FLUSH" else "ADD"}, expectedDuration=${lastUtteranceExpectedDurationMs}ms)")
             }
         } catch (e: Exception) {
             Log.e(TAG, "TTS speak error: ${e.message}")
@@ -219,33 +226,13 @@ class KokoroTTSBridge(private val context: Context) {
     }
     
     /**
-     * Wait for all TTS to complete (check pending utterances)
-     * FIXED: Also check isSpeaking as fallback
+     * DEPRECATED: Time-based completion is now handled by VoicePipelineManager
+     * This function is kept for API compatibility but does nothing
      */
-    suspend fun waitForCompletion(timeoutMs: Long = 30000) {
-        withTimeoutOrNull(timeoutMs) {
-            var emptyCount = 0
-            while (true) {
-                val hasPending = synchronized(utteranceLock) { pendingUtterances.isNotEmpty() }
-                val isSpeaking = androidTts?.isSpeaking == true
-                
-                Log.d(TAG, "waitForCompletion: pending=${pendingUtterances.size}, isSpeaking=$isSpeaking")
-                
-                if (!hasPending && !isSpeaking) {
-                    emptyCount++
-                    // Wait a bit more to make sure nothing new started
-                    if (emptyCount >= 2) {  // Reduced from 3 to 2 for faster response
-                        Log.d(TAG, "TTS complete - no pending utterances")
-                        break
-                    }
-                } else {
-                    emptyCount = 0
-                }
-                delay(100)  // Reduced from 150ms to 100ms for faster polling
-            }
-        }
-        // Clear any stale pending utterances
-        synchronized(utteranceLock) { pendingUtterances.clear() }
+    suspend fun waitForCompletion() {
+        // Timing is now handled by VoicePipelineManager using calculated duration
+        // Android TTS isSpeaking() API is unreliable on some devices
+        delay(100) // Small delay for any pending operations
     }
     
     /**
@@ -331,10 +318,24 @@ class KokoroTTSBridge(private val context: Context) {
     
     /**
      * Check if TTS is currently speaking
-     * Used to prevent barge-in from triggering on TTS feedback loop
+     * CRITICAL FIX: Use time-based fallback when Android TTS API is unreliable
      */
     fun isSpeaking(): Boolean {
-        return androidTts?.isSpeaking == true || synchronized(utteranceLock) { pendingUtterances.isNotEmpty() }
+        val systemSpeaking = androidTts?.isSpeaking == true
+        val hasPending = synchronized(utteranceLock) { pendingUtterances.isNotEmpty() }
+        
+        // CRITICAL FIX: Time-based fallback - if we recently spoke and within expected duration, consider still speaking
+        val timeSinceLastUtterance = System.currentTimeMillis() - lastUtteranceStartTime
+        val withinExpectedDuration = timeSinceLastUtterance < lastUtteranceExpectedDurationMs + 500L // 500ms grace period
+        
+        val result = systemSpeaking || hasPending || withinExpectedDuration
+        
+        // Log when we're using the time-based fallback (helps debugging)
+        if (!systemSpeaking && !hasPending && withinExpectedDuration) {
+            Log.d(TAG, "isSpeaking: Using time fallback (${timeSinceLastUtterance}ms / ${lastUtteranceExpectedDurationMs}ms)")
+        }
+        
+        return result
     }
     
     /**

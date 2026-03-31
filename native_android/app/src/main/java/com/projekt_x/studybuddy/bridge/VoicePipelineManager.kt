@@ -1426,7 +1426,7 @@ class VoicePipelineManager(
                     memoryContext = null, // Already included in systemPrompt via SystemPromptBuilder
                     maxTokens = dynamicMaxTokens,  // CRITICAL FIX: Use dynamic limit based on query type
                     stream = true,
-                    stopSequences = listOf("<|im_end|>", "</s>", "<|endoftext|>", "<|user|>", "User:")
+                    stopSequences = listOf("</s>", "<|endoftext|>", "<|user|>", "User:")  // REMOVED: "<|im_end|>" to allow showing all tokens
                 )
                 
                 // Stream response
@@ -1456,7 +1456,7 @@ class VoicePipelineManager(
                             transitionToState(PipelineState.SPEAKING)
                             
                             // CRITICAL FIX: Get clean response (truncate any role leakage)
-                            val cleanResponse = truncateAtRoleLeakage(fullResponseText.toString())
+                            val cleanResponse = removeImEndTokenOnly(fullResponseText.toString())
                             finalBubbleText = cleanResponse  // Store as single source of truth
                             
                             // CRITICAL FIX: TTS buffer MUST match the bubble text exactly!
@@ -1546,14 +1546,17 @@ class VoicePipelineManager(
                             }
                             
                             // CRITICAL FIX: Start TTS as soon as we have a complete sentence (streaming TTS)
-                            val currentText = truncateAtRoleLeakage(fullResponseText.toString())
+                            val currentText = removeImEndTokenOnly(fullResponseText.toString())
                             if (!isStreamingTTSActive && hasCompleteSentence(currentText)) {
                                 Log.i(TAG, "First sentence ready, starting TTS streaming")
                                 startStreamingTTS(currentText)
                             }
                             
-                            // Update UI - show clean content only (truncate if leakage detected)
-                            val displayText = truncateAtRoleLeakage(fullResponseText.toString())
+                            // Update UI - show ALL tokens, just hide the <|im_end|> marker
+                            val rawText = fullResponseText.toString()
+                            val displayText = removeImEndTokenOnly(rawText)
+                            Log.d(TAG, "NILO_DEBUG: RAW fullResponseText: '${rawText.take(200)}...' (${rawText.length} chars)")
+                            Log.d(TAG, "NILO_DEBUG: DISPLAY displayText: '${displayText.take(200)}...' (${displayText.length} chars)")
                             Log.d(TAG, "NILO_DEBUG: onResponseUpdate STREAM: ${displayText.length} chars, isComplete=false")
                             withContext(Dispatchers.Main) {
                                 onResponseUpdate?.invoke(displayText, false)
@@ -1656,7 +1659,7 @@ class VoicePipelineManager(
                                 responseComplete = true
                                 
                                 // STEP 1: Snapshot the bubble text
-                                finalBubbleText = truncateAtRoleLeakage(fullResponseText.toString())
+                                finalBubbleText = removeImEndTokenOnly(fullResponseText.toString())
                                 
                                 // STEP 2: Update UI one final time
                                 Log.d(TAG, "NILO_DEBUG: onResponseUpdate LEGACY_FINAL: ${finalBubbleText.length} chars")
@@ -1706,13 +1709,16 @@ class VoicePipelineManager(
                                 fullResponseText.append(response.token)
                                 
                                 // Update UI in real time
+                                val uiText = removeImEndTokenOnly(fullResponseText.toString())
+                                Log.d(TAG, "NILO_DEBUG: RAW: '${fullResponseText}'")
+                                Log.d(TAG, "NILO_DEBUG: UI TEXT: '$uiText'")
                                 Log.d(TAG, "NILO_DEBUG: onResponseUpdate LEGACY_STREAM: ${fullResponseText.length} chars")
                                 withContext(Dispatchers.Main) {
-                                    onResponseUpdate?.invoke(fullResponseText.toString(), false)
+                                    onResponseUpdate?.invoke(uiText, false)
                                 }
                                 
                                 // Start TTS as soon as we have a complete sentence (low latency)
-                                val currentText = truncateAtRoleLeakage(fullResponseText.toString())
+                                val currentText = removeImEndTokenOnly(fullResponseText.toString())
                                 if (!isStreamingTTSActive && hasCompleteSentence(currentText)) {
                                     Log.i(TAG, "First sentence ready, starting streaming TTS")
                                     startStreamingTTS(currentText)
@@ -1870,7 +1876,7 @@ class VoicePipelineManager(
                     // Check if LLM is complete
                     if (isLLMResponseComplete) {
                         // Speak any remaining text from finalBubbleText
-                        val sourceText = finalBubbleText.ifBlank { truncateAtRoleLeakage(fullResponseText.toString()) }
+                        val sourceText = finalBubbleText.ifBlank { removeImEndTokenOnly(fullResponseText.toString()) }
                         
                         if (sourceText.length > lastSentToTTSIndex) {
                             val remainder = sourceText.substring(lastSentToTTSIndex).trim()
@@ -1884,13 +1890,21 @@ class VoicePipelineManager(
                             }
                         }
                         
-                        // CRITICAL FIX: Calculate wait time based on ALL text that was spoken
-                        // NOTE: TTS speechRate is 0.82 (slower than normal), so we use 12 chars/sec
-                        // We wait for the entire finalBubbleText, not just remaining, because TTS has a queue
-                        val totalTextLength = finalBubbleText.length
-                        val waitTimeMs = ((totalTextLength / 12.0) * 1000).toLong().coerceIn(3000L, 25000L)
-                        Log.d(TAG, "NILO_DEBUG: LLM complete, waiting ${waitTimeMs}ms for TTS to finish (total: ${totalTextLength} chars)")
-                        delay(waitTimeMs)
+                        // CRITICAL FIX: Poll TTS completion instead of fixed delay
+                        // Wait until TTS is actually done speaking
+                        var ttsWaitCount = 0
+                        val maxTtsWaitMs = 30000  // Max 30 seconds safety limit
+                        while (ttsWaitCount < maxTtsWaitMs) {
+                            if (kokoroTTS?.isSpeaking() != true) {
+                                Log.i(TAG, "NILO_DEBUG: TTS finished speaking after ${ttsWaitCount}ms")
+                                break
+                            }
+                            delay(100)
+                            ttsWaitCount += 100
+                        }
+                        if (ttsWaitCount >= maxTtsWaitMs) {
+                            Log.w(TAG, "NILO_DEBUG: TTS wait timeout reached")
+                        }
                         Log.i(TAG, "NILO_DEBUG: TTS streaming complete")
                         break
                     }
@@ -2075,6 +2089,21 @@ class VoicePipelineManager(
     }
     
     /**
+     * NEW: Remove only the <|im_end|> token but keep ALL content after it.
+     * This shows all LLM-generated tokens in the UI while hiding the marker itself.
+     */
+    private fun removeImEndTokenOnly(text: String): String {
+        var result = text
+        // Remove complete <|im_end|> tokens
+        result = result.replace("<|im_end|>", "")
+        // Remove partial tokens that might be split
+        result = result.replace("|im_end|>", "")
+        result = result.replace("|im_end|", "")
+        result = result.replace("im_end|", "")
+        return result
+    }
+    
+    /**
      * CRITICAL FIX: Detect if text contains role leakage patterns.
      * Returns true if the model is generating system/user content.
      */
@@ -2117,34 +2146,10 @@ class VoicePipelineManager(
     private fun filterTTSText(text: String): String {
         if (text.isBlank()) return ""
         
-        // CRITICAL FIX: First check for role leakage and truncate immediately
-        var filtered = truncateAtRoleLeakage(text)
+        // CRITICAL FIX: Only remove the <|im_end|> marker, keep ALL content after it
+        var filtered = removeImEndTokenOnly(text)
         
-        // STEP 1: TRUNCATE at end markers - BUT ONLY if they're near the end of text
-        val endMarkers = listOf(
-            "---EndConversation---", "--- End Conversation ---",
-            "---End Context---", "--- End Context ---",
-            "[/s]", "</s>", "</s", "<|system|>", "<|assistant|>", "<|user|>",
-            "|im_end|>", "<|im_end|>", "<|im_start|>assistant"
-        )
-        
-        for (marker in endMarkers) {
-            val index = filtered.indexOf(marker, ignoreCase = true)
-            // Only truncate if marker is found and near the end (last 30% of text)
-            if (index != -1 && index > filtered.length * 0.7) {
-                Log.d(TAG, "filterTTSText: truncating at '$marker' (index=$index, len=${filtered.length})")
-                filtered = filtered.substring(0, index)
-            }
-        }
-        
-        // Also truncate at partial im_end patterns (but only if near end)
-        val partialImEnd = filtered.indexOf("<|im_end")
-        if (partialImEnd != -1 && partialImEnd > filtered.length * 0.7) {
-            Log.d(TAG, "filterTTSText: truncating at partial '<|im_end' (index=$partialImEnd, len=${filtered.length})")
-            filtered = filtered.substring(0, partialImEnd)
-        }
-        
-        // STEP 2: Remove memory-related text patterns (case insensitive)
+        // STEP 1: Remove memory-related text patterns (case insensitive)
         filtered = filtered.replace(Regex("(?i)\\[?MEMORY\\]?"), "")
         filtered = filtered.replace(Regex("(?i)END\\s*OF\\s*MEMORY"), "")
         filtered = filtered.replace(Regex("(?i)START\\s*OF\\s*MEMORY"), "")

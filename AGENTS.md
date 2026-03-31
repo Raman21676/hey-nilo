@@ -4,7 +4,7 @@
 **Purpose**: Complete project context and working guidelines  
 **Last Updated**: March 30, 2026
 
-> **📋 RECENT SESSION**: See `logs/session-2025-03-30.md` for today's work (March 30, 2026) - CRITICAL: Voice pipeline TTS/LLM sync issues, China question freeze fixed, state machine problems documented.  
+> **📋 RECENT SESSION**: See `logs/session-2025-03-31.md` for today's work (March 31, 2026) - ✅ CRITICAL FIXES COMPLETED: LLM generation truncation fixed, TTS completion detection fixed, voice pipeline now stable. Previous issues from March 30 resolved.  
 
 > **⚠️ IMPORTANT**: Read this entire document before writing any code. This is your source of truth for the project.
 
@@ -39,12 +39,20 @@ cat TODO.md | grep -A 5 "Project Status Overview"
 
 ---
 
-## 🆕 Recent Changes (March 30, 2026)
+## 🆕 Recent Changes (March 31, 2026)
 
-### Voice Pipeline Critical Fixes - UNSTABLE ⚠️
-**Status**: Partially working - TTS/LLM sync still has issues  
-**Commit**: `38a9a79` pushed to GitHub  
-**See detailed log**: `logs/session-2025-03-30.md`
+### Voice Pipeline - STABLE ✅
+**Status**: All critical issues resolved  
+**Commit**: `6943d61` pushed to GitHub  
+**See detailed log**: `logs/session-2025-03-31.md`
+
+#### Major Fixes Applied:
+1. **LLM Generation Truncation** - Removed `<|im_end|>` from native stop sequences
+2. **TTS Completion Detection** - Changed from fixed delay to polling `isSpeaking()`
+3. **UI/TTS Sync** - Both now use `removeImEndTokenOnly()` to show all generated text
+
+#### Previous Session (March 30, 2026)
+See `logs/session-2025-03-30.md` for earlier debugging attempts and state machine issues.
 
 #### 1. C++ Hard Timeout (CRITICAL FIX)
 - **File**: `native_android/app/src/main/cpp/ai_chat_jni.cpp`

@@ -49,7 +49,7 @@ class VoicePipelineManager(
         
         // WORKING CONFIG FROM MINI PROJECT - Fast response (2 seconds)
         // FIX: Balanced threshold for Samsung Tab A7 Lite
-        private const val VAD_THRESHOLD = 0.45f      // Balanced: ignores ambient noise, catches normal speech
+        private const val VAD_THRESHOLD = 0.35f      // Sweet spot for quiet Samsung Tab A7 Lite mic
         private const val MIN_SPEECH_MS = 800L       // Minimum 0.8 seconds of speech
         private const val MIN_SILENCE_MS = 600L      // Wait 600ms silence before ending
         private const val PRE_SPEECH_BUFFER_MS = 800L // Capture word beginnings
@@ -70,9 +70,9 @@ class VoicePipelineManager(
         // MAX LISTENING TIME: Force stop if user doesn't speak or tap within 15 seconds
         private const val MAX_LISTENING_TIME_MS = 15000L
         
-        // NO SOFTWARE GAIN: AudioSource.VOICE_RECOGNITION provides hardware AGC.
-        // Manual gain causes severe clipping distortion (Issue #2: "Deneemo" hallucinations).
-        private const val SOFTWARE_GAIN = 1f
+        // CONSERVATIVE SOFTWARE GAIN: Samsung Tab A7 Lite mic is very quiet even with
+        // hardware AGC. 2x gain boosts VAD detection without the severe clipping of 8x.
+        private const val SOFTWARE_GAIN = 2f
         
         // MAX RESPONSE LENGTH: Force stop LLM once we have enough content
         // For voice mode, we want concise but complete responses (3-4 sentences = ~300-400 chars)
@@ -665,6 +665,16 @@ class VoicePipelineManager(
             return
         }
         
+        // Apply conservative software gain for VAD processing on very quiet mic
+        val processedAudio = ShortArray(audioData.size) { i ->
+            val amplified = (audioData[i] * SOFTWARE_GAIN).toInt()
+            when {
+                amplified > Short.MAX_VALUE -> Short.MAX_VALUE
+                amplified < Short.MIN_VALUE -> Short.MIN_VALUE
+                else -> amplified.toShort()
+            }
+        }
+
         // Calculate audio level for visualization (always, even during non-listening states)
         val audioLevel = calculateAudioLevel(audioData)
         
@@ -714,9 +724,9 @@ class VoicePipelineManager(
             }
             
             // Calculate audio energy (RMS)
-            val audioEnergy = calculateAudioEnergy(audioData)
+            val audioEnergy = calculateAudioEnergy(processedAudio)
             // Check if VAD agrees it's speech (neural model classification)
-            val vadSaysSpeech = vadBridge?.detectVoice(audioData) == true
+            val vadSaysSpeech = vadBridge?.detectVoice(processedAudio) == true
             val isHighEnergy = audioEnergy > BARGE_IN_ENERGY_THRESHOLD
             
             // ALL THREE conditions must be true to increment counter
@@ -756,14 +766,14 @@ class VoicePipelineManager(
         }
         
         // Add to pre-speech buffer (circular buffer) - USE AMPLIFIED AUDIO
-        preSpeechBuffer.addAll(audioData.toList())
+        preSpeechBuffer.addAll(processedAudio.toList())
         val preSpeechMaxSize = (SAMPLE_RATE / 1000 * PRE_SPEECH_BUFFER_MS).toInt()
         while (preSpeechBuffer.size > preSpeechMaxSize) {
             preSpeechBuffer.removeFirst()
         }
         
         // Run VAD processor - USE AMPLIFIED AUDIO
-        val vadState = vadProcessor?.process(audioData) ?: VADState.SILENCE
+        val vadState = vadProcessor?.process(processedAudio) ?: VADState.SILENCE
         
         // DEBUG LOG - VAD state
         if (vadState != VADState.SILENCE) {
@@ -789,21 +799,21 @@ class VoicePipelineManager(
                     speechBuffer.addAll(preSpeechBuffer)
                     
                     // Include the current frame - USE AMPLIFIED AUDIO
-                    speechBuffer.addAll(audioData.toList())
+                    speechBuffer.addAll(processedAudio.toList())
                     
                     transitionToState(PipelineState.SPEECH_DETECTED)
                     Log.i(TAG, "Started collecting speech (pre-speech: ${preSpeechBuffer.size} + frame: ${audioData.size} samples)")
                 } else {
                     // Subsequent SPEECH_START frames during confirmation period
                     consecutiveSilenceFrames = 0  // Reset silence counter
-                    speechBuffer.addAll(audioData.toList())
+                    speechBuffer.addAll(processedAudio.toList())
                 }
             }
             
             VADState.SPEECH -> {
                 if (isCollectingSpeech) {
                     // Add to speech buffer - USE AMPLIFIED AUDIO
-                    speechBuffer.addAll(audioData.toList())
+                    speechBuffer.addAll(processedAudio.toList())
                     
                     // Reset silence counter when speech detected
                     consecutiveSilenceFrames = 0
@@ -830,7 +840,7 @@ class VoicePipelineManager(
                 
                 if (isCollectingSpeech) {
                     // Include the final frame - USE AMPLIFIED AUDIO
-                    speechBuffer.addAll(audioData.toList())
+                    speechBuffer.addAll(processedAudio.toList())
                     
                     val speechDuration = System.currentTimeMillis() - speechStartTime
                     val durationMs = speechBuffer.size * 1000L / SAMPLE_RATE

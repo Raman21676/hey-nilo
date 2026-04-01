@@ -87,19 +87,25 @@ class OfflineLLMProvider(
                 provider = provider
             )
         }
-        
+
         val startTime = System.currentTimeMillis()
-        val prompt = formatPrompt(request)
-        
+        val systemPrompt = buildSystemPromptString(request)
+        val userMessage = request.messages.lastOrNull { it.role == MessageRole.USER }?.content ?: ""
+
         return try {
             val fullResponse = StringBuilder()
             var error: String? = null
-            
+
+            // CRITICAL FIX: C++ nativeGenerateStream expects RAW user message and manages
+            // its own history/formatting. Passing a pre-formatted prompt causes double
+            // wrapping and can hang or confuse the model.
+            llamaBridge?.setSystemPrompt(systemPrompt)
+
             // Use callback-based generation
             val deferred = CompletableDeferred<String>()
-            
+
             withContext(Dispatchers.IO) {
-                llamaBridge?.generate(prompt, object : StreamingCallback {
+                llamaBridge?.generate(userMessage, object : StreamingCallback {
                     override fun onToken(token: String) {
                         fullResponse.append(token)
                     }
@@ -136,7 +142,7 @@ class OfflineLLMProvider(
                     provider = provider,
                     modelName = "tinyllama-1.1b-chat",
                     latencyMs = latency,
-                    tokensUsed = estimateTokens(prompt) + estimateTokens(fullResponse.toString())
+                    tokensUsed = estimateTokens(userMessage) + estimateTokens(fullResponse.toString())
                 )
             }
         } catch (e: Exception) {
@@ -158,38 +164,43 @@ class OfflineLLMProvider(
             emit(LLMResponse(error = "Model not loaded", isComplete = true, provider = provider))
             return@flow
         }
-        
+
         val startTime = System.currentTimeMillis()
-        val prompt = formatPrompt(request)
+        val systemPrompt = buildSystemPromptString(request)
+        val userMessage = request.messages.lastOrNull { it.role == MessageRole.USER }?.content ?: ""
         val fullResponse = StringBuilder()
-        
+
         // Create channels for token and error communication
         val tokenChannel = Channel<String>(Channel.UNLIMITED)
         val errorChannel = Channel<String?>(1)
-        
+
         try {
             // CRITICAL FIX: Cap maxTokens to ensure generation completes within C++ timeout on slow devices.
             // Samsung Tab A7 Lite generates ~2 tokens/sec, so 150 tokens = ~75s max. C++ timeout is 60s.
             val requestedMaxTokens = request.maxTokens ?: 256
             val maxTokens = requestedMaxTokens.coerceAtMost(120)
-            val userQuery = request.messages.lastOrNull { it.role == MessageRole.USER }?.content ?: ""
-            
+
             // DIAGNOSTIC LOG - Verify maxTokens is reaching this point
-            Log.d("NILO_DEBUG", "Query: $userQuery")
+            Log.d("NILO_DEBUG", "Query: $userMessage")
             Log.d("NILO_DEBUG", "MaxTokens being passed to LLM: $maxTokens (was $requestedMaxTokens)")
             Log.d(TAG, "Starting generation with maxTokens=$maxTokens (capped from $requestedMaxTokens)")
-            
+
+            // CRITICAL FIX: C++ nativeGenerateStream expects RAW user message and manages
+            // its own history/formatting. Passing a pre-formatted prompt causes double
+            // wrapping and can hang or confuse the model.
+            llamaBridge?.setSystemPrompt(systemPrompt)
+
             // CRITICAL FIX: Ensure previous generation is fully stopped before starting a new one.
             // On slow devices, the old generation may still be holding the llama context lock.
             currentGenerationJob?.cancel()
             llamaBridge?.stopGeneration()
             withTimeoutOrNull(2000) { currentGenerationJob?.join() }
-            
+
             // Start generation in background
             currentGenerationJob = scope.launch(Dispatchers.IO) {
                 try {
                     // CRITICAL FIX: Use generateWithMaxTokens to respect the request's maxTokens
-                    llamaBridge?.generateWithMaxTokens(prompt, maxTokens, object : StreamingCallback {
+                    llamaBridge?.generateWithMaxTokens(userMessage, maxTokens, object : StreamingCallback {
                         override fun onToken(token: String) {
                             tokenChannel.trySend(token)
                         }
@@ -251,7 +262,7 @@ class OfflineLLMProvider(
                     provider = provider,
                     modelName = "tinyllama-1.1b-chat",
                     latencyMs = latency,
-                    tokensUsed = estimateTokens(prompt) + estimateTokens(fullResponse.toString())
+                    tokensUsed = estimateTokens(userMessage) + estimateTokens(fullResponse.toString())
                 ))
                 true
             }
@@ -296,6 +307,21 @@ class OfflineLLMProvider(
         return 2048
     }
     
+    /**
+     * Build the combined system prompt string from request fields.
+     * CRITICAL: This is passed to llamaBridge.setSystemPrompt() so that the C++
+     * layer can inject it correctly. We do NOT format the full prompt here.
+     */
+    private fun buildSystemPromptString(request: CompletionRequest): String {
+        return buildString {
+            request.systemPrompt?.let { append(it) }
+            request.memoryContext?.let { context ->
+                if (isNotEmpty()) append("\n\n")
+                append(context)
+            }
+        }.ifBlank { LlamaBridge.DEFAULT_SYSTEM_PROMPT }
+    }
+
     /**
      * Format prompt using TinyLlama chat template
      * Delegates to LlamaBridge.buildTinyLlamaPrompt for consistency

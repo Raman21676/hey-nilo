@@ -204,23 +204,34 @@ class InferenceQueue private constructor(
             // Collect full response for history
             val responseBuilder = StringBuilder()
             
-            // Stream tokens
-            bridge.generateStream(request.prompt, request.maxTokens)
-                .catch { e ->
-                    Log.e(TAG, "Error in generateStream for ${request.id}", e)
-                    _responses.emit(Response(
-                        requestId = request.id,
-                        error = e.message ?: "Stream error"
-                    ))
-                }
-                .collect { token ->
-                    responseBuilder.append(token)
-                    Log.d(TAG, "Emitting token for ${request.id}: '${token.take(20)}...'")
-                    _responses.emit(Response(
-                        requestId = request.id,
-                        token = token
-                    ))
-                }
+            // Stream tokens with hard timeout to prevent a stuck native generation from clogging the queue
+            val streamSuccess = withTimeoutOrNull(90000L) {
+                bridge.generateStream(request.prompt, request.maxTokens)
+                    .catch { e ->
+                        Log.e(TAG, "Error in generateStream for ${request.id}", e)
+                        _responses.emit(Response(
+                            requestId = request.id,
+                            error = e.message ?: "Stream error"
+                        ))
+                    }
+                    .collect { token ->
+                        responseBuilder.append(token)
+                        Log.d(TAG, "Emitting token for ${request.id}: '${token.take(20)}...'")
+                        _responses.emit(Response(
+                            requestId = request.id,
+                            token = token
+                        ))
+                    }
+                true
+            }
+
+            if (streamSuccess != true) {
+                Log.w(TAG, "Generation timed out for ${request.id} — native layer likely hung")
+                _responses.emit(Response(
+                    requestId = request.id,
+                    error = "Generation timed out"
+                ))
+            }
             
             // Add assistant response to history
             val fullResponse = responseBuilder.toString()

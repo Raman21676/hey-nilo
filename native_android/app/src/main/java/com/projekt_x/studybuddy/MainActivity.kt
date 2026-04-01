@@ -935,10 +935,16 @@ fun UnifiedChatView(
     // Initialize voice pipeline
     LaunchedEffect(onlineConfig, hasRecordPermission) {
         // Create provider based on mode
-        val llmProvider: LLMProvider? = onlineConfig?.let { config ->
-            val provider = OnlineLLMProvider(context, config.provider, config)
-            provider.initialize()
-            provider
+        val llmProvider: LLMProvider? = when {
+            onlineConfig != null -> {
+                val provider = OnlineLLMProvider(context, onlineConfig.provider, onlineConfig)
+                provider.initialize()
+                provider
+            }
+            bridge.isLoaded() -> {
+                OfflineLLMProvider(context, bridge)
+            }
+            else -> null
         }
         
         val vpm = VoicePipelineManager(

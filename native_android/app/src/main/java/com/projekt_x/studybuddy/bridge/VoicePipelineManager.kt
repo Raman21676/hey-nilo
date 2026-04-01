@@ -1467,6 +1467,9 @@ class VoicePipelineManager(
                             if (!isStreamingTTSActive && streamingTTSJob?.isActive != true && finalBubbleText.isNotBlank()) {
                                 Log.i(TAG, "LLM complete but TTS not started yet - starting now (${finalBubbleText.length} chars)")
                                 startStreamingTTS(finalBubbleText)
+                            } else if (finalBubbleText.isBlank()) {
+                                Log.w(TAG, "LLM complete but response is blank — restarting listening")
+                                restartListening()
                             }
                             
                             // Send finalBubbleText to UI (single source of truth)
@@ -1574,6 +1577,9 @@ class VoicePipelineManager(
                     }
                     if (!isStreamingTTSActive && streamingTTSJob?.isActive != true && finalBubbleText.isNotBlank()) {
                         startStreamingTTS(finalBubbleText)
+                    } else if (finalBubbleText.isBlank()) {
+                        Log.w(TAG, "Empty response from LLM — restarting listening")
+                        restartListening()
                     }
                     if (isRunning.get()) {
                         clearContextAsync()
@@ -1763,6 +1769,9 @@ class VoicePipelineManager(
                     isLLMResponseComplete = true
                     if (!isStreamingTTSActive && streamingTTSJob?.isActive != true && finalBubbleText.isNotBlank()) {
                         startStreamingTTS(finalBubbleText)
+                    } else if (finalBubbleText.isBlank()) {
+                        Log.w(TAG, "Empty response from legacy queue — restarting listening")
+                        restartListening()
                     }
                     if (isRunning.get()) {
                         clearContextAsync()

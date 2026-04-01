@@ -305,38 +305,27 @@ class LlamaBridge(private val context: Context) : BaseBridge() {
                             fullResponse.append(token)
                             tokenCount++
                             callback.onToken(token)
-                            
-                            // Safety check: if we've been generating too long, stop
-                            val elapsed = System.currentTimeMillis() - startTime
-                            if (elapsed > 60000) { // 60 second timeout
-                                Log.w(TAG, "Generation timeout after ${elapsed}ms, stopping")
-                                stopGeneration()
-                            }
                         }
                     }
-                    
+
                     override fun onComplete() {
                         // Called when generation is complete
                     }
-                    
+
                     override fun onError(error: String) {
                         errorOccurred = true
                         callback.onError(error)
                     }
                 }
-                
-                // Add timeout to prevent infinite generation loops
-                withTimeout(60000) { // 60 second timeout
-                    nativeGenerateStream(prompt, maxTokens, nativeCallback)
-                }
-                
+
+                // CRITICAL FIX: Removed Kotlin withTimeout around JNI call.
+                // The C++ layer already has a 90-second hard timeout and maxTokens limit.
+                // Kotlin withTimeout was dangerous because it would throw in the coroutine
+                // while the native thread kept running, deadlocking the llama mutex.
+                nativeGenerateStream(prompt, maxTokens, nativeCallback)
+
                 if (isActive && !errorOccurred) {
                     callback.onComplete(fullResponse.toString())
-                }
-            } catch (e: TimeoutCancellationException) {
-                Log.w(TAG, "Generation timed out after 60 seconds")
-                if (isActive) {
-                    callback.onComplete(fullResponse.toString() + "\n\n[Response timed out]")
                 }
             } catch (e: Exception) {
                 if (isActive) {

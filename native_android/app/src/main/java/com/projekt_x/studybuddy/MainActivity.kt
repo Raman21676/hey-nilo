@@ -72,8 +72,7 @@ import com.projekt_x.studybuddy.model.ModelInfo
 import com.projekt_x.studybuddy.model.OfflineModelConfig
 import com.projekt_x.studybuddy.ui.OfflineModelPickerScreen
 import com.projekt_x.studybuddy.ui.ModelSetupView
-import com.projekt_x.studybuddy.ui.components.PerformanceStatusBar
-import com.projekt_x.studybuddy.ui.components.RamOptimizerButton
+import com.projekt_x.studybuddy.ui.components.CompactTopBar
 import com.projekt_x.studybuddy.ui.components.RamOptimizerDialog
 import com.projekt_x.studybuddy.ui.components.OptimizationResult
 import com.projekt_x.studybuddy.bridge.llm.SystemPromptBuilder
@@ -464,36 +463,14 @@ fun HeyNiloApp(
     
     Scaffold(
         topBar = {
-            Column {
-                TopAppBar(
-                    title = { Text("Hey-Nilo") },
-                    actions = {
-                        // Theme Toggle Button
-                        IconButton(
-                            onClick = { 
-                                ThemeManager.toggleTheme(appContext)
-                            }
-                        ) {
-                            // Sun icon for dark mode (tap to go light), Moon icon for light mode (tap to go dark)
-                            Text(
-                                text = if (isDarkTheme) "☀️" else "🌙",
-                                fontSize = 20.sp
-                            )
-                        }
-                        
-                        // RAM Optimizer Button
-                        RamOptimizerButton(
-                            onOptimize = { performOptimization() },
-                            isOptimizing = isOptimizing
-                        )
-                    }
-                )
-                // Performance status bar below the app bar
-                PerformanceStatusBar(
-                    metrics = metrics,
-                    modifier = Modifier.fillMaxWidth()
-                )
-            }
+            CompactTopBar(
+                title = "Hey-Nilo",
+                metrics = metrics,
+                isDarkTheme = isDarkTheme,
+                onThemeToggle = { ThemeManager.toggleTheme(appContext) },
+                onOptimize = { performOptimization() },
+                isOptimizing = isOptimizing
+            )
         }
     ) { padding ->
         Box(

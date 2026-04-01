@@ -168,14 +168,22 @@ class OfflineLLMProvider(
         val errorChannel = Channel<String?>(1)
         
         try {
-            // CRITICAL FIX: Use maxTokens from request instead of hardcoded 256
-            val maxTokens = request.maxTokens ?: 256
+            // CRITICAL FIX: Cap maxTokens to ensure generation completes within C++ timeout on slow devices.
+            // Samsung Tab A7 Lite generates ~2 tokens/sec, so 150 tokens = ~75s max. C++ timeout is 60s.
+            val requestedMaxTokens = request.maxTokens ?: 256
+            val maxTokens = requestedMaxTokens.coerceAtMost(120)
             val userQuery = request.messages.lastOrNull { it.role == MessageRole.USER }?.content ?: ""
             
             // DIAGNOSTIC LOG - Verify maxTokens is reaching this point
             Log.d("NILO_DEBUG", "Query: $userQuery")
-            Log.d("NILO_DEBUG", "MaxTokens being passed to LLM: $maxTokens")
-            Log.d(TAG, "Starting generation with maxTokens=$maxTokens (request specified)")
+            Log.d("NILO_DEBUG", "MaxTokens being passed to LLM: $maxTokens (was $requestedMaxTokens)")
+            Log.d(TAG, "Starting generation with maxTokens=$maxTokens (capped from $requestedMaxTokens)")
+            
+            // CRITICAL FIX: Ensure previous generation is fully stopped before starting a new one.
+            // On slow devices, the old generation may still be holding the llama context lock.
+            currentGenerationJob?.cancel()
+            llamaBridge?.stopGeneration()
+            withTimeoutOrNull(2000) { currentGenerationJob?.join() }
             
             // Start generation in background
             currentGenerationJob = scope.launch(Dispatchers.IO) {
@@ -205,41 +213,62 @@ class OfflineLLMProvider(
                 }
             }
             
-            // Wait for error or completion signal
-            val error = errorChannel.receiveCatching().getOrNull()
-            if (error != null) {
-                emit(LLMResponse(
-                    error = error,
-                    isComplete = true,
-                    provider = provider,
-                    latencyMs = System.currentTimeMillis() - startTime
-                ))
-                return@flow
-            }
-            
-            // Emit tokens as they arrive
-            for (token in tokenChannel) {
-                fullResponse.append(token)
+            // CRITICAL FIX: Add timeout around the entire streaming collection.
+            // If native generation hangs or deadlocks, this prevents the coroutine from waiting forever.
+            val streamSuccess = withTimeoutOrNull(75000) {
+                // Wait for error or completion signal
+                val error = errorChannel.receiveCatching().getOrNull()
+                if (error != null) {
+                    emit(LLMResponse(
+                        error = error,
+                        isComplete = true,
+                        provider = provider,
+                        latencyMs = System.currentTimeMillis() - startTime
+                    ))
+                    return@withTimeoutOrNull true
+                }
+                
+                // Emit tokens as they arrive
+                for (token in tokenChannel) {
+                    fullResponse.append(token)
+                    emit(LLMResponse(
+                        text = fullResponse.toString(),
+                        isStreaming = true,
+                        isComplete = false,
+                        provider = provider,
+                        modelName = "tinyllama-1.1b-chat"
+                    ))
+                }
+                
+                // Emit final response
+                val latency = System.currentTimeMillis() - startTime
                 emit(LLMResponse(
                     text = fullResponse.toString(),
-                    isStreaming = true,
-                    isComplete = false,
+                    isStreaming = false,
+                    isComplete = true,
                     provider = provider,
-                    modelName = "tinyllama-1.1b-chat"
+                    modelName = "tinyllama-1.1b-chat",
+                    latencyMs = latency,
+                    tokensUsed = estimateTokens(prompt) + estimateTokens(fullResponse.toString())
                 ))
+                true
             }
             
-            // Emit final response
-            val latency = System.currentTimeMillis() - startTime
-            emit(LLMResponse(
-                text = fullResponse.toString(),
-                isStreaming = false,
-                isComplete = true,
-                provider = provider,
-                modelName = "tinyllama-1.1b-chat",
-                latencyMs = latency,
-                tokensUsed = estimateTokens(prompt) + estimateTokens(fullResponse.toString())
-            ))
+            if (streamSuccess != true) {
+                Log.w(TAG, "Stream timed out — native generation likely hung")
+                currentGenerationJob?.cancel()
+                tokenChannel.close()
+                errorChannel.close()
+                emit(LLMResponse(
+                    text = fullResponse.toString(),
+                    isStreaming = false,
+                    isComplete = true,
+                    provider = provider,
+                    modelName = "tinyllama-1.1b-chat",
+                    latencyMs = System.currentTimeMillis() - startTime,
+                    error = "Generation timed out"
+                ))
+            }
             
         } catch (e: CancellationException) {
             // Normal cancellation, don't emit error

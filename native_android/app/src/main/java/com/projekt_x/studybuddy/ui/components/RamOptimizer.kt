@@ -29,14 +29,14 @@ fun RamOptimizerButton(
     ) {
         if (isOptimizing) {
             CircularProgressIndicator(
-                modifier = Modifier.size(20.dp),
+                modifier = Modifier.size(26.dp),
                 strokeWidth = 2.dp
             )
         } else {
             Icon(
                 imageVector = Icons.Default.Refresh,
                 contentDescription = "Optimize RAM",
-                modifier = Modifier.size(20.dp)
+                modifier = Modifier.size(26.dp)
             )
         }
     }

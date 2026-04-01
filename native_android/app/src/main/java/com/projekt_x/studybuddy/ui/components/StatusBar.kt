@@ -20,6 +20,7 @@ import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.projekt_x.studybuddy.PerformanceMetrics
 
 /**
@@ -74,7 +75,7 @@ fun PerformanceStatusBar(
 }
 
 @Composable
-private fun TemperatureIndicator(
+internal fun TemperatureIndicator(
     temperature: Float,
     status: PerformanceMetrics.TemperatureStatus
 ) {
@@ -111,7 +112,7 @@ private fun TemperatureIndicator(
 }
 
 @Composable
-private fun PerformanceIndicator(
+internal fun PerformanceIndicator(
     tokensPerSecond: Float,
     tokensGenerated: Int
 ) {
@@ -152,7 +153,7 @@ private fun PerformanceIndicator(
 }
 
 @Composable
-private fun IdleIndicator() {
+internal fun IdleIndicator() {
     Row(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(4.dp)
@@ -172,7 +173,7 @@ private fun IdleIndicator() {
 }
 
 @Composable
-private fun MemoryIndicator(
+internal fun MemoryIndicator(
     usedMB: Int,
     totalMB: Int,
     percent: Float
@@ -188,7 +189,7 @@ private fun MemoryIndicator(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(6.dp)
     ) {
-        // Mini progress bar
+        // Mini progress bar only (no numeric label)
         Box(
             modifier = Modifier
                 .width(40.dp)
@@ -203,14 +204,92 @@ private fun MemoryIndicator(
                     .background(memoryColor)
             )
         }
-        
-        // Memory text
-        if (usedMB > 0 && totalMB > 0) {
+    }
+}
+
+/**
+ * Compact merged top bar combining app title, theme toggle, RAM optimizer,
+ * and performance metrics into a single 48dp row.
+ */
+@Composable
+fun CompactTopBar(
+    title: String,
+    metrics: PerformanceMetrics,
+    isDarkTheme: Boolean,
+    onThemeToggle: () -> Unit,
+    onOptimize: () -> Unit,
+    isOptimizing: Boolean,
+    modifier: Modifier = Modifier
+) {
+    val backgroundColor = if (metrics.temperatureStatus == PerformanceMetrics.TemperatureStatus.HOT) {
+        MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.5f)
+    } else {
+        MaterialTheme.colorScheme.surface
+    }
+
+    Surface(
+        modifier = modifier
+            .fillMaxWidth()
+            .height(48.dp),
+        color = backgroundColor,
+        tonalElevation = 2.dp
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(horizontal = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            // Title
             Text(
-                text = "${usedMB}MB",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
+                text = title,
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.onSurface
             )
+
+            // Right side: metrics + actions
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                // Temperature
+                TemperatureIndicator(
+                    temperature = metrics.cpuTemperature,
+                    status = metrics.temperatureStatus
+                )
+
+                // Performance (compact: hide label when idle, just show dot or nothing)
+                if (metrics.isGenerating) {
+                    PerformanceIndicator(
+                        tokensPerSecond = metrics.tokensPerSecond,
+                        tokensGenerated = metrics.tokensGenerated
+                    )
+                } else {
+                    IdleIndicator()
+                }
+
+                // Memory indicator removed per user request
+
+                // Theme toggle
+                IconButton(
+                    onClick = onThemeToggle,
+                    modifier = Modifier.size(40.dp)
+                ) {
+                    Text(
+                        text = if (isDarkTheme) "☀️" else "🌙",
+                        fontSize = 20.sp
+                    )
+                }
+
+                // RAM Optimizer (larger touch target)
+                RamOptimizerButton(
+                    onOptimize = onOptimize,
+                    isOptimizing = isOptimizing,
+                    modifier = Modifier.size(40.dp)
+                )
+            }
         }
     }
 }

@@ -77,8 +77,8 @@ class VoicePipelineManager(
         
         // MAX RESPONSE LENGTH: Force stop LLM once we have enough content
         // For voice mode, we want concise but complete responses (3-4 sentences = ~300-400 chars)
-        private const val MAX_RESPONSE_CHARS = 400
-        private const val MAX_RESPONSE_SENTENCES = 4
+        private const val MAX_RESPONSE_CHARS = 200
+        private const val MAX_RESPONSE_SENTENCES = 3
         
         // Debug: set to true to save raw audio to /sdcard/Download/mini_debug/
         private const val DEBUG_SAVE_AUDIO = false
@@ -537,6 +537,20 @@ class VoicePipelineManager(
         return hasVAD && hasSTT && hasAudio
     }
     
+    /**
+     * Clear LLM context asynchronously to avoid blocking the pipeline
+     * if the native generation thread is still holding the mutex.
+     */
+    private fun clearContextAsync() {
+        scope.launch(Dispatchers.IO) {
+            try {
+                llmBridge?.clearContext()
+            } catch (e: Exception) {
+                Log.e(TAG, "Async context clear failed: ${e.message}")
+            }
+        }
+    }
+
     /**
      * Start voice conversation mode
      */
@@ -1358,6 +1372,13 @@ class VoicePipelineManager(
     private fun processWithLLMProvider(transcription: String) {
         Log.d("NILO_DEBUG", "processWithLLM called. llmProvider=${llmProvider != null}, isAvailable=${llmProvider?.isAvailable()}")
         Log.d("NILO_DEBUG", "currentState=$currentState, isRunning=${isRunning.get()}")
+        
+        // CRITICAL FIX: Cancel any ongoing generation before starting a new one.
+        // Without this, old native generations can pile up and deadlock the llama context.
+        llmProviderJob?.cancel()
+        llmBridge?.stopGeneration()
+        llmProviderJob = null
+        
         llmProviderJob = scope.launch {
             try {
                 // Hard reset all state before starting new generation
@@ -1407,7 +1428,11 @@ class VoicePipelineManager(
                 var tokenCount = 0
                 var isFirstToken = true
                 Log.d("TIMING", "4. LLM request start at: ${System.currentTimeMillis()}")
-                llmProvider?.stream(request)?.collect { response ->
+                
+                // CRITICAL FIX: Add timeout around stream collection to prevent getting stuck
+                // if the native layer hangs or deadlocks.
+                withTimeoutOrNull(75000) {
+                    llmProvider?.stream(request)?.collect { response ->
                     when {
                         response.isStreaming && isFirstToken -> {
                             Log.d("TIMING", "5. First response token at: ${System.currentTimeMillis()}")
@@ -1476,7 +1501,7 @@ class VoicePipelineManager(
                             // CRITICAL FIX: Clear LLM context after response to prevent corruption for next turn
                             // BUT only if we're going to continue listening (not if user closed voice mode)
                             if (isRunning.get()) {
-                                llmBridge?.clearContext()
+                                clearContextAsync()
                                 Log.i(TAG, "LLM context cleared after response for clean next turn")
                             }
                             
@@ -1539,6 +1564,7 @@ class VoicePipelineManager(
                         }
                     }
                 }
+                }
                 
                 // SAFETY NET: If stream ended without ever emitting isComplete, force completion now
                 if (!isLLMResponseComplete) {
@@ -1552,7 +1578,7 @@ class VoicePipelineManager(
                         startStreamingTTS(finalBubbleText)
                     }
                     if (isRunning.get()) {
-                        llmBridge?.clearContext()
+                        clearContextAsync()
                     }
                     currentQueryClassification = null
                 }
@@ -1576,7 +1602,12 @@ class VoicePipelineManager(
      * CRITICAL FIX: Added 60-second timeout to prevent getting stuck indefinitely.
      */
     private fun processWithLegacyQueue(transcription: String) {
-        scope.launch {
+        // CRITICAL FIX: Cancel any ongoing generation before starting a new one.
+        llmProviderJob?.cancel()
+        llmBridge?.stopGeneration()
+        llmProviderJob = null
+        
+        llmProviderJob = scope.launch {
             try {
                 // Clear previous response text when NEW user query starts
                 fullResponseText.clear()
@@ -1620,9 +1651,11 @@ class VoicePipelineManager(
                 isStreamingTTSActive = false
                 
                 // Collect response with proper termination using takeWhile
-                queue?.responses
-                    ?.takeWhile { !responseComplete }  // Terminate when complete
-                    ?.collect { response ->
+                // CRITICAL FIX: Add timeout around collection to prevent getting stuck
+                withTimeoutOrNull(75000) {
+                    queue?.responses
+                        ?.takeWhile { !responseComplete }  // Terminate when complete
+                        ?.collect { response ->
                         // Only process responses for our request
                         if (response.requestId != requestId) return@collect
                         
@@ -1682,7 +1715,7 @@ class VoicePipelineManager(
                                 
                                 // STEP 5: Clear LLM context for next turn
                                 if (isRunning.get()) {
-                                    llmBridge?.clearContext()
+                                    clearContextAsync()
                                 }
                                 
                                 // STEP 6: Mark LLM complete - streaming TTS will finish speaking remaining text
@@ -1719,6 +1752,7 @@ class VoicePipelineManager(
                             }
                         }
                     }
+                }
                 
                 // SAFETY NET: If queue flow ended without ever setting responseComplete, force it now
                 if (!responseComplete) {
@@ -1733,7 +1767,7 @@ class VoicePipelineManager(
                         startStreamingTTS(finalBubbleText)
                     }
                     if (isRunning.get()) {
-                        llmBridge?.clearContext()
+                        clearContextAsync()
                     }
                 }
             } catch (e: Exception) {
@@ -1849,11 +1883,8 @@ class VoicePipelineManager(
             var lastSentToTTSIndex = 0  // Tracks what we've spoken from finalBubbleText
             var isFirstChunk = true
             
-            // Hard deadline: TTS job can never run longer than 45 seconds
-            val ttsDeadline = System.currentTimeMillis() + 45000L
-            
             try {
-                while (isActive && System.currentTimeMillis() < ttsDeadline) {
+                while (isActive) {
                     // CRITICAL FIX: During streaming, use fullResponseText which keeps growing
                     // Only use finalBubbleText when LLM is complete
                     val sourceText = if (isLLMResponseComplete && finalBubbleText.isNotBlank()) {
@@ -1915,9 +1946,6 @@ class VoicePipelineManager(
                     delay(50)
                 }
                 
-                if (System.currentTimeMillis() >= ttsDeadline) {
-                    Log.w(TAG, "NILO_DEBUG: TTS job hit hard deadline (45s), forcing completion")
-                }
                 
             } catch (e: Exception) {
                 Log.e(TAG, "TTS error: ${e.message}")
@@ -2192,7 +2220,10 @@ class VoicePipelineManager(
         // STEP 5: Remove other special tokens
         filtered = filtered.replace("</s>", "")
         filtered = filtered.replace("<s>", "")
-        
+
+        // STEP 5b: Strip Chinese/Japanese characters that the system TTS can't pronounce
+        filtered = filtered.replace(Regex("[\u4e00-\u9fff\u3040-\u309f\u30a0-\u30ff]"), "")
+
         // STEP 6: Replace ellipsis with space (TTS shouldn't say "dot dot dot")
         filtered = filtered.replace("...", " ")
         filtered = filtered.replace("…", " ")  // Unicode ellipsis

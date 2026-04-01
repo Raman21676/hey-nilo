@@ -204,7 +204,10 @@ class VoicePipelineManager(
     
     // LLM Provider job (for cancellation during barge-in)
     private var llmProviderJob: Job? = null
-    
+
+    // Job that waits for LLM + TTS to finish before transitioning back to LISTENING
+    private var completionWaitJob: Job? = null
+
     // STT job (for cancellation when user presses X)
     private var sttJob: Job? = null
     
@@ -1586,6 +1589,12 @@ class VoicePipelineManager(
                     }
                     currentQueryClassification = null
                 }
+
+                // CRITICAL FIX: Only transition back to listening after BOTH LLM and TTS are done.
+                // If the response was blank, restartListening() was already called above.
+                if (finalBubbleText.isNotBlank()) {
+                    awaitCompletionAndListen()
+                }
             } catch (e: Exception) {
                 Log.e(TAG, "LLM Provider processing failed", e)
                 transitionToState(PipelineState.ERROR)
@@ -1615,6 +1624,7 @@ class VoicePipelineManager(
             try {
                 // Clear previous response text when NEW user query starts
                 fullResponseText.clear()
+                isLLMResponseComplete = false
                 // NOTE: Don't clear context here - it was cleared after previous response
                 // Reset streaming token filter state
                 streamingTokenBuffer.clear()
@@ -1777,6 +1787,11 @@ class VoicePipelineManager(
                         clearContextAsync()
                     }
                 }
+
+                // CRITICAL FIX: Only transition back to listening after BOTH LLM and TTS are done.
+                if (finalBubbleText.isNotBlank()) {
+                    awaitCompletionAndListen()
+                }
             } catch (e: Exception) {
                 Log.e(TAG, "LLM processing failed", e)
                 transitionToState(PipelineState.ERROR)
@@ -1790,6 +1805,68 @@ class VoicePipelineManager(
         }
     }
     
+    /**
+     * Wait for both LLM generation and TTS to finish, then transition back to LISTENING.
+     * Polling every 500ms because isSpeaking() is unreliable on Samsung Tab A7 Lite.
+     */
+    private fun awaitCompletionAndListen() {
+        if (completionWaitJob?.isActive == true) {
+            Log.d(TAG, "awaitCompletionAndListen already active, skipping")
+            return
+        }
+
+        completionWaitJob = scope.launch {
+            val start = System.currentTimeMillis()
+            val maxWait = 90000L
+
+            while (isActive) {
+                val llmDone = isLLMResponseComplete
+                val ttsDone = !isStreamingTTSActive && streamingTTSJob?.isActive != true && kokoroTTS?.isSpeaking() != true
+
+                if (llmDone && ttsDone) {
+                    Log.i(TAG, "LLM and TTS both complete — safe to transition to LISTENING")
+                    break
+                }
+
+                if (System.currentTimeMillis() - start > maxWait) {
+                    Log.w(TAG, "Timeout waiting for LLM+TTS completion, forcing transition")
+                    break
+                }
+
+                delay(500)
+            }
+
+            if (!isRunning.get()) {
+                Log.w(TAG, "Pipeline stopped while waiting, aborting transition")
+                return@launch
+            }
+
+            // Reset state for next utterance
+            speechBuffer.clear()
+            preSpeechBuffer.clear()
+            isCollectingSpeech = false
+            isProcessingSTT = false
+            consecutiveSilenceFrames = 0
+            lastSpokenPosition = 0
+            ttsTextBuffer.clear()
+            fullResponseText.clear()
+            lastTTSFinishedTime = System.currentTimeMillis()
+            vadProcessor?.reset()
+            currentQueryClassification = null
+            listeningStartTime = System.currentTimeMillis()
+
+            if (currentState != PipelineState.LISTENING) {
+                transitionToState(PipelineState.LISTENING)
+            }
+
+            if (audioRecorder?.isRecording() != true) {
+                startRecording()
+            }
+
+            Log.i(TAG, "✓ Listening active after LLM+TTS completion")
+        }
+    }
+
     /**
      * Restart listening after error or when TTS is not available
      * This is a fallback function for error recovery.
@@ -1808,6 +1885,10 @@ class VoicePipelineManager(
                 return
             }
             
+            // Cancel completion wait so we can take over immediately
+            completionWaitJob?.cancel()
+            completionWaitJob = null
+
             // Cancel any existing streaming TTS job to prevent conflicts
             streamingTTSJob?.cancel()
             streamingTTSJob = null
@@ -1958,17 +2039,17 @@ class VoicePipelineManager(
             } finally {
                 isStreamingTTSActive = false
                 lastSpokenPosition = 0
-                isLLMResponseComplete = false  // Reset for next utterance
+                // DO NOT reset isLLMResponseComplete here — let the unified completion check handle it
                 streamingTTSJob = null
-                
+
                 // Notify audio recorder that TTS stopped
                 audioRecorder?.setTTSSpeaking(false)
-                
+
                 Log.i(TAG, "NILO_DEBUG: TTS finished - preparing for next utterance")
-                
+
                 // CRITICAL FIX: Record when TTS finished to prevent echo detection
                 lastTTSFinishedTime = System.currentTimeMillis()
-                
+
                 // Reset all speech-related state for next utterance
                 speechBuffer.clear()
                 preSpeechBuffer.clear()
@@ -1976,40 +2057,31 @@ class VoicePipelineManager(
                 isProcessingSTT = false
                 consecutiveSilenceFrames = 0
                 ttsTextBuffer.clear()
-                
+
                 // Reset VAD processor for clean state - CRITICAL for auto-listening
                 vadProcessor?.reset()
-                
+
                 // DO NOT clear LLM context here — processWithLLMProvider already does it when generation completes.
                 // Clearing here creates a race condition if the user has already started the next question.
-                
+
                 // Reset for next query
                 currentQueryClassification = null
-                
+
                 // CRITICAL FIX: Reset listening timer so timeout doesn't fire immediately
                 listeningStartTime = System.currentTimeMillis()
-                
+
                 // CRITICAL FIX: Ensure isRunning is true for next listening cycle
                 if (!isRunning.get()) {
                     Log.w(TAG, "CRITICAL: isRunning was false, setting to true")
                     isRunning.set(true)
                 }
-                
-                // CRITICAL FIX: Only transition to LISTENING if we're not already there
-                if (currentState != PipelineState.LISTENING) {
-                    transitionToState(PipelineState.LISTENING)
-                    Log.i(TAG, "NILO_DEBUG: State changed: LISTENING (TTS finished)")
-                } else {
-                    Log.i(TAG, "TTS finished - already in LISTENING state, no transition needed")
-                }
-                
-                // Ensure audio recorder is still running
-                if (audioRecorder?.isRecording() != true) {
-                    Log.w(TAG, "Recorder not running, restarting...")
-                    startRecording()
-                }
-                
-                Log.i(TAG, "✓ Ready for next utterance - auto-listening active")
+
+                // CRITICAL FIX: Do NOT transition to LISTENING here immediately.
+                // The mic must stay off until LLM generation is also complete.
+                // awaitCompletionAndListen polls every 500ms for both conditions.
+                scope.launch { awaitCompletionAndListen() }
+
+                Log.i(TAG, "✓ TTS cleanup done — awaiting LLM completion before listening")
             }
         }
     }

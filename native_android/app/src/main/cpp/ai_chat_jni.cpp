@@ -52,7 +52,7 @@ struct LlamaState {
     llama_sampler* sampler = nullptr;
     llama_batch batch = {};
     
-    std::mutex mutex;
+    std::timed_mutex mutex;
     std::atomic<bool> is_generating{false};
     std::atomic<bool> should_stop{false};
     
@@ -77,7 +77,7 @@ struct LlamaState {
     }
     
     void cleanup() {
-        std::lock_guard<std::mutex> lock(mutex);
+        std::lock_guard<std::timed_mutex> lock(mutex);
         if (batch.n_tokens > 0) {
             llama_batch_free(batch);
             batch = {};
@@ -475,7 +475,11 @@ Java_com_projekt_1x_studybuddy_LlamaBridge_prepareContext(JNIEnv* env, jobject /
         return -1;
     }
     
-    std::lock_guard<std::mutex> lock(g_state->mutex);
+    std::unique_lock<std::timed_mutex> lock(g_state->mutex, std::defer_lock);
+    if (!lock.try_lock_for(std::chrono::milliseconds(5000))) {
+        LOGE("Failed to acquire llama mutex in prepareContext - another generation may be stuck");
+        return -1;
+    }
     
     llama_context_params ctx_params = llama_context_default_params();
     ctx_params.n_ctx = g_state->n_ctx;
@@ -556,8 +560,13 @@ Java_com_projekt_1x_studybuddy_LlamaBridge_nativeGenerateStream(
         return env->NewStringUTF("");
     }
     
-    std::lock_guard<std::mutex> lock(g_state->mutex);
-    
+    std::unique_lock<std::timed_mutex> lock(g_state->mutex, std::defer_lock);
+    if (!lock.try_lock_for(std::chrono::milliseconds(5000))) {
+        LOGE("Failed to acquire llama mutex in nativeGenerateStream - another generation may be stuck");
+        env->CallVoidMethod(callback, onCompleteMethod);
+        return env->NewStringUTF("");
+    }
+
     const char* prompt = env->GetStringUTFChars(userPrompt, nullptr);
     std::string promptStr(prompt);
     const llama_vocab* vocab = llama_model_get_vocab(g_state->model);
@@ -1004,8 +1013,12 @@ Java_com_projekt_1x_studybuddy_LlamaBridge_nativeClearContext(
         return;
     }
     
-    std::lock_guard<std::mutex> lock(g_state->mutex);
-    
+    std::unique_lock<std::timed_mutex> lock(g_state->mutex, std::defer_lock);
+    if (!lock.try_lock_for(std::chrono::milliseconds(2000))) {
+        LOGW("Cannot clear context - llama mutex is held by a stuck generation, skipping");
+        return;
+    }
+
     // Reset position to start fresh - this effectively clears the KV cache
     // as new tokens will overwrite old ones
     g_state->current_pos = 0;

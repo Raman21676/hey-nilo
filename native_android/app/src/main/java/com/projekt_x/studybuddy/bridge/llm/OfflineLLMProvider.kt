@@ -216,19 +216,9 @@ class OfflineLLMProvider(
             // CRITICAL FIX: Add timeout around the entire streaming collection.
             // If native generation hangs or deadlocks, this prevents the coroutine from waiting forever.
             val streamSuccess = withTimeoutOrNull(75000) {
-                // Wait for error or completion signal
-                val error = errorChannel.receiveCatching().getOrNull()
-                if (error != null) {
-                    emit(LLMResponse(
-                        error = error,
-                        isComplete = true,
-                        provider = provider,
-                        latencyMs = System.currentTimeMillis() - startTime
-                    ))
-                    return@withTimeoutOrNull true
-                }
-                
-                // Emit tokens as they arrive
+                // Emit tokens as they arrive — this enables real streaming to the UI.
+                // We must NOT block on errorChannel first, because that would wait until
+                // generation completes before showing any tokens.
                 for (token in tokenChannel) {
                     fullResponse.append(token)
                     emit(LLMResponse(
@@ -239,7 +229,19 @@ class OfflineLLMProvider(
                         modelName = "tinyllama-1.1b-chat"
                     ))
                 }
-                
+
+                // After tokenChannel closes, check if an error was posted.
+                val error = errorChannel.tryReceive().getOrNull()
+                if (error != null) {
+                    emit(LLMResponse(
+                        error = error,
+                        isComplete = true,
+                        provider = provider,
+                        latencyMs = System.currentTimeMillis() - startTime
+                    ))
+                    return@withTimeoutOrNull true
+                }
+
                 // Emit final response
                 val latency = System.currentTimeMillis() - startTime
                 emit(LLMResponse(

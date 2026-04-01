@@ -226,13 +226,34 @@ class KokoroTTSBridge(private val context: Context) {
     }
     
     /**
-     * DEPRECATED: Time-based completion is now handled by VoicePipelineManager
-     * This function is kept for API compatibility but does nothing
+     * Wait for all pending TTS utterances to complete.
+     * Uses pendingUtterances set (tracked by UtteranceProgressListener) as primary signal.
+     * Includes a time-based bailout for devices where QUEUE_ADD callbacks are unreliable.
      */
-    suspend fun waitForCompletion() {
-        // Timing is now handled by VoicePipelineManager using calculated duration
-        // Android TTS isSpeaking() API is unreliable on some devices
-        delay(100) // Small delay for any pending operations
+    suspend fun waitForCompletion(timeoutMs: Long = 30000) {
+        val startTime = System.currentTimeMillis()
+        while (System.currentTimeMillis() - startTime < timeoutMs) {
+            val hasPending = synchronized(utteranceLock) { pendingUtterances.isNotEmpty() }
+            if (!hasPending) {
+                // Small delay to let final audio frame finish playing
+                delay(200)
+                return
+            }
+            // CRITICAL FIX: Samsung Tab A7 Lite doesn't reliably fire onDone for QUEUE_ADD utterances.
+            // If we've passed the expected duration of the last utterance + grace period, assume done.
+            val timeSinceLastUtterance = System.currentTimeMillis() - lastUtteranceStartTime
+            val gracePeriod = 1500L
+            if (timeSinceLastUtterance > lastUtteranceExpectedDurationMs + gracePeriod) {
+                val staleCount = synchronized(utteranceLock) { pendingUtterances.size }
+                Log.w(TAG, "waitForCompletion: TTS done by time (${timeSinceLastUtterance}ms > ${lastUtteranceExpectedDurationMs + gracePeriod}ms), clearing $staleCount stale pending utterances")
+                synchronized(utteranceLock) { pendingUtterances.clear() }
+                delay(200)
+                return
+            }
+            delay(100)
+        }
+        Log.w(TAG, "waitForCompletion timed out after ${timeoutMs}ms, clearing pending utterances")
+        synchronized(utteranceLock) { pendingUtterances.clear() }
     }
     
     /**

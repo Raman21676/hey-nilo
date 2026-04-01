@@ -681,7 +681,7 @@ Java_com_projekt_1x_studybuddy_LlamaBridge_nativeGenerateStream(
     
     // Hard timeout to prevent infinite generation loops
     auto start_time = std::chrono::steady_clock::now();
-    const int MAX_GENERATION_SECONDS = 30;
+    const int MAX_GENERATION_SECONDS = 60;
     
     while (n_gen < maxTokens && !g_state->should_stop) {
         // Check hard timeout

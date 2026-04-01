@@ -49,7 +49,7 @@ class VoicePipelineManager(
         
         // WORKING CONFIG FROM MINI PROJECT - Fast response (2 seconds)
         // FIX: Balanced threshold for Samsung Tab A7 Lite
-        private const val VAD_THRESHOLD = 0.35f      // Sweet spot for quiet Samsung Tab A7 Lite mic
+        private const val VAD_THRESHOLD = 0.25f      // Catches quiet speech while filtering ambient noise
         private const val MIN_SPEECH_MS = 800L       // Minimum 0.8 seconds of speech
         private const val MIN_SILENCE_MS = 600L      // Wait 600ms silence before ending
         private const val PRE_SPEECH_BUFFER_MS = 800L // Capture word beginnings
@@ -70,9 +70,10 @@ class VoicePipelineManager(
         // MAX LISTENING TIME: Force stop if user doesn't speak or tap within 15 seconds
         private const val MAX_LISTENING_TIME_MS = 15000L
         
-        // CONSERVATIVE SOFTWARE GAIN: Samsung Tab A7 Lite mic is very quiet even with
-        // hardware AGC. 2x gain boosts VAD detection without the severe clipping of 8x.
-        private const val SOFTWARE_GAIN = 2f
+        // MODERATE SOFTWARE GAIN: Samsung Tab A7 Lite mic is very quiet even with
+        // hardware AGC. 4x gain provides reliable detection without the excessive
+        // noise sensitivity of 8x.
+        private const val SOFTWARE_GAIN = 4f
         
         // MAX RESPONSE LENGTH: Force stop LLM once we have enough content
         // For voice mode, we want concise but complete responses (3-4 sentences = ~300-400 chars)
@@ -1825,15 +1826,14 @@ class VoicePipelineManager(
             // Clear LLM context for next utterance
             llmBridge?.clearContext()
             
-            // Only restart recording if it's not already running
-            if (audioRecorder?.isRecording() != true) {
-                Log.w(TAG, "Recording was stopped - restarting it")
-                audioRecorder?.stopRecording()
-                pipelineJob?.cancel()
-                pipelineJob = null
-                delay(200)
-                startRecording()
-            }
+            // CRITICAL FIX: Always restart recording to re-initialize hardware AGC after TTS.
+            // Keeping the same AudioRecord instance can leave the mic in a quiet state.
+            Log.i(TAG, "Restarting audio recorder to re-initialize AGC")
+            audioRecorder?.stopRecording()
+            pipelineJob?.cancel()
+            pipelineJob = null
+            delay(200)
+            startRecording()
             
             // CRITICAL FIX: Use suspend helper to respect TTS cooldown
             transitionToListening()

@@ -13,6 +13,7 @@ import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Warning
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -545,16 +546,15 @@ private fun CustomModelSection(
     var customPath by remember { mutableStateOf("") }
     var errorMessage by remember { mutableStateOf<String?>(null) }
     var showPermissionRationale by remember { mutableStateOf(false) }
+    var showFileBrowser by remember { mutableStateOf(false) }
     
     // Permission launcher
     val permissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission()
     ) { isGranted ->
         if (isGranted) {
-            // Launch file picker
-            launchFilePicker(context, customPath) { path ->
-                customPath = path
-            }
+            // Permission granted, show file browser
+            showFileBrowser = true
         } else {
             showPermissionRationale = true
         }
@@ -708,10 +708,8 @@ private fun CustomModelSection(
                             androidx.core.content.ContextCompat.checkSelfPermission(
                                 context, android.Manifest.permission.READ_EXTERNAL_STORAGE
                             ) == android.content.pm.PackageManager.PERMISSION_GRANTED -> {
-                                // Permission granted, launch file picker
-                                launchFilePicker(context, customPath) { path ->
-                                    customPath = path
-                                }
+                                // Permission granted, show file browser
+                                showFileBrowser = true
                             }
                             else -> {
                                 // Request permission
@@ -768,25 +766,135 @@ private fun CustomModelSection(
             }
         }
     }
+    
+    // File browser dialog
+    if (showFileBrowser) {
+        SimpleFileBrowserDialog(
+            context = context,
+            onFileSelected = { selectedPath ->
+                customPath = selectedPath
+                showFileBrowser = false
+            },
+            onDismiss = { showFileBrowser = false }
+        )
+    }
 }
 
-private fun launchFilePicker(context: Context, currentPath: String, onPathSelected: (String) -> Unit) {
-    try {
-        val intent = android.content.Intent(android.content.Intent.ACTION_OPEN_DOCUMENT).apply {
-            addCategory(android.content.Intent.CATEGORY_OPENABLE)
-            type = "*/*"
-        }
-        // This would need proper activity result handling
-        // For now, just open Downloads as a hint
-        val downloadsDir = android.os.Environment.getExternalStoragePublicDirectory(
-            android.os.Environment.DIRECTORY_DOWNLOADS
+/**
+ * Simple file browser dialog - scans common directories for GGUF files
+ */
+@Composable
+private fun SimpleFileBrowserDialog(
+    context: Context,
+    onFileSelected: (String) -> Unit,
+    onDismiss: () -> Unit
+) {
+    var foundFiles by remember { mutableStateOf<List<File>>(emptyList()) }
+    var isScanning by remember { mutableStateOf(true) }
+    
+    // Scan for GGUF files
+    LaunchedEffect(Unit) {
+        val searchPaths = listOf(
+            android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_DOWNLOADS),
+            android.os.Environment.getExternalStorageDirectory(),
+            File("/sdcard/Download"),
+            File("/sdcard")
         )
-        if (downloadsDir.exists()) {
-            onPathSelected(downloadsDir.absolutePath)
+        
+        val uniqueFiles = mutableMapOf<String, File>()
+        searchPaths.distinct().forEach { dir ->
+            try {
+                if (dir.exists() && dir.canRead()) {
+                    dir.walkTopDown().maxDepth(2).filter { 
+                        it.isFile && it.name.endsWith(".gguf", ignoreCase = true)
+                    }.forEach { file ->
+                        try {
+                            val canonical = file.canonicalPath
+                            if (!uniqueFiles.containsKey(canonical)) {
+                                uniqueFiles[canonical] = file
+                            }
+                        } catch (e: Exception) {
+                            uniqueFiles[file.absolutePath] = file
+                        }
+                    }
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "Cannot access ${dir.absolutePath}: ${e.message}")
+            }
         }
-    } catch (e: Exception) {
-        Log.e(TAG, "Failed to open file picker", e)
+        foundFiles = uniqueFiles.values.toList().sortedBy { it.name }
+        isScanning = false
     }
+    
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Select GGUF Model") },
+        text = {
+            Column(
+                modifier = Modifier.height(350.dp)
+            ) {
+                if (isScanning) {
+                    Box(
+                        modifier = Modifier.fillMaxSize(),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        CircularProgressIndicator()
+                    }
+                } else if (foundFiles.isEmpty()) {
+                    Box(
+                        modifier = Modifier.fillMaxSize(),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = "No GGUF files found\n\nCommon locations:\n• /sdcard/Download\n• /storage/emulated/0/Download",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                        )
+                    }
+                } else {
+                    Text(
+                        text = "Found ${foundFiles.size} GGUF file(s):",
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    
+                    androidx.compose.foundation.lazy.LazyColumn {
+                        items(foundFiles.size) { index ->
+                            val file = foundFiles[index]
+                            val parentName = file.parentFile?.name ?: "Unknown"
+                            TextButton(
+                                onClick = { onFileSelected(file.absolutePath) },
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Column(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalAlignment = Alignment.Start
+                                ) {
+                                    Text(
+                                        text = file.name,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                        style = MaterialTheme.typography.bodySmall
+                                    )
+                                    Text(
+                                        text = "in $parentName • ${String.format("%.2f", file.length() / (1024f * 1024f * 1024f))}GB",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Cancel")
+            }
+        }
+    )
 }
 
 @Composable

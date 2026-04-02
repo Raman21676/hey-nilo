@@ -1327,6 +1327,14 @@ class VoicePipelineManager(
                 delay(100)  // Brief delay for hardware to settle
                 startRecording()
             }
+        } else if (isRunning.get()) {
+            // CRITICAL FIX: If recorder is not running but pipeline is active, start it!
+            // This fixes the issue where X button press leaves recorder stopped
+            Log.i(TAG, "🎤 Audio recorder not running - starting it now...")
+            scope.launch {
+                delay(50)
+                startRecording()
+            }
         }
         
         // CRITICAL FIX: Reset from ANY state (including ERROR) back to LISTENING

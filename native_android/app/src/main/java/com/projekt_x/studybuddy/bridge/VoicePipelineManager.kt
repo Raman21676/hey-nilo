@@ -1967,7 +1967,14 @@ class VoicePipelineManager(
             Log.w(TAG, "TTS job already active, skipping new start")
             return
         }
-        if (isStreamingTTSActive || kokoroTTS?.isReady != true) return
+        if (isStreamingTTSActive) {
+            Log.w(TAG, "TTS already active (isStreamingTTSActive=true), skipping")
+            return
+        }
+        if (kokoroTTS?.isReady != true) {
+            Log.e(TAG, "TTS not ready (isReady=${kokoroTTS?.isReady}), cannot start")
+            return
+        }
         
         isStreamingTTSActive = true
         Log.i(TAG, "Starting TTS (hybrid mode - streams sentences from finalBubbleText only)")

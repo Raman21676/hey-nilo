@@ -15,6 +15,8 @@ import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
@@ -691,45 +693,100 @@ private fun FileBrowserDialog(
 ) {
     var foundFiles by remember { mutableStateOf<List<File>>(emptyList()) }
     var isScanning by remember { mutableStateOf(true) }
-    var currentPath by remember { mutableStateOf("/sdcard") }
+    var hasPermission by remember { mutableStateOf(false) }
+    var permissionDenied by remember { mutableStateOf(false) }
+    var currentPath by remember { mutableStateOf(android.os.Environment.getExternalStorageDirectory().absolutePath) }
     var currentFiles by remember { mutableStateOf<List<File>>(emptyList()) }
     
+    // Permission launcher
+    val permissionLauncher = rememberLauncherForActivityResult(
+        contract = androidx.activity.result.contract.ActivityResultContracts.RequestPermission()
+    ) { isGranted ->
+        hasPermission = isGranted
+        permissionDenied = !isGranted
+    }
+    
+    // Check for storage permission
+    fun checkPermission() {
+        hasPermission = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) {
+            // Android 11+ - check if we can access external storage
+            android.os.Environment.isExternalStorageManager()
+        } else {
+            // Android 10 and below - check READ_EXTERNAL_STORAGE
+            androidx.core.content.ContextCompat.checkSelfPermission(
+                context, android.Manifest.permission.READ_EXTERNAL_STORAGE
+            ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+        }
+    }
+    
+    LaunchedEffect(Unit) {
+        checkPermission()
+    }
+    
     // Scan for GGUF files and populate current directory
-    LaunchedEffect(currentPath) {
+    LaunchedEffect(currentPath, hasPermission) {
+        if (!hasPermission) return@LaunchedEffect
+        
         isScanning = true
-        val directory = File(currentPath)
-        if (directory.exists() && directory.isDirectory) {
-            val files = directory.listFiles()?.filter { file ->
-                file.isDirectory || file.name.endsWith(".gguf", ignoreCase = true)
-            }?.sortedBy { it.name } ?: emptyList()
-            currentFiles = files
+        try {
+            val directory = File(currentPath)
+            if (directory.exists() && directory.isDirectory && directory.canRead()) {
+                val files = directory.listFiles()?.filter { file ->
+                    file.isDirectory || file.name.endsWith(".gguf", ignoreCase = true)
+                }?.sortedBy { !it.isDirectory }?.sortedBy { it.name } ?: emptyList()
+                currentFiles = files
+            } else {
+                currentFiles = emptyList()
+            }
+        } catch (e: SecurityException) {
+            Log.e(TAG, "Permission denied accessing $currentPath")
+            currentFiles = emptyList()
         }
         isScanning = false
     }
     
     // Initial scan for all GGUF files
-    LaunchedEffect(Unit) {
+    LaunchedEffect(hasPermission) {
+        if (!hasPermission) return@LaunchedEffect
+        
         val searchPaths = listOf(
+            android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_DOWNLOADS).absolutePath,
+            android.os.Environment.getExternalStorageDirectory().absolutePath,
             "/sdcard/Download",
             "/sdcard",
             "/storage/emulated/0/Download",
             "/storage/emulated/0"
         )
         
-        val allFiles = mutableListOf<File>()
-        searchPaths.forEach { path ->
+        // Use a map to deduplicate by canonical path
+        val uniqueFiles = mutableMapOf<String, File>()
+        searchPaths.distinct().forEach { path ->
             try {
                 val dir = File(path)
-                if (dir.exists()) {
+                if (dir.exists() && dir.canRead()) {
                     dir.walkTopDown().maxDepth(2).filter { 
                         it.isFile && it.name.endsWith(".gguf", ignoreCase = true)
-                    }.forEach { allFiles.add(it) }
+                    }.forEach { file ->
+                        try {
+                            // Use canonical path to identify unique files
+                            val canonicalPath = file.canonicalPath
+                            if (!uniqueFiles.containsKey(canonicalPath)) {
+                                uniqueFiles[canonicalPath] = file
+                            }
+                        } catch (e: Exception) {
+                            // Fallback to absolute path if canonical fails
+                            if (!uniqueFiles.containsKey(file.absolutePath)) {
+                                uniqueFiles[file.absolutePath] = file
+                            }
+                        }
+                    }
                 }
             } catch (e: Exception) {
                 Log.w(TAG, "Cannot access $path: ${e.message}")
             }
         }
-        foundFiles = allFiles
+        foundFiles = uniqueFiles.values.toList().sortedBy { it.name }
+        isScanning = false
     }
     
     AlertDialog(
@@ -739,6 +796,54 @@ private fun FileBrowserDialog(
             Column(
                 modifier = Modifier.height(400.dp)
             ) {
+                // Permission request UI
+                if (!hasPermission) {
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = CardDefaults.cardColors(
+                            containerColor = MaterialTheme.colorScheme.errorContainer
+                        )
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(16.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally
+                        ) {
+                            Text(
+                                text = "📂 Storage Access Required",
+                                style = MaterialTheme.typography.titleSmall,
+                                color = MaterialTheme.colorScheme.onErrorContainer,
+                                fontWeight = FontWeight.Bold
+                            )
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Text(
+                                text = "To browse for model files, the app needs permission to access your device's storage.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onErrorContainer
+                            )
+                            Spacer(modifier = Modifier.height(12.dp))
+                            Button(
+                                onClick = {
+                                    permissionLauncher.launch(android.Manifest.permission.READ_EXTERNAL_STORAGE)
+                                },
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = MaterialTheme.colorScheme.primary
+                                )
+                            ) {
+                                Text("Allow Access")
+                            }
+                            if (permissionDenied) {
+                                Spacer(modifier = Modifier.height(8.dp))
+                                Text(
+                                    text = "Permission denied. You can still enter the path manually.",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onErrorContainer.copy(alpha = 0.8f)
+                                )
+                            }
+                        }
+                    }
+                    Spacer(modifier = Modifier.height(8.dp))
+                }
+                
                 // Current path display
                 Text(
                     text = "Current: $currentPath",
@@ -767,15 +872,21 @@ private fun FileBrowserDialog(
                     }
                     
                     TextButton(
-                        onClick = { currentPath = "/sdcard/Download" }
+                        onClick = { 
+                            currentPath = android.os.Environment.getExternalStoragePublicDirectory(
+                                android.os.Environment.DIRECTORY_DOWNLOADS
+                            ).absolutePath
+                        }
                     ) {
                         Text("Downloads")
                     }
                     
                     TextButton(
-                        onClick = { currentPath = "/sdcard" }
+                        onClick = { 
+                            currentPath = android.os.Environment.getExternalStorageDirectory().absolutePath
+                        }
                     ) {
-                        Text("SD Card")
+                        Text("Storage")
                     }
                 }
                 
@@ -811,15 +922,29 @@ private fun FileBrowserDialog(
                         Spacer(modifier = Modifier.height(4.dp))
                         
                         foundFiles.take(5).forEach { file ->
+                            val parentName = file.parentFile?.name ?: "Unknown"
                             TextButton(
                                 onClick = { onFileSelected(file.absolutePath) },
                                 modifier = Modifier.fillMaxWidth()
                             ) {
-                                Text(
-                                    text = "✓ ${file.name} (${String.format("%.2f", file.length() / (1024f * 1024f * 1024f))}GB)",
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
-                                )
+                                Column(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalAlignment = Alignment.Start
+                                ) {
+                                    Text(
+                                        text = "✓ ${file.name}",
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                        style = MaterialTheme.typography.bodySmall
+                                    )
+                                    Text(
+                                        text = "   in ${parentName} • ${String.format("%.2f", file.length() / (1024f * 1024f * 1024f))}GB",
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                                    )
+                                }
                             }
                         }
                         

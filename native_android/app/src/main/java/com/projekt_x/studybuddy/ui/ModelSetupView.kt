@@ -32,6 +32,7 @@ import com.projekt_x.studybuddy.bridge.llm.ProviderConfig
 import com.projekt_x.studybuddy.model.OfflineModelConfig
 import com.projekt_x.studybuddy.model.getAllModels
 import com.projekt_x.studybuddy.model.getRecommendedModel
+import com.projekt_x.studybuddy.model.CustomModelManager
 import com.projekt_x.studybuddy.bridge.DeviceInfo
 import com.projekt_x.studybuddy.bridge.llm.SystemPromptBuilder
 import kotlinx.coroutines.launch
@@ -283,16 +284,26 @@ fun ModelSetupView(
                         when (selectedMode) {
                             is AppMode.Offline -> {
                                 if (selectedOfflineModel != null) {
-                                    val modelFile = File(
-                                        context.getExternalFilesDir(null), 
-                                        "models/${selectedOfflineModel!!.fileName}"
-                                    )
+                                    // CRITICAL FIX: Check if this is a custom model
+                                    val customModel = CustomModelManager.getCustomModel(context)
+                                    val isCustomModel = selectedOfflineModel!!.id.startsWith("custom_") ||
+                                        (customModel != null && customModel.path.endsWith(selectedOfflineModel!!.fileName))
+                                    
+                                    val modelPath = if (isCustomModel && customModel != null) {
+                                        // Use custom model path
+                                        customModel.path
+                                    } else {
+                                        // Use standard model path
+                                        File(context.getExternalFilesDir(null), "models/${selectedOfflineModel!!.fileName}").absolutePath
+                                    }
+                                    
+                                    val modelFile = File(modelPath)
                                     if (modelFile.exists()) {
                                         onLoading(true)
                                         scope.launch {
                                             try {
                                                 val config = bridge.detectDeviceConfig()
-                                                val success = bridge.loadModel(modelFile.absolutePath, config)
+                                                val success = bridge.loadModel(modelPath, config)
                                                 if (success) {
                                                     bridge.setSystemPrompt(com.projekt_x.studybuddy.bridge.llm.SystemPromptBuilder.buildSystemPrompt())
                                                     onModelLoaded()
@@ -306,7 +317,7 @@ fun ModelSetupView(
                                             }
                                         }
                                     } else {
-                                        snackbarMessage = "Model not found. Tap 'Configure' on Offline card to download."
+                                        snackbarMessage = "Model not found at: $modelPath"
                                     }
                                 } else {
                                     snackbarMessage = "Tap 'Configure' on Offline card to select a model first."

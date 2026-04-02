@@ -1231,6 +1231,9 @@ class VoicePipelineManager(
         // Cancel LLM Provider job if running
         llmProviderJob?.cancel()
         llmProviderJob = null
+        // CRITICAL FIX: Also cancel the provider's internal generation job
+        // so it doesn't keep emitting tokens after we asked it to stop.
+        llmProvider?.cancelGeneration()
         // Signal native layer to stop
         llmBridge?.stopGeneration()
         // Reset state

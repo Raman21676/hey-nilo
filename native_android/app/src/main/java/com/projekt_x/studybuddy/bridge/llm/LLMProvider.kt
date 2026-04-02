@@ -96,6 +96,11 @@ interface LLMProvider {
     suspend fun initialize(): Boolean
     
     /**
+     * Cancel any ongoing generation immediately
+     */
+    fun cancelGeneration()
+    
+    /**
      * Release resources
      */
     fun release()

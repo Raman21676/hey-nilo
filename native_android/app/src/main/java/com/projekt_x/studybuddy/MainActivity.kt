@@ -980,6 +980,9 @@ fun UnifiedChatView(
                     msg
                 }
             }
+            if (!isComplete) {
+                metricsState.onTokenGenerated()
+            }
             if (isComplete) {
                 isGenerating = false
                 metricsState.stopGeneration()
@@ -1246,6 +1249,16 @@ fun UnifiedChatView(
                                     voicePipelineManager?.stopGeneration()
                                     // Clear any partial responses
                                     voicePipelineManager?.clearResponse()
+                                    // CRITICAL FIX: Mark the interrupted response as complete
+                                    // so the next response doesn't overwrite it.
+                                    messages = messages.map { msg ->
+                                        if (!msg.isUser && msg.isStreaming) {
+                                            msg.copy(isStreaming = false)
+                                        } else {
+                                            msg
+                                        }
+                                    }
+                                    isGenerating = false
                                     // Restart voice mode for new question
                                     voicePipelineManager?.restartForNewQuestion()
                                 }

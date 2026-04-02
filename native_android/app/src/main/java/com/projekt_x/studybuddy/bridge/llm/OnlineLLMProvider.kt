@@ -85,6 +85,15 @@ class OnlineLLMProvider(
     }
     
     /**
+     * Cancel any ongoing generation immediately
+     */
+    override fun cancelGeneration() {
+        currentGenerationJob?.cancel()
+        currentGenerationJob = null
+        Log.i(TAG, "Generation cancelled")
+    }
+    
+    /**
      * Release resources
      */
     override fun release() {

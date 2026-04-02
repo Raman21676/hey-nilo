@@ -67,6 +67,16 @@ class OfflineLLMProvider(
     }
     
     /**
+     * Cancel any ongoing generation immediately
+     */
+    override fun cancelGeneration() {
+        currentGenerationJob?.cancel()
+        currentGenerationJob = null
+        llamaBridge?.stopGeneration()
+        Log.i(TAG, "Generation cancelled")
+    }
+    
+    /**
      * Release resources
      */
     override fun release() {

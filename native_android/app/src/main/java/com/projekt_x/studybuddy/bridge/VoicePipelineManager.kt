@@ -601,6 +601,8 @@ class VoicePipelineManager(
             // Cancel existing job
             pipelineJob?.cancel()
             pipelineJob = null
+            // CRITICAL: Wait for hardware to release
+            Thread.sleep(150)
         }
         
         // Ensure we're in the LISTENING state
@@ -1324,7 +1326,7 @@ class VoicePipelineManager(
             Log.i(TAG, "🎤 Restarting audio recorder for clean state...")
             audioRecorder?.stopRecording()
             scope.launch {
-                delay(100)  // Brief delay for hardware to settle
+                delay(300)  // CRITICAL: Longer delay for hardware to fully stabilize
                 startRecording()
             }
         } else if (isRunning.get()) {
@@ -1332,7 +1334,7 @@ class VoicePipelineManager(
             // This fixes the issue where X button press leaves recorder stopped
             Log.i(TAG, "🎤 Audio recorder not running - starting it now...")
             scope.launch {
-                delay(50)
+                delay(300)  // CRITICAL: Longer delay for hardware to fully stabilize
                 startRecording()
             }
         }

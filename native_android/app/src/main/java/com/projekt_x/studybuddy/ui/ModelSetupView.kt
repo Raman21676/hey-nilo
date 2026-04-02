@@ -13,6 +13,7 @@ import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Send
 import androidx.compose.material.icons.filled.Warning
+import androidx.compose.material.icons.filled.Search
 import androidx.activity.compose.BackHandler
 
 import androidx.compose.material3.*
@@ -35,6 +36,7 @@ import com.projekt_x.studybuddy.model.getRecommendedModel
 import com.projekt_x.studybuddy.model.CustomModelManager
 import com.projekt_x.studybuddy.bridge.DeviceInfo
 import com.projekt_x.studybuddy.bridge.llm.SystemPromptBuilder
+import com.projekt_x.studybuddy.util.LastModelPreference
 import kotlinx.coroutines.launch
 import java.io.File
 
@@ -64,15 +66,32 @@ fun ModelSetupView(
     // Navigation states
     var showOnlineSetup by remember { mutableStateOf(false) }
     var showOfflinePicker by remember { mutableStateOf(false) }
+    var showHuggingFaceSearch by remember { mutableStateOf(false) }
     var snackbarMessage by remember { mutableStateOf<String?>(null) }
     var showQuitDialog by remember { mutableStateOf(false) }
     
     // API Key Store
     val apiKeyStore = remember { ApiKeyStore(context) }
     
+    // Last Model Preference (for resume dialog)
+    val lastModelPref = remember { LastModelPreference(context) }
+    var showResumeDialog by remember { mutableStateOf(false) }
+    var savedConfig by remember { mutableStateOf<LastModelPreference.SavedConfig?>(null) }
+    var isAutoLoading by remember { mutableStateOf(false) }
+    
     // Check for saved configurations on startup
     LaunchedEffect(Unit) {
         Log.i(TAG, "ModelSetupView launched, checking saved configs")
+        
+        // Check for last used model (for resume dialog)
+        if (lastModelPref.hasSavedConfig()) {
+            val config = lastModelPref.getSavedConfig(context)
+            if (config != null) {
+                savedConfig = config
+                showResumeDialog = true
+                Log.i(TAG, "Found saved config, showing resume dialog")
+            }
+        }
         
         // Check for saved API key
         val savedKey = apiKeyStore.getApiKey()
@@ -303,6 +322,11 @@ fun ModelSetupView(
                                                 val success = bridge.loadModel(modelPath, config)
                                                 if (success) {
                                                     bridge.setSystemPrompt(com.projekt_x.studybuddy.bridge.llm.SystemPromptBuilder.buildSystemPrompt())
+                                                    // CRITICAL: Save the config for resume on next app launch
+                                                    val isCustom = selectedOfflineModel!!.id.startsWith("custom_")
+                                                    val customPath = if (isCustom) modelPath else null
+                                                    lastModelPref.saveOfflineModel(selectedOfflineModel!!, isCustom, customPath)
+                                                    Log.i(TAG, "Saved offline model config for resume: ${selectedOfflineModel!!.displayName}")
                                                     onModelLoaded()
                                                 } else {
                                                     onError("Failed to load model")
@@ -322,6 +346,9 @@ fun ModelSetupView(
                             }
                             is AppMode.Online -> {
                                 if (onlineConfig?.apiKey?.isNotBlank() == true) {
+                                    // CRITICAL: Save the config for resume on next app launch
+                                    lastModelPref.saveOnlineConfig(onlineConfig!!)
+                                    Log.i(TAG, "Saved online config for resume: ${onlineConfig!!.provider.name}")
                                     onOnlineConfigured(onlineConfig!!)
                                 } else {
                                     snackbarMessage = "Tap 'Configure' on Online card to set up API key."
@@ -396,6 +423,101 @@ fun ModelSetupView(
         )
     }
     
+    // Resume previous session dialog
+    if (showResumeDialog && savedConfig != null) {
+        val configName = lastModelPref.getSavedConfigDisplayName(context) ?: "Previous Model"
+        AlertDialog(
+            onDismissRequest = { 
+                showResumeDialog = false 
+                // Clear saved config if user dismisses
+                lastModelPref.clear()
+            },
+            title = { Text("Resume Previous Session?") },
+            text = { 
+                Text("Do you want to continue with:\n\n$configName") 
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        showResumeDialog = false
+                        isAutoLoading = true
+                        onLoading(true)
+                        
+                        scope.launch {
+                            try {
+                                when (val mode = savedConfig!!.mode) {
+                                    is AppMode.Offline -> {
+                                        val model = savedConfig!!.offlineModel!!
+                                        val modelPath = if (savedConfig!!.isCustomModel && savedConfig!!.customModelPath != null) {
+                                            savedConfig!!.customModelPath!!
+                                        } else {
+                                            File(context.getExternalFilesDir(null), "models/${model.fileName}").absolutePath
+                                        }
+                                        
+                                        val modelFile = File(modelPath)
+                                        if (modelFile.exists()) {
+                                            val config = bridge.detectDeviceConfig()
+                                            val success = bridge.loadModel(modelPath, config)
+                                            if (success) {
+                                                bridge.setSystemPrompt(SystemPromptBuilder.buildSystemPrompt())
+                                                // Restore selection state
+                                                selectedOfflineModel = model
+                                                selectedMode = AppMode.Offline
+                                                Log.i(TAG, "Auto-loaded offline model: ${model.displayName}")
+                                                onModelLoaded()
+                                            } else {
+                                                onError("Failed to load model")
+                                                lastModelPref.clear()
+                                            }
+                                        } else {
+                                            onError("Model file not found: $modelPath")
+                                            lastModelPref.clear()
+                                        }
+                                    }
+                                    is AppMode.Online -> {
+                                        val config = savedConfig!!.onlineConfig!!
+                                        // Restore selection state
+                                        onlineConfig = config
+                                        selectedMode = AppMode.Online(config.provider)
+                                        Log.i(TAG, "Auto-loaded online config: ${config.provider.name}")
+                                        onOnlineConfigured(config)
+                                    }
+                                }
+                            } catch (e: Exception) {
+                                Log.e(TAG, "Error auto-loading saved config", e)
+                                onError("Error loading: ${e.message}")
+                                lastModelPref.clear()
+                            } finally {
+                                isAutoLoading = false
+                                onLoading(false)
+                            }
+                        }
+                    },
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.primary
+                    )
+                ) {
+                    Text("OK")
+                }
+            },
+            dismissButton = {
+                OutlinedButton(
+                    onClick = { 
+                        showResumeDialog = false 
+                        // Clear saved config if user cancels
+                        lastModelPref.clear()
+                        Log.i(TAG, "User cancelled resume, cleared saved config")
+                    },
+                    colors = ButtonDefaults.outlinedButtonColors(
+                        contentColor = MaterialTheme.colorScheme.error
+                    )
+                ) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
+    
     // Full screen picker overlay - shown instead of main UI
     if (showOfflinePicker) {
         Log.i(TAG, "Showing OfflineModelPickerScreen")
@@ -407,9 +529,41 @@ fun ModelSetupView(
                 selectedMode = AppMode.Offline
                 showOfflinePicker = false
             },
-            onBack = { showOfflinePicker = false }
+            onBack = { showOfflinePicker = false },
+            onBrowseHuggingFace = {
+                showOfflinePicker = false
+                showHuggingFaceSearch = true
+            }
         )
         return  // Don't render anything else when picker is showing
+    }
+    
+    // Hugging Face Search Screen
+    if (showHuggingFaceSearch) {
+        Log.i(TAG, "Showing HuggingFaceSearchScreen")
+        HuggingFaceSearchScreen(
+            onBack = { showHuggingFaceSearch = false },
+            onModelDownloaded = { file, modelId ->
+                showHuggingFaceSearch = false
+                // Create a custom model config for the downloaded file
+                val modelName = file.nameWithoutExtension
+                val customModel = com.projekt_x.studybuddy.model.OfflineModelConfig(
+                    id = "hf_${modelId.replace("/", "_")}",
+                    displayName = modelName,
+                    fileName = file.name,
+                    sizeGB = file.length() / (1024f * 1024f * 1024f),
+                    minRamGB = 4, // Default requirement
+                    isRecommended = false,
+                    description = "Downloaded from Hugging Face: $modelId",
+                    downloadUrl = "",
+                    category = com.projekt_x.studybuddy.model.ModelCategory.GENERAL
+                )
+                selectedOfflineModel = customModel
+                selectedMode = com.projekt_x.studybuddy.bridge.llm.AppMode.Offline
+                snackbarMessage = "Model downloaded: $modelName"
+            }
+        )
+        return  // Don't render anything else when search is showing
     }
     
     // Dialog - shown on top of main UI
@@ -441,94 +595,93 @@ private fun ModeCard(
     onSelect: () -> Unit,
     onConfigure: () -> Unit
 ) {
-    Box(modifier = Modifier.fillMaxWidth()) {
-        // Background card - clickable for selection
-        Card(
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(
+            containerColor = when {
+                isSelected -> MaterialTheme.colorScheme.primaryContainer
+                else -> MaterialTheme.colorScheme.surface
+            }
+        ),
+        border = if (isSelected) {
+            CardDefaults.outlinedCardBorder().copy(
+                width = 2.dp,
+                brush = androidx.compose.ui.graphics.SolidColor(MaterialTheme.colorScheme.primary)
+            )
+        } else null
+    ) {
+        Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .clickable { 
-                    Log.i(TAG, "Card clicked: $title")
-                    onSelect()
-                },
-            colors = CardDefaults.cardColors(
-                containerColor = when {
-                    isSelected -> MaterialTheme.colorScheme.primaryContainer
-                    else -> MaterialTheme.colorScheme.surface
-                }
-            ),
-            border = if (isSelected) {
-                CardDefaults.outlinedCardBorder().copy(
-                    width = 2.dp,
-                    brush = androidx.compose.ui.graphics.SolidColor(MaterialTheme.colorScheme.primary)
-                )
-            } else null
+                .padding(16.dp),
+            verticalAlignment = Alignment.CenterVertically
         ) {
-            Row(
+            // Icon - clickable for selection
+            Icon(
+                imageVector = icon,
+                contentDescription = null,
                 modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(16.dp),
-                verticalAlignment = Alignment.CenterVertically
+                    .size(40.dp)
+                    .clickable { 
+                        Log.i(TAG, "Card icon clicked: $title")
+                        onSelect()
+                    },
+                tint = if (isSelected) 
+                    MaterialTheme.colorScheme.primary 
+                else 
+                    MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            
+            Spacer(modifier = Modifier.width(16.dp))
+            
+            // Text content - clickable for selection
+            Column(
+                modifier = Modifier
+                    .weight(1f)
+                    .clickable { 
+                        Log.i(TAG, "Card text clicked: $title")
+                        onSelect()
+                    }
             ) {
-                // Icon
-                Icon(
-                    imageVector = icon,
-                    contentDescription = null,
-                    modifier = Modifier.size(40.dp),
-                    tint = if (isSelected) 
+                Text(
+                    text = title,
+                    style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.SemiBold
+                )
+                Text(
+                    text = subtitle,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Text(
+                    text = statusText,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = if (statusText.contains("✓")) 
                         MaterialTheme.colorScheme.primary 
                     else 
-                        MaterialTheme.colorScheme.onSurfaceVariant
+                        MaterialTheme.colorScheme.outline
                 )
-                
-                Spacer(modifier = Modifier.width(16.dp))
-                
-                // Text content
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text = title,
-                        style = MaterialTheme.typography.titleLarge,
-                        fontWeight = FontWeight.SemiBold
-                    )
-                    Text(
-                        text = subtitle,
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    Text(
-                        text = statusText,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = if (statusText.contains("✓")) 
-                            MaterialTheme.colorScheme.primary 
-                        else 
-                            MaterialTheme.colorScheme.outline
-                    )
-                }
-                
-                // Reserve space for button when not selected
-                if (!isSelected) {
-                    Spacer(modifier = Modifier.width(90.dp))
-                }
             }
-        }
-        
-        // Configure button - positioned on top of card (higher z-index)
-        if (isSelected) {
-            Button(
-                onClick = {
-                    Log.i(TAG, "Configure button clicked for $title")
-                    onConfigure()
-                },
-                modifier = Modifier
-                    .align(Alignment.CenterEnd)
-                    .padding(end = 16.dp)
-                    .height(40.dp),
-                contentPadding = PaddingValues(horizontal = 16.dp),
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = MaterialTheme.colorScheme.primary,
-                    contentColor = MaterialTheme.colorScheme.onPrimary
-                )
-            ) {
-                Text("Configure", style = MaterialTheme.typography.labelMedium)
+            
+            // Configure button inside Row (not overlay)
+            if (isSelected) {
+                Button(
+                    onClick = {
+                        Log.i(TAG, "Configure button clicked for $title")
+                        onConfigure()
+                    },
+                    modifier = Modifier.height(40.dp),
+                    contentPadding = PaddingValues(horizontal = 16.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.primary,
+                        contentColor = MaterialTheme.colorScheme.onPrimary
+                    )
+                ) {
+                    Text("Configure", style = MaterialTheme.typography.labelMedium)
+                }
+            } else {
+                // Reserve space when not selected
+                Spacer(modifier = Modifier.width(90.dp))
             }
         }
     }

@@ -98,7 +98,8 @@ fun OfflineModelPickerScreen(
     context: Context,
     currentModelId: String?,
     onModelSelected: (OfflineModelConfig) -> Unit,
-    onBack: () -> Unit
+    onBack: () -> Unit,
+    onBrowseHuggingFace: () -> Unit = {}
 ) {
     // Get full device specs
     val deviceSpecs = remember { DeviceInfo.getDeviceSpecs(context) }
@@ -179,6 +180,16 @@ fun OfflineModelPickerScreen(
                 navigationIcon = {
                     IconButton(onClick = onBack) {
                         Icon(Icons.Default.ArrowBack, contentDescription = "Back")
+                    }
+                },
+                actions = {
+                    // Hugging Face browse button
+                    IconButton(onClick = onBrowseHuggingFace) {
+                        Icon(
+                            imageVector = Icons.Default.Search,
+                            contentDescription = "Browse Hugging Face",
+                            tint = MaterialTheme.colorScheme.primary
+                        )
                     }
                 }
             )
@@ -682,26 +693,13 @@ private fun CustomModelSection(
             
             Spacer(modifier = Modifier.height(4.dp))
             
+            // Path input with folder icon on left
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                OutlinedTextField(
-                    value = customPath,
-                    onValueChange = { 
-                        customPath = it
-                        errorMessage = null
-                    },
-                    placeholder = { Text("/sdcard/Download/model.gguf") },
-                    isError = errorMessage != null,
-                    modifier = Modifier.weight(1f),
-                    singleLine = true
-                )
-                
-                Spacer(modifier = Modifier.width(8.dp))
-                
-                // Browse button
-                OutlinedButton(
+                // Folder icon button on left
+                IconButton(
                     onClick = {
                         // Check permission first
                         when {
@@ -716,10 +714,26 @@ private fun CustomModelSection(
                                 permissionLauncher.launch(android.Manifest.permission.READ_EXTERNAL_STORAGE)
                             }
                         }
-                    }
+                    },
+                    modifier = Modifier.size(48.dp)
                 ) {
-                    Text("Browse")
+                    Text("📁", fontSize = 20.sp)
                 }
+                
+                Spacer(modifier = Modifier.width(4.dp))
+                
+                // Path text field - takes remaining width
+                OutlinedTextField(
+                    value = customPath,
+                    onValueChange = { newPath ->
+                        customPath = newPath
+                        errorMessage = null
+                    },
+                    placeholder = { Text("/sdcard/Download/model.gguf") },
+                    isError = errorMessage != null,
+                    modifier = Modifier.weight(1f),
+                    singleLine = true
+                )
             }
             
             errorMessage?.let {

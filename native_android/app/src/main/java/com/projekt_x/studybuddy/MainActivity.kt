@@ -1152,6 +1152,11 @@ fun UnifiedChatView(
                             voicePipelineManager?.stopConversation()
                             onVoiceModeChange(false)
                         }
+                    },
+                    onInterrupt = {
+                        // CRITICAL FIX: Interrupt generation and restart for new question
+                        Log.d(TAG, "User interrupted - restarting for new question")
+                        voicePipelineManager?.restartForNewQuestion()
                     }
                 )
             }
@@ -1356,7 +1361,8 @@ fun VoiceModeOverlay(
     transcript: String,
     isRecording: Boolean,
     audioLevel: Float,
-    onStop: () -> Unit
+    onStop: () -> Unit,
+    onInterrupt: () -> Unit = {}
 ) {
     // Pulse animation for active states
     val pulseAnim = rememberInfiniteTransition(label = "pulse")
@@ -1413,14 +1419,35 @@ fun VoiceModeOverlay(
             .padding(bottom = 8.dp), // Small padding from bottom
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        // Status text first (above the orb)
+        // Status text first (above the orb) with X button for interrupting
         if (statusText.isNotBlank()) {
-            Text(
-                text = statusText,
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(bottom = 8.dp)
-            )
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Text(
+                    text = statusText,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                
+                // X button to interrupt during generation/speaking
+                if (pipelineState == VoicePipelineManager.Companion.PipelineState.TRANSCRIBING ||
+                    pipelineState == VoicePipelineManager.Companion.PipelineState.THINKING ||
+                    pipelineState == VoicePipelineManager.Companion.PipelineState.SPEAKING) {
+                    IconButton(
+                        onClick = onInterrupt,
+                        modifier = Modifier.size(24.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Close,
+                            contentDescription = "Interrupt",
+                            tint = MaterialTheme.colorScheme.error,
+                            modifier = Modifier.size(16.dp)
+                        )
+                    }
+                }
+            }
         }
         
         // Nilo orb container

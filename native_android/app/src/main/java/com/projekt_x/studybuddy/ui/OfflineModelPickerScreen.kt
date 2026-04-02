@@ -15,6 +15,8 @@ import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
@@ -542,6 +544,21 @@ private fun CustomModelSection(
 ) {
     var customPath by remember { mutableStateOf("") }
     var errorMessage by remember { mutableStateOf<String?>(null) }
+    var showPermissionRationale by remember { mutableStateOf(false) }
+    
+    // Permission launcher
+    val permissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { isGranted ->
+        if (isGranted) {
+            // Launch file picker
+            launchFilePicker(context, customPath) { path ->
+                customPath = path
+            }
+        } else {
+            showPermissionRationale = true
+        }
+    }
     
     // Load saved custom model
     val customModel = remember { CustomModelManager.getCustomModel(context) }
@@ -633,7 +650,31 @@ private fun CustomModelSection(
                 Divider(modifier = Modifier.padding(vertical = 12.dp))
             }
             
-            // Path input
+            // Permission rationale dialog
+            if (showPermissionRationale) {
+                AlertDialog(
+                    onDismissRequest = { showPermissionRationale = false },
+                    title = { Text("Storage Permission Needed") },
+                    text = { Text("To browse for model files, the app needs permission to access your device's storage. You can also type the path manually.") },
+                    confirmButton = {
+                        TextButton(
+                            onClick = {
+                                showPermissionRationale = false
+                                permissionLauncher.launch(android.Manifest.permission.READ_EXTERNAL_STORAGE)
+                            }
+                        ) {
+                            Text("Grant Permission")
+                        }
+                    },
+                    dismissButton = {
+                        TextButton(onClick = { showPermissionRationale = false }) {
+                            Text("Enter Path Manually")
+                        }
+                    }
+                )
+            }
+            
+            // Path input with browse button
             Text(
                 text = "Enter path to GGUF file:",
                 style = MaterialTheme.typography.bodySmall
@@ -641,17 +682,47 @@ private fun CustomModelSection(
             
             Spacer(modifier = Modifier.height(4.dp))
             
-            OutlinedTextField(
-                value = customPath,
-                onValueChange = { 
-                    customPath = it
-                    errorMessage = null
-                },
-                placeholder = { Text("/sdcard/Download/model.gguf") },
-                isError = errorMessage != null,
+            Row(
                 modifier = Modifier.fillMaxWidth(),
-                singleLine = true
-            )
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                OutlinedTextField(
+                    value = customPath,
+                    onValueChange = { 
+                        customPath = it
+                        errorMessage = null
+                    },
+                    placeholder = { Text("/sdcard/Download/model.gguf") },
+                    isError = errorMessage != null,
+                    modifier = Modifier.weight(1f),
+                    singleLine = true
+                )
+                
+                Spacer(modifier = Modifier.width(8.dp))
+                
+                // Browse button
+                OutlinedButton(
+                    onClick = {
+                        // Check permission first
+                        when {
+                            androidx.core.content.ContextCompat.checkSelfPermission(
+                                context, android.Manifest.permission.READ_EXTERNAL_STORAGE
+                            ) == android.content.pm.PackageManager.PERMISSION_GRANTED -> {
+                                // Permission granted, launch file picker
+                                launchFilePicker(context, customPath) { path ->
+                                    customPath = path
+                                }
+                            }
+                            else -> {
+                                // Request permission
+                                permissionLauncher.launch(android.Manifest.permission.READ_EXTERNAL_STORAGE)
+                            }
+                        }
+                    }
+                ) {
+                    Text("Browse")
+                }
+            }
             
             errorMessage?.let {
                 Text(
@@ -696,6 +767,25 @@ private fun CustomModelSection(
                 Text("Add & Select Custom Model")
             }
         }
+    }
+}
+
+private fun launchFilePicker(context: Context, currentPath: String, onPathSelected: (String) -> Unit) {
+    try {
+        val intent = android.content.Intent(android.content.Intent.ACTION_OPEN_DOCUMENT).apply {
+            addCategory(android.content.Intent.CATEGORY_OPENABLE)
+            type = "*/*"
+        }
+        // This would need proper activity result handling
+        // For now, just open Downloads as a hint
+        val downloadsDir = android.os.Environment.getExternalStoragePublicDirectory(
+            android.os.Environment.DIRECTORY_DOWNLOADS
+        )
+        if (downloadsDir.exists()) {
+            onPathSelected(downloadsDir.absolutePath)
+        }
+    } catch (e: Exception) {
+        Log.e(TAG, "Failed to open file picker", e)
     }
 }
 

@@ -10,9 +10,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.Settings
-import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -200,20 +199,9 @@ fun OfflineModelPickerScreen(
                     selectedModelId = model.id
                     onModelSelected(model)
                 },
-                onBrowseRequest = {
-                    // Launch file browser intent
-                    try {
-                        val intent = android.content.Intent(android.content.Intent.ACTION_OPEN_DOCUMENT).apply {
-                            addCategory(android.content.Intent.CATEGORY_OPENABLE)
-                            type = "*/*"
-                            putExtra(android.content.Intent.EXTRA_MIME_TYPES, arrayOf("application/octet-stream", "*/*"))
-                        }
-                        // Start activity for result - this requires activity context
-                        (context as? android.app.Activity)?.startActivityForResult(intent, 1001)
-                    } catch (e: Exception) {
-                        Log.e(TAG, "Failed to open file browser", e)
-                        snackbarMessage = "Cannot open file browser. Please enter path manually."
-                    }
+                onPathSelected = { path ->
+                    // Auto-populate path from file browser
+                    Log.i(TAG, "Selected file path: $path")
                 }
             )
             
@@ -447,9 +435,10 @@ private fun CustomModelSection(
     context: Context,
     selectedModelId: String?,
     onModelSelected: (OfflineModelConfig) -> Unit,
-    onBrowseRequest: () -> Unit = {}
+    onPathSelected: (String) -> Unit = {}
 ) {
     var showAddDialog by remember { mutableStateOf(false) }
+    var showFileBrowser by remember { mutableStateOf(false) }
     var customModelPath by remember { mutableStateOf("") }
     var customModelName by remember { mutableStateOf("") }
     var errorMessage by remember { mutableStateOf<String?>(null) }
@@ -510,7 +499,7 @@ private fun CustomModelSection(
                     IconButton(
                         onClick = { showAddDialog = true }
                     ) {
-                        Icon(Icons.Default.Settings, contentDescription = "Change")
+                        Icon(Icons.Default.Info, contentDescription = "Change")
                     }
                 } else {
                     // Show add button
@@ -569,12 +558,11 @@ private fun CustomModelSection(
                     // Browse button
                     OutlinedButton(
                         onClick = {
-                            onBrowseRequest()
-                            showAddDialog = false
+                            showFileBrowser = true
                         },
                         modifier = Modifier.fillMaxWidth()
                     ) {
-                        Icon(Icons.Default.Settings, contentDescription = null)
+                        Icon(Icons.Default.Info, contentDescription = null)
                         Spacer(modifier = Modifier.width(8.dp))
                         Text("Browse Files...")
                     }
@@ -676,6 +664,218 @@ private fun CustomModelSection(
             }
         )
     }
+    
+    // File Browser Dialog
+    if (showFileBrowser) {
+        FileBrowserDialog(
+            context = context,
+            onFileSelected = { selectedPath ->
+                customModelPath = selectedPath
+                customModelName = File(selectedPath).nameWithoutExtension
+                showFileBrowser = false
+                onPathSelected(selectedPath)
+            },
+            onDismiss = { showFileBrowser = false }
+        )
+    }
+}
+
+/**
+ * Simple file browser dialog that scans common directories for GGUF files
+ */
+@Composable
+private fun FileBrowserDialog(
+    context: Context,
+    onFileSelected: (String) -> Unit,
+    onDismiss: () -> Unit
+) {
+    var foundFiles by remember { mutableStateOf<List<File>>(emptyList()) }
+    var isScanning by remember { mutableStateOf(true) }
+    var currentPath by remember { mutableStateOf("/sdcard") }
+    var currentFiles by remember { mutableStateOf<List<File>>(emptyList()) }
+    
+    // Scan for GGUF files and populate current directory
+    LaunchedEffect(currentPath) {
+        isScanning = true
+        val directory = File(currentPath)
+        if (directory.exists() && directory.isDirectory) {
+            val files = directory.listFiles()?.filter { file ->
+                file.isDirectory || file.name.endsWith(".gguf", ignoreCase = true)
+            }?.sortedBy { it.name } ?: emptyList()
+            currentFiles = files
+        }
+        isScanning = false
+    }
+    
+    // Initial scan for all GGUF files
+    LaunchedEffect(Unit) {
+        val searchPaths = listOf(
+            "/sdcard/Download",
+            "/sdcard",
+            "/storage/emulated/0/Download",
+            "/storage/emulated/0"
+        )
+        
+        val allFiles = mutableListOf<File>()
+        searchPaths.forEach { path ->
+            try {
+                val dir = File(path)
+                if (dir.exists()) {
+                    dir.walkTopDown().maxDepth(2).filter { 
+                        it.isFile && it.name.endsWith(".gguf", ignoreCase = true)
+                    }.forEach { allFiles.add(it) }
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "Cannot access $path: ${e.message}")
+            }
+        }
+        foundFiles = allFiles
+    }
+    
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Select GGUF Model File") },
+        text = {
+            Column(
+                modifier = Modifier.height(400.dp)
+            ) {
+                // Current path display
+                Text(
+                    text = "Current: $currentPath",
+                    style = MaterialTheme.typography.labelSmall,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                
+                Spacer(modifier = Modifier.height(8.dp))
+                
+                // Navigation buttons
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    TextButton(
+                        onClick = {
+                            val parent = File(currentPath).parentFile
+                            if (parent != null && parent.exists()) {
+                                currentPath = parent.absolutePath
+                            }
+                        },
+                        enabled = currentPath != "/"
+                    ) {
+                        Text("← Up")
+                    }
+                    
+                    TextButton(
+                        onClick = { currentPath = "/sdcard/Download" }
+                    ) {
+                        Text("Downloads")
+                    }
+                    
+                    TextButton(
+                        onClick = { currentPath = "/sdcard" }
+                    ) {
+                        Text("SD Card")
+                    }
+                }
+                
+                Divider(modifier = Modifier.padding(vertical = 8.dp))
+                
+                // File list
+                if (isScanning) {
+                    Box(
+                        modifier = Modifier.fillMaxSize(),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        CircularProgressIndicator()
+                    }
+                } else if (currentFiles.isEmpty()) {
+                    Box(
+                        modifier = Modifier.fillMaxSize(),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = "No files found in this directory",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                        )
+                    }
+                } else {
+                    // Show found GGUF files at top
+                    if (foundFiles.isNotEmpty()) {
+                        Text(
+                            text = "Found ${foundFiles.size} GGUF file(s):",
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Spacer(modifier = Modifier.height(4.dp))
+                        
+                        foundFiles.take(5).forEach { file ->
+                            TextButton(
+                                onClick = { onFileSelected(file.absolutePath) },
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Text(
+                                    text = "✓ ${file.name} (${String.format("%.2f", file.length() / (1024f * 1024f * 1024f))}GB)",
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
+                        }
+                        
+                        if (foundFiles.size > 5) {
+                            Text(
+                                text = "...and ${foundFiles.size - 5} more",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                            )
+                        }
+                        
+                        Divider(modifier = Modifier.padding(vertical = 8.dp))
+                    }
+                    
+                    // Current directory contents
+                    Text(
+                        text = "Browse current folder:",
+                        style = MaterialTheme.typography.labelMedium
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
+                    
+                    androidx.compose.foundation.lazy.LazyColumn(
+                        modifier = Modifier.fillMaxSize()
+                    ) {
+                        items(currentFiles.size) { index ->
+                            val file = currentFiles[index]
+                            if (file.isDirectory) {
+                                TextButton(
+                                    onClick = { currentPath = file.absolutePath },
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Text("📁 ${file.name}/")
+                                }
+                            } else {
+                                TextButton(
+                                    onClick = { onFileSelected(file.absolutePath) },
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Text(
+                                        text = "📄 ${file.name} (${String.format("%.2f", file.length() / (1024f * 1024f * 1024f))}GB)",
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Cancel")
+            }
+        }
+    )
 }
 
 @Composable

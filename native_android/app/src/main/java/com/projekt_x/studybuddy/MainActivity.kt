@@ -888,6 +888,10 @@ fun UnifiedChatView(
     val listState = rememberLazyListState()
     val scope = rememberCoroutineScope()
     
+    // Chat mode online provider (for cancellation)
+    var chatOnlineProvider by remember { mutableStateOf<OnlineLLMProvider?>(null) }
+    var chatGenerationJob by remember { mutableStateOf<kotlinx.coroutines.Job?>(null) }
+    
     // Voice pipeline states
     var voicePipelineManager by remember { mutableStateOf<VoicePipelineManager?>(null) }
     var isVoiceReady by remember { mutableStateOf(false) }
@@ -1224,7 +1228,9 @@ fun UnifiedChatView(
                                         updateGenerating = { isGenerating = it },
                                         context = context,
                                         onlineConfig = onlineConfig,
-                                        memoryManager = memoryManager
+                                        memoryManager = memoryManager,
+                                        onProviderCreated = { chatOnlineProvider = it },
+                                        onJobCreated = { chatGenerationJob = it }
                                     )
                                     inputText = ""
                                     focusManager.clearFocus()
@@ -1248,6 +1254,16 @@ fun UnifiedChatView(
                             onClick = {
                                 // Stop generation in text mode
                                 if (isGenerating) {
+                                    // CRITICAL FIX: Cancel chat mode online provider if active
+                                    chatOnlineProvider?.let { provider ->
+                                        Log.d("MainActivity", "Cancelling chat online provider")
+                                        provider.cancelGeneration()
+                                        chatOnlineProvider = null
+                                    }
+                                    // Cancel the job
+                                    chatGenerationJob?.cancel()
+                                    chatGenerationJob = null
+                                    
                                     queue.cancel(messages.lastOrNull { it.isStreaming }?.id ?: "")
                                     bridge.stop()  // Also stop native generation
                                     isGenerating = false
@@ -1304,7 +1320,9 @@ fun UnifiedChatView(
                                         updateGenerating = { isGenerating = it },
                                         context = context,
                                         onlineConfig = onlineConfig,
-                                        memoryManager = memoryManager
+                                        memoryManager = memoryManager,
+                                        onProviderCreated = { chatOnlineProvider = it },
+                                        onJobCreated = { chatGenerationJob = it }
                                     )
                                     inputText = ""
                                     focusManager.clearFocus()
@@ -1463,7 +1481,9 @@ private fun sendTextMessage(
     updateGenerating: (Boolean) -> Unit,
     context: Context,
     onlineConfig: ProviderConfig?,
-    memoryManager: MemoryManager? = null  // BUG FIX 5: Added for shared system prompt
+    memoryManager: MemoryManager? = null,  // BUG FIX 5: Added for shared system prompt
+    onProviderCreated: (OnlineLLMProvider?) -> Unit = {},  // CRITICAL FIX: For cancellation
+    onJobCreated: (kotlinx.coroutines.Job?) -> Unit = {}   // CRITICAL FIX: For cancellation
 ) {
     // Add user message
     val userMessage = Message(content = text, isUser = true)
@@ -1486,9 +1506,11 @@ private fun sendTextMessage(
     
     if (onlineConfig != null) {
         // Online mode
-        GlobalScope.launch(Dispatchers.IO) {
+        val provider = OnlineLLMProvider(context, onlineConfig.provider, onlineConfig)
+        onProviderCreated(provider)  // Store reference for cancellation
+        
+        val job = GlobalScope.launch(Dispatchers.IO) {
             try {
-                val provider = OnlineLLMProvider(context, onlineConfig.provider, onlineConfig)
                 provider.initialize()
                 
                 // BUG FIX 5: Use shared system prompt builder
@@ -1520,6 +1542,16 @@ private fun sendTextMessage(
                         }
                     }
                 }
+            } catch (e: CancellationException) {
+                // User cancelled - don't show error, just clean up
+                Log.d("MainActivity", "Chat generation cancelled by user")
+                withContext(Dispatchers.Main) {
+                    updateMessages(currentMessages + userMessage + aiMessage.copy(
+                        isStreaming = false
+                    ))
+                    updateGenerating(false)
+                    metricsState.stopGeneration()
+                }
             } catch (e: Exception) {
                 withContext(Dispatchers.Main) {
                     updateMessages(currentMessages + userMessage + aiMessage.copy(
@@ -1530,6 +1562,14 @@ private fun sendTextMessage(
                     metricsState.stopGeneration()
                 }
             }
+        }
+        
+        onJobCreated(job)  // Store job reference for cancellation
+        
+        job.invokeOnCompletion {
+            // Clear provider reference when job completes (success, error, or cancellation)
+            onProviderCreated(null)
+            onJobCreated(null)
         }
     } else {
         // Offline mode

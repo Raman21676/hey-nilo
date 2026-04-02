@@ -1598,6 +1598,18 @@ class VoicePipelineManager(
                 if (finalBubbleText.isNotBlank()) {
                     awaitCompletionAndListen()
                 }
+            } catch (e: CancellationException) {
+                // CRITICAL FIX: Handle CancellationException separately - don't treat as error
+                // This happens when user presses X to interrupt. Let restartForNewQuestion() handle it.
+                Log.i(TAG, "LLM Provider job cancelled (user interrupted)")
+                // Emit partial response as complete so UI shows final state
+                if (fullResponseText.isNotBlank()) {
+                    finalBubbleText = removeImEndTokenOnly(fullResponseText.toString())
+                    withContext(Dispatchers.Main) {
+                        onResponseUpdate?.invoke(finalBubbleText, true)
+                    }
+                }
+                throw e  // Re-throw so parent coroutine knows it was cancelled
             } catch (e: Exception) {
                 Log.e(TAG, "LLM Provider processing failed", e)
                 transitionToState(PipelineState.ERROR)

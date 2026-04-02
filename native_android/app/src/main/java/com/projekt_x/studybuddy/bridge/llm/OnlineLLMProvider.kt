@@ -26,9 +26,9 @@ class OnlineLLMProvider(
     
     companion object {
         private const val TAG = "OnlineLLMProvider"
-        private const val CONNECT_TIMEOUT = 30L
-        private const val READ_TIMEOUT = 60L
-        private const val WRITE_TIMEOUT = 60L
+        private const val CONNECT_TIMEOUT = 15L
+        private const val READ_TIMEOUT = 30L
+        private const val WRITE_TIMEOUT = 30L
     }
     
     override val displayName: String = when (provider) {
@@ -42,6 +42,7 @@ class OnlineLLMProvider(
     
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private var currentGenerationJob: Job? = null
+    private var currentHttpCall: Call? = null
     
     private val okHttpClient = OkHttpClient.Builder()
         .connectTimeout(CONNECT_TIMEOUT, TimeUnit.SECONDS)
@@ -88,6 +89,16 @@ class OnlineLLMProvider(
      * Cancel any ongoing generation immediately
      */
     override fun cancelGeneration() {
+        Log.i(TAG, "Cancelling generation...")
+        // CRITICAL FIX: Cancel the HTTP call first to abort the connection immediately
+        currentHttpCall?.let { call ->
+            if (!call.isCanceled()) {
+                call.cancel()
+                Log.i(TAG, "HTTP call cancelled immediately")
+            }
+        }
+        currentHttpCall = null
+        // Then cancel the coroutine job
         currentGenerationJob?.cancel()
         currentGenerationJob = null
         Log.i(TAG, "Generation cancelled")
@@ -207,12 +218,19 @@ class OnlineLLMProvider(
             .build()
         
         val call = okHttpClient.newCall(httpRequest)
+        currentHttpCall = call
         
         val maskedKey = config.apiKey.take(15) + "..." + config.apiKey.takeLast(4)
         Log.d(TAG, "Making API request to: $url")
         Log.d(TAG, "API Key (masked): $maskedKey")
         Log.d(TAG, "Model: ${config.modelName}")
         Log.d(TAG, "Request body preview: ${jsonBody.take(200)}...")
+        
+        // CRITICAL FIX: Check for cancellation before executing
+        if (!kotlin.coroutines.coroutineContext.isActive) {
+            Log.d(TAG, "Job cancelled before HTTP execution")
+            return
+        }
         
         call.execute().use { response ->
             if (!response.isSuccessful) {
@@ -247,6 +265,11 @@ class OnlineLLMProvider(
             
             response.body?.source()?.use { source ->
                 while (!source.exhausted()) {
+                    // CRITICAL FIX: Check for coroutine cancellation regularly
+                    if (!kotlin.coroutines.coroutineContext.isActive) {
+                        Log.d(TAG, "Streaming cancelled - breaking loop")
+                        break
+                    }
                     val line = source.readUtf8Line() ?: continue
                     
                     if (line.startsWith("data: ")) {

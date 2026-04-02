@@ -199,6 +199,21 @@ fun OfflineModelPickerScreen(
                 onModelSelected = { model ->
                     selectedModelId = model.id
                     onModelSelected(model)
+                },
+                onBrowseRequest = {
+                    // Launch file browser intent
+                    try {
+                        val intent = android.content.Intent(android.content.Intent.ACTION_OPEN_DOCUMENT).apply {
+                            addCategory(android.content.Intent.CATEGORY_OPENABLE)
+                            type = "*/*"
+                            putExtra(android.content.Intent.EXTRA_MIME_TYPES, arrayOf("application/octet-stream", "*/*"))
+                        }
+                        // Start activity for result - this requires activity context
+                        (context as? android.app.Activity)?.startActivityForResult(intent, 1001)
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Failed to open file browser", e)
+                        snackbarMessage = "Cannot open file browser. Please enter path manually."
+                    }
                 }
             )
             
@@ -431,7 +446,8 @@ private fun LegendItem(color: androidx.compose.ui.graphics.Color, text: String) 
 private fun CustomModelSection(
     context: Context,
     selectedModelId: String?,
-    onModelSelected: (OfflineModelConfig) -> Unit
+    onModelSelected: (OfflineModelConfig) -> Unit,
+    onBrowseRequest: () -> Unit = {}
 ) {
     var showAddDialog by remember { mutableStateOf(false) }
     var customModelPath by remember { mutableStateOf("") }
@@ -545,9 +561,32 @@ private fun CustomModelSection(
             text = {
                 Column {
                     Text(
-                        text = "Enter the full path to your GGUF model file:",
+                        text = "Browse or enter the path to your GGUF model file:",
                         style = MaterialTheme.typography.bodyMedium
                     )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    
+                    // Browse button
+                    OutlinedButton(
+                        onClick = {
+                            onBrowseRequest()
+                            showAddDialog = false
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Icon(Icons.Default.Settings, contentDescription = null)
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("Browse Files...")
+                    }
+                    
+                    Spacer(modifier = Modifier.height(8.dp))
+                    
+                    Text(
+                        text = "OR enter path manually:",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                    )
+                    
                     Spacer(modifier = Modifier.height(8.dp))
                     OutlinedTextField(
                         value = customModelPath,
@@ -577,7 +616,7 @@ private fun CustomModelSection(
                     )
                     Spacer(modifier = Modifier.height(8.dp))
                     Text(
-                        text = "Example: /sdcard/Download/tinyllama-1.1b-chat-v1.0.Q4_0.gguf",
+                        text = "Common locations:\n• /sdcard/Download/\n• /storage/emulated/0/Download/",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
                     )

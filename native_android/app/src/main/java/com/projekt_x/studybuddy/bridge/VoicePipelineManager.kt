@@ -1320,20 +1320,19 @@ class VoicePipelineManager(
         
         // CRITICAL FIX: Briefly restart audio recorder to ensure clean audio pipeline
         // This reinitializes audio effects (AEC, NS, AGC) which can degrade over time
-        if (audioRecorder?.isRecording() == true) {
-            Log.i(TAG, "🎤 Restarting audio recorder for clean state...")
-            audioRecorder?.stopRecording()
-            scope.launch {
-                delay(100)  // Brief delay for hardware to settle
+        // CRITICAL: Always force restart - don't check if recording, just restart!
+        Log.i(TAG, "🎤 FORCE: Stopping and restarting audio recorder...")
+        audioRecorder?.stopRecording()
+        pipelineJob?.cancel()
+        pipelineJob = null
+        
+        // CRITICAL FIX: Start recording immediately with minimal delay
+        // Don't wait for async cleanup - force immediate restart
+        scope.launch {
+            delay(50)  // Minimal delay for hardware
+            if (isRunning.get()) {
                 startRecording()
-            }
-        } else if (isRunning.get()) {
-            // CRITICAL FIX: If recorder is not running but pipeline is active, start it!
-            // This fixes the issue where X button press leaves recorder stopped
-            Log.i(TAG, "🎤 Audio recorder not running - starting it now...")
-            scope.launch {
-                delay(50)
-                startRecording()
+                Log.i(TAG, "✅ Audio recorder restarted")
             }
         }
         

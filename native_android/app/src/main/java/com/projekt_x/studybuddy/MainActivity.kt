@@ -1060,16 +1060,24 @@ fun UnifiedChatView(
     LaunchedEffect(queue) {
         queue.responses.collect { response ->
             if (response.error != null) {
-                messages = messages + Message(
-                    content = "Error: ${response.error}",
-                    isUser = false
-                )
-                isGenerating = false
-                metricsState.stopGeneration()
-            } else if (response.isComplete) {
-                // Apply full filter (with truncation) when response is complete
+                // CRITICAL FIX: Update the specific message that failed, don't append a new one
                 messages = messages.map { msg ->
-                    if (msg.isStreaming) {
+                    if (msg.id == response.requestId) {
+                        msg.copy(content = "Error: ${response.error}", isStreaming = false)
+                    } else {
+                        msg
+                    }
+                }
+                // CRITICAL FIX: Only set isGenerating = false if no messages are still streaming.
+                // This prevents stale cancelled requests from hiding the stop button for new requests.
+                if (messages.none { it.isStreaming }) {
+                    isGenerating = false
+                    metricsState.stopGeneration()
+                }
+            } else if (response.isComplete) {
+                // CRITICAL FIX: Only mark the specific message for this request as complete
+                messages = messages.map { msg ->
+                    if (msg.id == response.requestId) {
                         msg.copy(
                             content = filterAiResponse(msg.content),
                             isStreaming = false
@@ -1078,14 +1086,18 @@ fun UnifiedChatView(
                         msg
                     }
                 }
-                isGenerating = false
-                metricsState.stopGeneration()
+                // CRITICAL FIX: Only clear isGenerating if nothing is still streaming
+                if (messages.none { it.isStreaming }) {
+                    isGenerating = false
+                    metricsState.stopGeneration()
+                }
             } else if (response.token != null) {
                 // Filter individual tokens during streaming to prevent <|im_end|> from showing
                 val filteredToken = filterStreamingTokenForDisplay(response.token)
                 if (filteredToken != null) {
+                    // CRITICAL FIX: Only append tokens to the specific message for this request
                     messages = messages.map { msg ->
-                        if (msg.isStreaming) {
+                        if (msg.id == response.requestId) {
                             msg.copy(content = msg.content + filteredToken)
                         } else {
                             msg
@@ -1239,6 +1251,15 @@ fun UnifiedChatView(
                                     queue.cancel(messages.lastOrNull { it.isStreaming }?.id ?: "")
                                     bridge.stop()  // Also stop native generation
                                     isGenerating = false
+                                    // CRITICAL FIX: Mark the interrupted response as complete
+                                    // so the cursor disappears and the next response doesn't overwrite it.
+                                    messages = messages.map { msg ->
+                                        if (!msg.isUser && msg.isStreaming) {
+                                            msg.copy(isStreaming = false)
+                                        } else {
+                                            msg
+                                        }
+                                    }
                                 }
                                 
                                 // In voice mode: stop everything and restart listening

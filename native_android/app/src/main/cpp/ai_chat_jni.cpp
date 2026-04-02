@@ -553,7 +553,7 @@ Java_com_projekt_1x_studybuddy_LlamaBridge_nativeGenerateStream(
     
     jclass callbackClass = env->GetObjectClass(callback);
     jmethodID onTokenMethod = env->GetMethodID(callbackClass, "onToken", "(Ljava/lang/String;)V");
-    jmethodID onCompleteMethod = env->GetMethodID(callbackClass, "onComplete", "()V");
+    jmethodID onCompleteMethod = env->GetMethodID(callbackClass, "onComplete", "(Ljava/lang/String;)V");
     
     if (!onTokenMethod || !onCompleteMethod) {
         LOGE("Callback methods not found");
@@ -581,20 +581,13 @@ Java_com_projekt_1x_studybuddy_LlamaBridge_nativeGenerateStream(
         LOGW("Prompt starts with: %.100s", promptStr.c_str());
     }
     
-    g_state->history.push_back({"user", promptStr});
+    // CRITICAL FIX: Don't add to history here - let Kotlin handle it.
+    // This prevents history bloat when user presses X (cancel).
+    // The Kotlin layer will add to history after successful completion.
     env->ReleaseStringUTFChars(userPrompt, prompt);
     
-    // Limit history to last 1 exchange (2 messages max) to keep prompt short
-    // TinyLlama 1.1B works best with short, focused prompts
-    const size_t MAX_HISTORY_PAIRS = 1;  // Keep only last 1 back-and-forth
-    const size_t MAX_HISTORY_SIZE = MAX_HISTORY_PAIRS * 2;  // user + assistant each
-    while (g_state->history.size() > MAX_HISTORY_SIZE) {
-        g_state->history.erase(g_state->history.begin());
-    }
-    
-    LOGI("History size: %zu messages (max %zu)", g_state->history.size(), MAX_HISTORY_SIZE);
-    
-    // Use Qwen2.5 chat template format
+    // Build prompt with ONLY current user message - no history
+    // This ensures fast prefill (20-30 tokens) instead of slow (70+ tokens)
     std::string formatted;
     
     // Add system prompt if set
@@ -602,14 +595,9 @@ Java_com_projekt_1x_studybuddy_LlamaBridge_nativeGenerateStream(
         formatted += "<|im_start|>system\n" + g_system_prompt + "<|im_end|>\n";
     }
     
-    // Add conversation history
-    for (const auto& msg : g_state->history) {
-        if (msg.first == "user") {
-            formatted += "<|im_start|>user\n" + msg.second + "<|im_end|>\n";
-        } else if (msg.first == "assistant") {
-            formatted += "<|im_start|>assistant\n" + msg.second + "<|im_end|>\n";
-        }
-    }
+    // Add ONLY the current user message - no conversation history
+    // This is the key to fast prefill times
+    formatted += "<|im_start|>user\n" + promptStr + "<|im_end|>\n";
     // Add assistant prefix for completion
     formatted += "<|im_start|>assistant\n";
     
@@ -620,10 +608,18 @@ Java_com_projekt_1x_studybuddy_LlamaBridge_nativeGenerateStream(
     g_state->current_pos = 0;
     g_state->batch.n_tokens = 0;
     
+    // CRITICAL FIX: Clear KV cache at start of each request to prevent context pollution
     llama_memory_t mem = llama_get_memory(g_state->ctx);
     if (mem) {
         llama_memory_clear(mem, true);
+        LOGI("KV cache cleared at start of generation");
+    } else {
+        LOGW("Could not get memory for clearing");
     }
+    
+    // CRITICAL FIX: Reset should_stop flag so new requests don't immediately cancel
+    g_state->should_stop = false;
+    LOGI("should_stop reset to false for new generation");
     
     std::vector<llama_token> tokens(g_state->n_ctx);
     int n_tokens = llama_tokenize(
@@ -648,6 +644,12 @@ Java_com_projekt_1x_studybuddy_LlamaBridge_nativeGenerateStream(
     auto decode_start = std::chrono::high_resolution_clock::now();
     
     for (int i = 0; i < n_tokens; i += g_state->n_batch) {
+        // CRITICAL FIX: Check for stop request during prefill
+        if (g_state->should_stop) {
+            LOGI("Prefill stopped early due to user cancellation");
+            break;
+        }
+        
         int cur_batch_size = std::min((int)tokens.size() - i, g_state->n_batch);
         
         g_state->batch.n_tokens = 0;
@@ -658,7 +660,9 @@ Java_com_projekt_1x_studybuddy_LlamaBridge_nativeGenerateStream(
         
         if (llama_decode(g_state->ctx, g_state->batch) != 0) {
             LOGE("llama_decode failed");
-            env->CallVoidMethod(callback, onCompleteMethod);
+            jstring jEmpty = env->NewStringUTF("");
+            env->CallVoidMethod(callback, onCompleteMethod, jEmpty);
+            env->DeleteLocalRef(jEmpty);
             return env->NewStringUTF("");
         }
     }
@@ -794,13 +798,24 @@ Java_com_projekt_1x_studybuddy_LlamaBridge_nativeGenerateStream(
     
     g_state->is_generating = false;
     
+    // CRITICAL FIX: Release the mutex immediately after generation ends.
+    // The mutex was acquired at the start of this function and would normally
+    // be held until the function returns. This caused delays because the next
+    // request had to wait for logging and cleanup to complete.
+    lock.unlock();
+    LOGI("Mutex released immediately after generation");
+    
     auto gen_end = std::chrono::high_resolution_clock::now();
     auto gen_ms = std::chrono::duration_cast<std::chrono::milliseconds>(gen_end - g_state->perf_stats.start_time).count();
     float tokens_per_sec = gen_ms > 0 ? (n_gen * 1000.0f / gen_ms) : 0.0f;
     
     LOGI("Generated %d tokens in %lld ms (%.2f tokens/sec)", n_gen, gen_ms, tokens_per_sec);
     
-    env->CallVoidMethod(callback, onCompleteMethod);
+    LOGI("Calling onComplete callback with %zu chars...", response.length());
+    jstring jResponse = env->NewStringUTF(response.c_str());
+    env->CallVoidMethod(callback, onCompleteMethod, jResponse);
+    env->DeleteLocalRef(jResponse);
+    LOGI("onComplete callback returned");
     
     // Sanitize final response
     std::string sanitizedResponse = sanitizeForJNI(response);
@@ -834,11 +849,23 @@ Java_com_projekt_1x_studybuddy_LlamaBridge_nativeAddToHistory(
     const char* roleStr = env->GetStringUTFChars(role, nullptr);
     const char* contentStr = env->GetStringUTFChars(content, nullptr);
     
-    g_state->history.push_back({std::string(roleStr), std::string(contentStr)});
-    LOGI("Added to history: %s - %.50s...", roleStr, contentStr);
+    std::string roleString(roleStr);
+    std::string contentString(contentStr);
+    
+    // CRITICAL FIX: Truncate long assistant responses in history to prevent
+    // prefill bloat on next request. Long responses make the next prefill slow.
+    const size_t MAX_HISTORY_CONTENT_LENGTH = 150;  // ~30-50 tokens worth of text
+    if (roleString == "assistant" && contentString.length() > MAX_HISTORY_CONTENT_LENGTH) {
+        contentString = contentString.substr(0, MAX_HISTORY_CONTENT_LENGTH) + "...";
+        LOGI("Truncated long assistant response for history: %zu -> %zu chars", 
+             env->GetStringLength(content), contentString.length());
+    }
+    
+    g_state->history.push_back({roleString, contentString});
+    LOGI("Added to history: %s - %.50s...", roleStr, contentString.c_str());
     
     // Apply same trimming logic as nativeGenerateStream
-    const size_t MAX_HISTORY_PAIRS = 3;
+    const size_t MAX_HISTORY_PAIRS = 1;  // Keep only 1 back-and-forth (was 3)
     const size_t MAX_HISTORY_SIZE = MAX_HISTORY_PAIRS * 2;
     while (g_state->history.size() > MAX_HISTORY_SIZE) {
         g_state->history.erase(g_state->history.begin());
@@ -854,6 +881,23 @@ Java_com_projekt_1x_studybuddy_LlamaBridge_stopGeneration(JNIEnv* env, jobject /
     if (g_state) {
         g_state->should_stop = true;
         LOGI("Generation stop requested");
+        
+        // CRITICAL FIX: Clear the KV cache to prevent context pollution
+        // When user presses X, the next request should start fresh
+        if (g_state->ctx) {
+            LOGI("Attempting to clear KV cache...");
+            llama_memory_t mem = llama_get_memory(g_state->ctx);
+            if (mem) {
+                llama_memory_clear(mem, true);
+                LOGI("KV cache cleared after stop");
+            } else {
+                LOGW("llama_get_memory returned null, KV cache NOT cleared");
+            }
+        } else {
+            LOGW("g_state->ctx is null, cannot clear KV cache");
+        }
+    } else {
+        LOGW("g_state is null, cannot stop generation");
     }
 }
 

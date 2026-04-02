@@ -2,13 +2,12 @@ package com.projekt_x.studybuddy
 
 import android.util.Log
 import com.projekt_x.studybuddy.bridge.LlamaBridge
-import com.projekt_x.studybuddy.bridge.StreamingCallback
 import kotlinx.coroutines.*
 import kotlinx.coroutines.channels.BufferOverflow
-import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.*
 import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.atomic.AtomicBoolean
+import kotlin.math.max
 
 /**
  * Request queue for inference with thermal management.
@@ -69,10 +68,13 @@ class InferenceQueue private constructor(
     private var currentJob: Job? = null
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     
+    // Track if current request was cancelled by user
+    private val wasCancelled = AtomicBoolean(false)
+    
     // Thermal management (reduced for better performance)
     private var consecutiveRequests = 0
     private var lastRequestTime = 0L
-    private val cooldownPeriodMs = 500L // 0.5 seconds cooldown (reduced from 2s)
+    private val cooldownPeriodMs = 500L // 0.5 seconds cooldown
     
     init {
         // Start queue processor
@@ -112,6 +114,7 @@ class InferenceQueue private constructor(
     fun cancel(requestId: String) {
         requestQueue.removeIf { it.id == requestId }
         if (currentJob != null && isProcessing.get()) {
+            wasCancelled.set(true)
             bridge.stop()
         }
     }
@@ -147,8 +150,12 @@ class InferenceQueue private constructor(
      */
     private suspend fun processQueue() {
         while (scope.isActive) {
+            // DEBUG
+            Log.d(TAG, "Queue poll - isPaused=${isPaused.get()}, isProcessing=${isProcessing.get()}, queueSize=${requestQueue.size}, consecutive=$consecutiveRequests")
+            
             // Check thermal state
             if (isPaused.get()) {
+                Log.d(TAG, "Queue paused, waiting...")
                 delay(1000)
                 continue
             }
@@ -168,18 +175,33 @@ class InferenceQueue private constructor(
                 continue
             }
             
+            Log.i(TAG, "Queue got request: ${request.id}, isProcessing=${isProcessing.get()}")
+            
             // Process request
             isProcessing.set(true)
+            wasCancelled.set(false)
             consecutiveRequests++
             
             try {
                 processRequest(request)
             } catch (e: Exception) {
-                Log.e(TAG, "Error processing request: ${request.id}", e)
-                _responses.tryEmit(Response(
-                    requestId = request.id,
-                    error = e.message ?: "Unknown error"
-                ))
+                // CRITICAL FIX: Check if this was a user cancellation vs a real error
+                if (e is CancellationException ||
+                    e.message?.contains("cancelled", ignoreCase = true) == true ||
+                    wasCancelled.get()) {
+                    Log.i(TAG, "Request ${request.id} was cancelled by user, preserving partial response")
+                    // For user cancellation, emit completion without error to preserve partial response
+                    _responses.tryEmit(Response(
+                        requestId = request.id,
+                        isComplete = true
+                    ))
+                } else {
+                    Log.e(TAG, "Error processing request: ${request.id}", e)
+                    _responses.tryEmit(Response(
+                        requestId = request.id,
+                        error = e.message ?: "Unknown error"
+                    ))
+                }
             } finally {
                 isProcessing.set(false)
                 lastRequestTime = System.currentTimeMillis()
@@ -195,76 +217,65 @@ class InferenceQueue private constructor(
     private suspend fun processRequest(request: Request) {
         Log.i(TAG, "Processing request: ${request.id}")
         
-        try {
-            // Set system prompt if provided
-            request.systemPrompt?.let { systemPrompt ->
-                bridge.setSystemPrompt(systemPrompt)
-            }
-            
-            // Collect full response for history
-            val responseBuilder = StringBuilder()
-            
-            // Stream tokens with hard timeout to prevent a stuck native generation from clogging the queue
-            val streamSuccess = withTimeoutOrNull(90000L) {
-                bridge.generateStream(request.prompt, request.maxTokens)
-                    .catch { e ->
-                        Log.e(TAG, "Error in generateStream for ${request.id}", e)
-                        _responses.emit(Response(
-                            requestId = request.id,
-                            error = e.message ?: "Stream error"
-                        ))
-                    }
-                    .collect { token ->
-                        responseBuilder.append(token)
-                        Log.d(TAG, "Emitting token for ${request.id}: '${token.take(20)}...'")
-                        _responses.emit(Response(
-                            requestId = request.id,
-                            token = token
-                        ))
-                    }
-                true
-            }
-
-            if (streamSuccess != true) {
-                Log.w(TAG, "Generation timed out for ${request.id} — native layer likely hung")
+        // Set system prompt if provided
+        request.systemPrompt?.let { systemPrompt ->
+            bridge.setSystemPrompt(systemPrompt)
+        }
+        
+        // Collect full response for history
+        val responseBuilder = StringBuilder()
+        
+        // CRITICAL FIX: Removed Kotlin withTimeout around JNI call.
+        // The C++ layer already has a 90-second hard timeout and maxTokens limit.
+        // Kotlin withTimeout was dangerous because it would throw in the coroutine
+        // while the native thread kept running, deadlocking the llama mutex.
+        bridge.generateStream(request.prompt, request.maxTokens)
+            .catch { e ->
+                // Don't emit error for cancellation - just rethrow to be handled by outer catch
+                if (e is CancellationException) {
+                    Log.i(TAG, "Stream cancelled for ${request.id}")
+                    throw e
+                }
+                Log.e(TAG, "Error in generateStream for ${request.id}", e)
                 _responses.emit(Response(
                     requestId = request.id,
-                    error = "Generation timed out"
+                    error = e.message ?: "Stream error"
                 ))
             }
-            
-            // Add assistant response to history
-            val fullResponse = responseBuilder.toString()
-            Log.i(TAG, "Full response collected: ${fullResponse.length} chars")
-            
-            // CRITICAL FIX: Filter special tokens before saving to history
-            val filteredResponse = fullResponse
-                .replace("<|im_end|>", "")
-                .replace("<|im_start|>", "")
-                .replace("</s>", "")
-                .trim()
-            
-            if (filteredResponse.isNotBlank()) {
-                bridge.addToHistory("assistant", filteredResponse)
-                Log.i(TAG, "Added assistant response to history: ${filteredResponse.take(50)}...")
-            } else {
-                Log.w(TAG, "Empty response for ${request.id} (original: '${fullResponse.take(30)}')")
+            .collect { token ->
+                responseBuilder.append(token)
+                Log.d(TAG, "Emitting token for ${request.id}: '${token.take(20)}...'")
+                _responses.emit(Response(
+                    requestId = request.id,
+                    token = token
+                ))
             }
-            
-            // Mark complete
-            _responses.emit(Response(
-                requestId = request.id,
-                isComplete = true
-            ))
-            
-            Log.i(TAG, "Request complete: ${request.id}")
-        } catch (e: Exception) {
-            Log.e(TAG, "Error processing request ${request.id}", e)
-            _responses.emit(Response(
-                requestId = request.id,
-                error = e.message ?: "Unknown error"
-            ))
+        
+        // Add assistant response to history
+        val fullResponse = responseBuilder.toString()
+        Log.i(TAG, "Full response collected: ${fullResponse.length} chars")
+        
+        // CRITICAL FIX: Filter special tokens before saving to history
+        val filteredResponse = fullResponse
+            .replace("<|im_end|>", "")
+            .replace("<|im_start|>", "")
+            .replace("</s>", "")
+            .trim()
+        
+        if (filteredResponse.isNotBlank()) {
+            bridge.addToHistory("assistant", filteredResponse)
+            Log.i(TAG, "Added assistant response to history: ${filteredResponse.take(50)}...")
+        } else {
+            Log.w(TAG, "Empty response for ${request.id} (original: '${fullResponse.take(30)}')")
         }
+        
+        // Mark complete
+        _responses.emit(Response(
+            requestId = request.id,
+            isComplete = true
+        ))
+        
+        Log.i(TAG, "Request complete: ${request.id}")
     }
     
     /**

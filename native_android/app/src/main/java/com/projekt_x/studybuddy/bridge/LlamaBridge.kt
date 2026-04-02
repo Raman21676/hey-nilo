@@ -20,7 +20,7 @@ import java.io.FileReader
  */
 interface GenerationCallback {
     fun onToken(token: String)
-    fun onComplete()
+    fun onComplete(fullText: String)
     fun onError(error: String)
 }
 
@@ -247,11 +247,14 @@ class LlamaBridge(private val context: Context) : BaseBridge() {
                         }
                     }
                     
-                    override fun onComplete() {
-                        // Called when generation is complete
+                    override fun onComplete(fullText: String) {
+                        Log.d("NILO_DEBUG", "nativeCallback.onComplete called (generate)")
+                        // Forward to outer callback
+                        callback.onComplete(fullResponse.toString())
                     }
                     
                     override fun onError(error: String) {
+                        Log.d("NILO_DEBUG", "nativeCallback.onError called (generate)")
                         errorOccurred = true
                         callback.onError(error)
                     }
@@ -259,10 +262,6 @@ class LlamaBridge(private val context: Context) : BaseBridge() {
                 
                 // Use default max tokens (256) for simple generate calls
                 nativeGenerateStream(prompt, 256, nativeCallback)
-                
-                if (isActive && !errorOccurred) {
-                    callback.onComplete(fullResponse.toString())
-                }
             } catch (e: Exception) {
                 if (isActive) {
                     callback.onError("Generation error: ${e.message}")
@@ -308,11 +307,14 @@ class LlamaBridge(private val context: Context) : BaseBridge() {
                         }
                     }
 
-                    override fun onComplete() {
-                        // Called when generation is complete
+                    override fun onComplete(fullText: String) {
+                        Log.d("NILO_DEBUG", "nativeCallback.onComplete called")
+                        // Forward to outer callback
+                        callback.onComplete(fullResponse.toString())
                     }
 
                     override fun onError(error: String) {
+                        Log.d("NILO_DEBUG", "nativeCallback.onError called")
                         errorOccurred = true
                         callback.onError(error)
                     }
@@ -698,9 +700,11 @@ class LlamaBridge(private val context: Context) : BaseBridge() {
                         channel.trySend(token)
                     }
                     override fun onComplete(fullText: String) {
+                        Log.d("NILO_DEBUG", "onComplete called, closing channel")
                         channel.close()
                     }
                     override fun onError(error: String) {
+                        Log.d("NILO_DEBUG", "onError called, closing channel")
                         channel.close()
                     }
                 })
@@ -711,7 +715,9 @@ class LlamaBridge(private val context: Context) : BaseBridge() {
                 for (token in channel) {
                     emit(token)
                 }
+                Log.d("NILO_DEBUG", "Channel collection completed normally")
             } finally {
+                Log.d("NILO_DEBUG", "Channel collection finished (finally)")
                 generationJob.cancel()
             }
         }

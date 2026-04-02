@@ -3,20 +3,18 @@ package com.projekt_x.studybuddy.ui
 import android.content.Context
 import android.util.Log
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.background
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Star
+import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
@@ -27,7 +25,6 @@ import com.projekt_x.studybuddy.model.OfflineModelConfig
 import com.projekt_x.studybuddy.model.MODELS_BY_RAM_TIER
 import com.projekt_x.studybuddy.model.RAMTier
 import com.projekt_x.studybuddy.model.CustomModelManager
-import com.projekt_x.studybuddy.model.ModelCategory
 import com.projekt_x.studybuddy.bridge.DeviceInfo
 import java.io.File
 
@@ -81,6 +78,10 @@ object DownloadManager {
     
     fun isDownloading(modelId: String): Boolean {
         return downloadStates[modelId]?.isDownloading == true
+    }
+    
+    fun registerCallback(modelId: String, callback: (Boolean, String?) -> Unit) {
+        completionCallbacks[modelId] = callback
     }
     
     fun getState(modelId: String): DownloadInfo? {
@@ -200,10 +201,6 @@ fun OfflineModelPickerScreen(
                 onModelSelected = { model ->
                     selectedModelId = model.id
                     onModelSelected(model)
-                },
-                onPathSelected = { path ->
-                    // Auto-populate path from file browser
-                    Log.i(TAG, "Selected file path: $path")
                 }
             )
             
@@ -275,19 +272,21 @@ fun OfflineModelPickerScreen(
                                 }
                             )
                         },
-                        onCancelDownload = {
-                            // TODO: Implement cancel
-                            DownloadManager.clear(it.id)
-                        },
                         onDelete = { model ->
-                            // Delete the downloaded file
-                            val modelsDir = File(context.getExternalFilesDir(null), "models")
-                            val modelFile = File(modelsDir, model.fileName)
-                            if (modelFile.exists()) {
-                                modelFile.delete()
+                            if (deleteModel(context, model)) {
                                 downloadedModels = downloadedModels - model.id
+                                if (selectedModelId == model.id) {
+                                    selectedModelId = null
+                                }
                                 snackbarMessage = "${model.displayName} deleted"
+                            } else {
+                                snackbarMessage = "Failed to delete ${model.displayName}"
                             }
+                        },
+                        onCancelDownload = { model ->
+                            cancelDownload(model.id)
+                            DownloadManager.clear(model.id)
+                            snackbarMessage = "Download cancelled"
                         }
                     )
                 }
@@ -297,58 +296,98 @@ fun OfflineModelPickerScreen(
         }
     }
     
-    // Incompatible model warning dialog
+    // Warning dialog for incompatible model download
     if (showIncompatibleWarning && pendingDownloadModel != null) {
+        val model = pendingDownloadModel!!
         AlertDialog(
             onDismissRequest = { 
                 showIncompatibleWarning = false
                 pendingDownloadModel = null
             },
-            title = { Text("⚠️ Model May Not Work") },
+            title = { 
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        imageVector = Icons.Default.Warning,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.error,
+                        modifier = Modifier.size(24.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Device Compatibility Warning")
+                }
+            },
             text = {
                 Column {
-                    Text("This model requires ${pendingDownloadModel!!.minRamGB}GB RAM, but your device only has ${String.format("%.1f", totalRamGB)}GB total.")
+                    Text(
+                        "${model.displayName} requires ${model.minRamGB}GB RAM, " +
+                        "but your device has ${String.format("%.1f", totalRamGB)}GB RAM."
+                    )
                     Spacer(modifier = Modifier.height(8.dp))
-                    Text("The app may crash or run very slowly.", fontWeight = FontWeight.Bold)
+                    Text(
+                        "Downloading this model may cause:",
+                        fontWeight = FontWeight.Medium
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text("• App crashes or freezes")
+                    Text("• Very slow performance")
+                    Text("• System instability")
                     Spacer(modifier = Modifier.height(8.dp))
-                    Text("Do you want to try anyway?")
+                    Text(
+                        "Download at your own risk?",
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.error
+                    )
                 }
             },
             confirmButton = {
-                TextButton(
+                Button(
                     onClick = {
-                        val model = pendingDownloadModel!!
                         showIncompatibleWarning = false
+                        val modelToDownload = pendingDownloadModel
                         pendingDownloadModel = null
-                        
-                        // Proceed with download
-                        DownloadManager.updateProgress(model.id, 0f, 0, 0)
-                        startDownload(
-                            context = context,
-                            model = model,
-                            onProgress = { progress, bytesDownloaded, totalBytes ->
-                                DownloadManager.updateProgress(model.id, progress, bytesDownloaded, totalBytes)
-                            },
-                            onComplete = { success, error ->
-                                if (success) {
-                                    DownloadManager.markComplete(model.id)
-                                    downloadedModels = downloadedModels + (model.id to true)
-                                    selectedModelId = model.id
-                                    snackbarMessage = "${model.displayName} downloaded!"
-                                } else {
-                                    DownloadManager.markError(model.id, error ?: "Unknown error")
-                                    snackbarMessage = "Download failed: $error"
+                        modelToDownload?.let { m ->
+                            // Start download for incompatible model
+                            DownloadManager.updateProgress(m.id, 0f, 0, 0)
+                            startDownload(
+                                context = context,
+                                model = m,
+                                onProgress = { progress, bytesDownloaded, totalBytes ->
+                                    DownloadManager.updateProgress(m.id, progress, bytesDownloaded, totalBytes)
+                                },
+                                onComplete = { success, error ->
+                                    if (success) {
+                                        DownloadManager.markComplete(m.id)
+                                        downloadedModels = downloadedModels + (m.id to true)
+                                        selectedModelId = m.id
+                                        snackbarMessage = "${m.displayName} downloaded!"
+                                        // CRITICAL FIX: Auto-load model after download completes
+                                        val modelsDir = java.io.File(context.getExternalFilesDir(null), "models")
+                                        val modelFile = java.io.File(modelsDir, m.fileName)
+                                        if (modelFile.exists()) {
+                                            Log.i(TAG, "Auto-loading model after download: ${m.displayName}")
+                                            onModelSelected(m)
+                                        }
+                                    } else {
+                                        DownloadManager.markError(m.id, error ?: "Unknown error")
+                                        snackbarMessage = "Download failed: $error"
+                                        android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+                                            DownloadManager.clear(m.id)
+                                        }, 5000)
+                                    }
                                 }
-                            }
-                        )
-                    }
+                            )
+                        }
+                    },
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.error
+                    )
                 ) {
                     Text("Download Anyway")
                 }
             },
             dismissButton = {
                 TextButton(
-                    onClick = { 
+                    onClick = {
                         showIncompatibleWarning = false
                         pendingDownloadModel = null
                     }
@@ -362,87 +401,146 @@ fun OfflineModelPickerScreen(
 
 @Composable
 private fun DeviceInfoHeader(deviceSpecs: DeviceInfo.DeviceSpecs, totalRamGB: Float) {
-    Card(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(16.dp),
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.primaryContainer
-        )
+    val freeRamGB = deviceSpecs.availableRamMB / 1024f
+    val totalRamFormatted = String.format("%.2f", totalRamGB)
+    val freeRamFormatted = String.format("%.2f", freeRamGB)
+    
+    Surface(
+        color = MaterialTheme.colorScheme.primaryContainer,
+        modifier = Modifier.fillMaxWidth()
     ) {
         Column(
-            modifier = Modifier.padding(16.dp)
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp)
         ) {
-            Text(
-                text = "Device Info",
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.Bold
-            )
-            Spacer(modifier = Modifier.height(4.dp))
-            Text(
-                text = "${String.format("%.2f", totalRamGB)}GB Total RAM",
-                style = MaterialTheme.typography.bodyLarge
-            )
-            Text(
-                text = "${String.format("%.2f", deviceSpecs.availableRamMB / 1024f)}GB Free RAM",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f)
-            )
+            // Title row
+            Row(
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Settings,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onPrimaryContainer
+                )
+                Spacer(modifier = Modifier.width(12.dp))
+                Text(
+                    text = "Your Device",
+                    style = MaterialTheme.typography.titleMedium,
+                    color = MaterialTheme.colorScheme.onPrimaryContainer,
+                    fontWeight = FontWeight.SemiBold
+                )
+            }
+            
             Spacer(modifier = Modifier.height(8.dp))
-            Text(
-                text = "Models are filtered by your device's TOTAL RAM",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.6f)
-            )
+            
+            // RAM stats
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(16.dp)
+            ) {
+                // Total RAM
+                Column {
+                    Text(
+                        text = "Total RAM",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f)
+                    )
+                    Text(
+                        text = "${totalRamFormatted}GB",
+                        style = MaterialTheme.typography.titleLarge,
+                        color = MaterialTheme.colorScheme.onPrimaryContainer,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+                
+                // Free RAM (shown for info, not used for recommendation)
+                Column {
+                    Text(
+                        text = "Free RAM",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f)
+                    )
+                    Text(
+                        text = "${freeRamFormatted}GB",
+                        style = MaterialTheme.typography.titleLarge,
+                        color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f),
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+            }
+            
+            Spacer(modifier = Modifier.height(8.dp))
+            
+            // Recommendation based on TOTAL RAM (device capability)
+            val recommendedTier = when {
+                totalRamGB < 2.5f -> DeviceInfo.ModelTier.ULTRA_LIGHT
+                totalRamGB < 3.5f -> DeviceInfo.ModelTier.LIGHT
+                totalRamGB < 5f -> DeviceInfo.ModelTier.MEDIUM
+                totalRamGB < 7f -> DeviceInfo.ModelTier.HIGH
+                totalRamGB < 10f -> DeviceInfo.ModelTier.VERY_HIGH
+                else -> DeviceInfo.ModelTier.ULTRA_HIGH
+            }
+            Surface(
+                color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.1f),
+                shape = MaterialTheme.shapes.small
+            ) {
+                Text(
+                    text = "💡 Recommended: ${recommendedTier.description}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onPrimaryContainer,
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
+                )
+            }
         }
     }
 }
 
 @Composable
 private fun LegendSection() {
-    Row(
+    Column(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 8.dp),
-        horizontalArrangement = Arrangement.SpaceEvenly
+            .padding(horizontal = 16.dp, vertical = 12.dp)
     ) {
-        LegendItem(color = MaterialTheme.colorScheme.primary, text = "Selected")
-        LegendItem(color = MaterialTheme.colorScheme.tertiary, text = "Compatible")
-        LegendItem(color = MaterialTheme.colorScheme.error, text = "Not Compatible")
-        LegendItem(color = MaterialTheme.colorScheme.primary, text = "★ Recommended")
-    }
-}
-
-@Composable
-private fun LegendItem(color: androidx.compose.ui.graphics.Color, text: String) {
-    Row(verticalAlignment = Alignment.CenterVertically) {
-        Box(
-            modifier = Modifier
-                .size(12.dp)
-                .background(color, shape = MaterialTheme.shapes.small)
-        )
-        Spacer(modifier = Modifier.width(4.dp))
         Text(
-            text = text,
-            style = MaterialTheme.typography.labelSmall
+            text = "Legend:",
+            style = MaterialTheme.typography.labelMedium,
+            fontWeight = FontWeight.Medium
         )
+        Spacer(modifier = Modifier.height(8.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Icon(
+                imageVector = Icons.Default.Star,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.size(16.dp)
+            )
+            Spacer(modifier = Modifier.width(8.dp))
+            Text("Recommended", style = MaterialTheme.typography.bodySmall)
+            Spacer(modifier = Modifier.width(16.dp))
+            Icon(
+                imageVector = Icons.Default.CheckCircle,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.size(16.dp)
+            )
+            Spacer(modifier = Modifier.width(8.dp))
+            Text("Downloaded", style = MaterialTheme.typography.bodySmall)
+        }
     }
 }
 
 /**
- * Custom Model Section - Allows users to add their own GGUF models
+ * Simple custom model section - just a text field for path entry
  */
 @Composable
 private fun CustomModelSection(
     context: Context,
     selectedModelId: String?,
-    onModelSelected: (OfflineModelConfig) -> Unit,
-    onPathSelected: (String) -> Unit = {}
+    onModelSelected: (OfflineModelConfig) -> Unit
 ) {
-    var showAddDialog by remember { mutableStateOf(false) }
-    var showFileBrowser by remember { mutableStateOf(false) }
-    var customModelPath by remember { mutableStateOf("") }
-    var customModelName by remember { mutableStateOf("") }
+    var customPath by remember { mutableStateOf("") }
     var errorMessage by remember { mutableStateOf<String?>(null) }
     
     // Load saved custom model
@@ -463,61 +561,16 @@ private fun CustomModelSection(
         Column(
             modifier = Modifier.padding(16.dp)
         ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text = "📝 Custom Model",
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Bold
-                    )
-                    Text(
-                        text = "Load your own GGUF model file",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
-                    )
-                }
-                
-                if (customModel != null && customModel.exists()) {
-                    // Show select button if custom model exists
-                    Button(
-                        onClick = {
-                            val model = customModel.toOfflineModelConfig()
-                            onModelSelected(model)
-                        },
-                        colors = if (isCustomModelSelected)
-                            ButtonDefaults.buttonColors(
-                                containerColor = MaterialTheme.colorScheme.primary
-                            )
-                        else
-                            ButtonDefaults.buttonColors()
-                    ) {
-                        Text(if (isCustomModelSelected) "Selected" else "Select")
-                    }
-                    Spacer(modifier = Modifier.width(8.dp))
-                    IconButton(
-                        onClick = { showAddDialog = true }
-                    ) {
-                        Icon(Icons.Default.Info, contentDescription = "Change")
-                    }
-                } else {
-                    // Show add button
-                    Button(
-                        onClick = { showAddDialog = true }
-                    ) {
-                        Icon(Icons.Default.Add, contentDescription = null)
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Text("Add Model")
-                    }
-                }
-            }
+            Text(
+                text = "📝 Custom Model",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold
+            )
             
-            // Show current custom model info
+            Spacer(modifier = Modifier.height(8.dp))
+            
+            // Show current custom model if exists
             if (customModel != null) {
-                Spacer(modifier = Modifier.height(8.dp))
                 if (customModel.exists()) {
                     Text(
                         text = "✓ ${customModel.name}",
@@ -525,482 +578,125 @@ private fun CustomModelSection(
                         color = MaterialTheme.colorScheme.primary
                     )
                     Text(
-                        text = "${String.format("%.2f", customModel.sizeGB)}GB at ${customModel.path}",
-                        style = MaterialTheme.typography.bodySmall,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
+                        text = "${String.format("%.2f", customModel.sizeGB())}GB",
+                        style = MaterialTheme.typography.bodySmall
                     )
+                    
+                    Spacer(modifier = Modifier.height(8.dp))
+                    
+                    Row {
+                        Button(
+                            onClick = {
+                                val config = OfflineModelConfig(
+                                    id = "custom_${System.currentTimeMillis()}",
+                                    displayName = customModel.name,
+                                    fileName = File(customModel.path).name,
+                                    sizeGB = customModel.sizeGB(),
+                                    minRamGB = 3,
+                                    description = "Custom model at: ${customModel.path}",
+                                    downloadUrl = "",
+                                    isRecommended = false
+                                )
+                                onModelSelected(config)
+                            },
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Text(if (isCustomModelSelected) "Selected" else "Select")
+                        }
+                        
+                        Spacer(modifier = Modifier.width(8.dp))
+                        
+                        OutlinedButton(
+                            onClick = {
+                                CustomModelManager.clearCustomModel(context)
+                                errorMessage = null
+                            }
+                        ) {
+                            Text("Clear")
+                        }
+                    }
                 } else {
                     Text(
-                        text = "✗ Model file not found: ${customModel.path}",
+                        text = "✗ Model not found: ${customModel.path}",
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.error
                     )
-                }
-            }
-        }
-    }
-    
-    // Add Custom Model Dialog
-    if (showAddDialog) {
-        AlertDialog(
-            onDismissRequest = { 
-                showAddDialog = false
-                errorMessage = null
-            },
-            title = { Text("Add Custom Model") },
-            text = {
-                Column {
-                    Text(
-                        text = "Browse or enter the path to your GGUF model file:",
-                        style = MaterialTheme.typography.bodyMedium
-                    )
                     Spacer(modifier = Modifier.height(8.dp))
-                    
-                    // Browse button
                     OutlinedButton(
-                        onClick = {
-                            showFileBrowser = true
-                        },
+                        onClick = { CustomModelManager.clearCustomModel(context) },
                         modifier = Modifier.fillMaxWidth()
                     ) {
-                        Icon(Icons.Default.Info, contentDescription = null)
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text("Browse Files...")
+                        Text("Clear Invalid Path")
                     }
-                    
-                    Spacer(modifier = Modifier.height(8.dp))
-                    
-                    Text(
-                        text = "OR enter path manually:",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
-                    )
-                    
-                    Spacer(modifier = Modifier.height(8.dp))
-                    OutlinedTextField(
-                        value = customModelPath,
-                        onValueChange = { 
-                            customModelPath = it
-                            errorMessage = null
-                        },
-                        label = { Text("Model Path") },
-                        placeholder = { Text("/sdcard/Download/my-model.gguf") },
-                        isError = errorMessage != null,
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                    errorMessage?.let {
-                        Text(
-                            text = it,
-                            color = MaterialTheme.colorScheme.error,
-                            style = MaterialTheme.typography.bodySmall
-                        )
-                    }
-                    Spacer(modifier = Modifier.height(8.dp))
-                    OutlinedTextField(
-                        value = customModelName,
-                        onValueChange = { customModelName = it },
-                        label = { Text("Model Name (optional)") },
-                        placeholder = { Text("My Custom Model") },
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                    Spacer(modifier = Modifier.height(8.dp))
-                    Text(
-                        text = "Common locations:\n• /sdcard/Download/\n• /storage/emulated/0/Download/",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
-                    )
-                }
-            },
-            confirmButton = {
-                TextButton(
-                    onClick = {
-                        // Validate path
-                        if (customModelPath.isBlank()) {
-                            errorMessage = "Please enter a model path"
-                            return@TextButton
-                        }
-                        
-                        if (!CustomModelManager.isValidModelFile(customModelPath)) {
-                            errorMessage = "Invalid GGUF file. Make sure:\n• File exists\n• Ends with .gguf\n• Is readable"
-                            return@TextButton
-                        }
-                        
-                        // Get file size
-                        val sizeGB = CustomModelManager.getFileSizeGB(customModelPath)
-                        if (sizeGB <= 0) {
-                            errorMessage = "Could not read file size"
-                            return@TextButton
-                        }
-                        
-                        // Save custom model
-                        val name = if (customModelName.isBlank()) {
-                            File(customModelPath).nameWithoutExtension
-                        } else {
-                            customModelName
-                        }
-                        
-                        CustomModelManager.saveCustomModel(context, customModelPath, name, sizeGB)
-                        
-                        // Auto-select the custom model
-                        val modelConfig = CustomModelManager.getCustomModel(context)?.toOfflineModelConfig()
-                        modelConfig?.let { onModelSelected(it) }
-                        
-                        showAddDialog = false
-                        customModelPath = ""
-                        customModelName = ""
-                    }
-                ) {
-                    Text("Add & Select")
-                }
-            },
-            dismissButton = {
-                TextButton(
-                    onClick = { 
-                        showAddDialog = false
-                        errorMessage = null
-                    }
-                ) {
-                    Text("Cancel")
-                }
-            }
-        )
-    }
-    
-    // File Browser Dialog
-    if (showFileBrowser) {
-        FileBrowserDialog(
-            context = context,
-            onFileSelected = { selectedPath ->
-                customModelPath = selectedPath
-                customModelName = File(selectedPath).nameWithoutExtension
-                showFileBrowser = false
-                onPathSelected(selectedPath)
-            },
-            onDismiss = { showFileBrowser = false }
-        )
-    }
-}
-
-/**
- * Simple file browser dialog that scans common directories for GGUF files
- */
-@Composable
-private fun FileBrowserDialog(
-    context: Context,
-    onFileSelected: (String) -> Unit,
-    onDismiss: () -> Unit
-) {
-    var foundFiles by remember { mutableStateOf<List<File>>(emptyList()) }
-    var isScanning by remember { mutableStateOf(true) }
-    var hasPermission by remember { mutableStateOf(false) }
-    var permissionDenied by remember { mutableStateOf(false) }
-    var currentPath by remember { mutableStateOf(android.os.Environment.getExternalStorageDirectory().absolutePath) }
-    var currentFiles by remember { mutableStateOf<List<File>>(emptyList()) }
-    
-    // Permission launcher
-    val permissionLauncher = rememberLauncherForActivityResult(
-        contract = androidx.activity.result.contract.ActivityResultContracts.RequestPermission()
-    ) { isGranted ->
-        hasPermission = isGranted
-        permissionDenied = !isGranted
-    }
-    
-    // Check for storage permission
-    fun checkPermission() {
-        hasPermission = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) {
-            // Android 11+ - check if we can access external storage
-            android.os.Environment.isExternalStorageManager()
-        } else {
-            // Android 10 and below - check READ_EXTERNAL_STORAGE
-            androidx.core.content.ContextCompat.checkSelfPermission(
-                context, android.Manifest.permission.READ_EXTERNAL_STORAGE
-            ) == android.content.pm.PackageManager.PERMISSION_GRANTED
-        }
-    }
-    
-    LaunchedEffect(Unit) {
-        checkPermission()
-    }
-    
-    // Scan for GGUF files and populate current directory
-    LaunchedEffect(currentPath, hasPermission) {
-        if (!hasPermission) return@LaunchedEffect
-        
-        isScanning = true
-        try {
-            val directory = File(currentPath)
-            if (directory.exists() && directory.isDirectory && directory.canRead()) {
-                val files = directory.listFiles()?.filter { file ->
-                    file.isDirectory || file.name.endsWith(".gguf", ignoreCase = true)
-                }?.sortedBy { !it.isDirectory }?.sortedBy { it.name } ?: emptyList()
-                currentFiles = files
-            } else {
-                currentFiles = emptyList()
-            }
-        } catch (e: SecurityException) {
-            Log.e(TAG, "Permission denied accessing $currentPath")
-            currentFiles = emptyList()
-        }
-        isScanning = false
-    }
-    
-    // Initial scan for all GGUF files
-    LaunchedEffect(hasPermission) {
-        if (!hasPermission) return@LaunchedEffect
-        
-        val searchPaths = listOf(
-            android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_DOWNLOADS).absolutePath,
-            android.os.Environment.getExternalStorageDirectory().absolutePath,
-            "/sdcard/Download",
-            "/sdcard",
-            "/storage/emulated/0/Download",
-            "/storage/emulated/0"
-        )
-        
-        // Use a map to deduplicate by canonical path
-        val uniqueFiles = mutableMapOf<String, File>()
-        searchPaths.distinct().forEach { path ->
-            try {
-                val dir = File(path)
-                if (dir.exists() && dir.canRead()) {
-                    dir.walkTopDown().maxDepth(2).filter { 
-                        it.isFile && it.name.endsWith(".gguf", ignoreCase = true)
-                    }.forEach { file ->
-                        try {
-                            // Use canonical path to identify unique files
-                            val canonicalPath = file.canonicalPath
-                            if (!uniqueFiles.containsKey(canonicalPath)) {
-                                uniqueFiles[canonicalPath] = file
-                            }
-                        } catch (e: Exception) {
-                            // Fallback to absolute path if canonical fails
-                            if (!uniqueFiles.containsKey(file.absolutePath)) {
-                                uniqueFiles[file.absolutePath] = file
-                            }
-                        }
-                    }
-                }
-            } catch (e: Exception) {
-                Log.w(TAG, "Cannot access $path: ${e.message}")
-            }
-        }
-        foundFiles = uniqueFiles.values.toList().sortedBy { it.name }
-        isScanning = false
-    }
-    
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("Select GGUF Model File") },
-        text = {
-            Column(
-                modifier = Modifier.height(400.dp)
-            ) {
-                // Permission request UI
-                if (!hasPermission) {
-                    Card(
-                        modifier = Modifier.fillMaxWidth(),
-                        colors = CardDefaults.cardColors(
-                            containerColor = MaterialTheme.colorScheme.errorContainer
-                        )
-                    ) {
-                        Column(
-                            modifier = Modifier.padding(16.dp),
-                            horizontalAlignment = Alignment.CenterHorizontally
-                        ) {
-                            Text(
-                                text = "📂 Storage Access Required",
-                                style = MaterialTheme.typography.titleSmall,
-                                color = MaterialTheme.colorScheme.onErrorContainer,
-                                fontWeight = FontWeight.Bold
-                            )
-                            Spacer(modifier = Modifier.height(8.dp))
-                            Text(
-                                text = "To browse for model files, the app needs permission to access your device's storage.",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onErrorContainer
-                            )
-                            Spacer(modifier = Modifier.height(12.dp))
-                            Button(
-                                onClick = {
-                                    permissionLauncher.launch(android.Manifest.permission.READ_EXTERNAL_STORAGE)
-                                },
-                                colors = ButtonDefaults.buttonColors(
-                                    containerColor = MaterialTheme.colorScheme.primary
-                                )
-                            ) {
-                                Text("Allow Access")
-                            }
-                            if (permissionDenied) {
-                                Spacer(modifier = Modifier.height(8.dp))
-                                Text(
-                                    text = "Permission denied. You can still enter the path manually.",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onErrorContainer.copy(alpha = 0.8f)
-                                )
-                            }
-                        }
-                    }
-                    Spacer(modifier = Modifier.height(8.dp))
                 }
                 
-                // Current path display
+                Divider(modifier = Modifier.padding(vertical = 12.dp))
+            }
+            
+            // Path input
+            Text(
+                text = "Enter path to GGUF file:",
+                style = MaterialTheme.typography.bodySmall
+            )
+            
+            Spacer(modifier = Modifier.height(4.dp))
+            
+            OutlinedTextField(
+                value = customPath,
+                onValueChange = { 
+                    customPath = it
+                    errorMessage = null
+                },
+                placeholder = { Text("/sdcard/Download/model.gguf") },
+                isError = errorMessage != null,
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true
+            )
+            
+            errorMessage?.let {
                 Text(
-                    text = "Current: $currentPath",
-                    style = MaterialTheme.typography.labelSmall,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
+                    text = it,
+                    color = MaterialTheme.colorScheme.error,
+                    style = MaterialTheme.typography.bodySmall
                 )
-                
-                Spacer(modifier = Modifier.height(8.dp))
-                
-                // Navigation buttons
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween
-                ) {
-                    TextButton(
-                        onClick = {
-                            val parent = File(currentPath).parentFile
-                            if (parent != null && parent.exists()) {
-                                currentPath = parent.absolutePath
-                            }
-                        },
-                        enabled = currentPath != "/"
-                    ) {
-                        Text("← Up")
-                    }
-                    
-                    TextButton(
-                        onClick = { 
-                            currentPath = android.os.Environment.getExternalStoragePublicDirectory(
-                                android.os.Environment.DIRECTORY_DOWNLOADS
-                            ).absolutePath
-                        }
-                    ) {
-                        Text("Downloads")
-                    }
-                    
-                    TextButton(
-                        onClick = { 
-                            currentPath = android.os.Environment.getExternalStorageDirectory().absolutePath
-                        }
-                    ) {
-                        Text("Storage")
-                    }
-                }
-                
-                Divider(modifier = Modifier.padding(vertical = 8.dp))
-                
-                // File list
-                if (isScanning) {
-                    Box(
-                        modifier = Modifier.fillMaxSize(),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        CircularProgressIndicator()
-                    }
-                } else if (currentFiles.isEmpty()) {
-                    Box(
-                        modifier = Modifier.fillMaxSize(),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Text(
-                            text = "No files found in this directory",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
-                        )
-                    }
-                } else {
-                    // Show found GGUF files at top
-                    if (foundFiles.isNotEmpty()) {
-                        Text(
-                            text = "Found ${foundFiles.size} GGUF file(s):",
-                            style = MaterialTheme.typography.labelMedium,
-                            fontWeight = FontWeight.Bold
-                        )
-                        Spacer(modifier = Modifier.height(4.dp))
-                        
-                        foundFiles.take(5).forEach { file ->
-                            val parentName = file.parentFile?.name ?: "Unknown"
-                            TextButton(
-                                onClick = { onFileSelected(file.absolutePath) },
-                                modifier = Modifier.fillMaxWidth()
-                            ) {
-                                Column(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    horizontalAlignment = Alignment.Start
-                                ) {
-                                    Text(
-                                        text = "✓ ${file.name}",
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis,
-                                        style = MaterialTheme.typography.bodySmall
-                                    )
-                                    Text(
-                                        text = "   in ${parentName} • ${String.format("%.2f", file.length() / (1024f * 1024f * 1024f))}GB",
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis,
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
-                                    )
-                                }
-                            }
-                        }
-                        
-                        if (foundFiles.size > 5) {
-                            Text(
-                                text = "...and ${foundFiles.size - 5} more",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
-                            )
-                        }
-                        
-                        Divider(modifier = Modifier.padding(vertical = 8.dp))
-                    }
-                    
-                    // Current directory contents
-                    Text(
-                        text = "Browse current folder:",
-                        style = MaterialTheme.typography.labelMedium
-                    )
-                    Spacer(modifier = Modifier.height(4.dp))
-                    
-                    androidx.compose.foundation.lazy.LazyColumn(
-                        modifier = Modifier.fillMaxSize()
-                    ) {
-                        items(currentFiles.size) { index ->
-                            val file = currentFiles[index]
-                            if (file.isDirectory) {
-                                TextButton(
-                                    onClick = { currentPath = file.absolutePath },
-                                    modifier = Modifier.fillMaxWidth()
-                                ) {
-                                    Text("📁 ${file.name}/")
-                                }
-                            } else {
-                                TextButton(
-                                    onClick = { onFileSelected(file.absolutePath) },
-                                    modifier = Modifier.fillMaxWidth()
-                                ) {
-                                    Text(
-                                        text = "📄 ${file.name} (${String.format("%.2f", file.length() / (1024f * 1024f * 1024f))}GB)",
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis
-                                    )
-                                }
-                            }
-                        }
-                    }
-                }
             }
-        },
-        confirmButton = {
-            TextButton(onClick = onDismiss) {
-                Text("Cancel")
+            
+            Spacer(modifier = Modifier.height(8.dp))
+            
+            Button(
+                onClick = {
+                    if (customPath.isBlank()) {
+                        errorMessage = "Please enter a path"
+                        return@Button
+                    }
+                    
+                    if (!CustomModelManager.isValidModelFile(customPath)) {
+                        errorMessage = "Invalid file. Must exist, be readable, and end with .gguf"
+                        return@Button
+                    }
+                    
+                    val name = File(customPath).nameWithoutExtension
+                    CustomModelManager.saveCustomModel(context, customPath, name)
+                    
+                    val config = OfflineModelConfig(
+                        id = "custom_${System.currentTimeMillis()}",
+                        displayName = name,
+                        fileName = File(customPath).name,
+                        sizeGB = CustomModelManager.getCustomModel(context)?.sizeGB() ?: 0f,
+                        minRamGB = 3,
+                        description = "Custom model at: $customPath",
+                        downloadUrl = "",
+                        isRecommended = false
+                    )
+                    onModelSelected(config)
+                    customPath = ""
+                },
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text("Add & Select Custom Model")
             }
         }
-    )
+    }
 }
 
 @Composable
@@ -1014,57 +710,62 @@ private fun RAMTierSection(
     downloadProgress: Map<String, DownloadState>,
     onModelSelected: (OfflineModelConfig) -> Unit,
     onDownload: (OfflineModelConfig, Boolean) -> Unit,
-    onCancelDownload: (OfflineModelConfig) -> Unit,
-    onDelete: (OfflineModelConfig) -> Unit
+    onDelete: (OfflineModelConfig) -> Unit,
+    onCancelDownload: (OfflineModelConfig) -> Unit
 ) {
-    val tierColor = when {
-        totalRamGB >= tier.minRamGB -> MaterialTheme.colorScheme.primary
-        else -> MaterialTheme.colorScheme.outline
-    }
+    // A tier is compatible if TOTAL RAM >= minimum RAM for this tier
+    val isTierCompatible = totalRamGB >= tier.minRamGB
     
     Column(
-        modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 8.dp)
     ) {
-        // Tier header
+        // Tier header - show the actual RAM requirement
         Surface(
-            color = tierColor.copy(alpha = 0.1f),
-            shape = MaterialTheme.shapes.medium
+            color = if (isTierCompatible) 
+                MaterialTheme.colorScheme.secondaryContainer 
+            else 
+                MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+            shape = MaterialTheme.shapes.small
         ) {
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(12.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
+                    .padding(horizontal = 12.dp, vertical = 8.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Column {
-                    Text(
-                        text = tier.label,
-                        style = MaterialTheme.typography.titleSmall,
-                        fontWeight = FontWeight.Bold,
-                        color = tierColor
-                    )
-                    Text(
-                        text = tier.description,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
-                    )
+                // Show appropriate label based on tier
+                val headerText = when (tier) {
+                    RAMTier.RAM_3GB -> "2-3GB RAM Required"
+                    RAMTier.RAM_4GB -> "4GB RAM Required"
+                    RAMTier.RAM_6GB -> "5-6GB RAM Required"
+                    RAMTier.RAM_8GB -> "8GB RAM Required"
+                    RAMTier.RAM_12GB_PLUS -> "10GB+ RAM Required"
                 }
                 
-                // Show compatibility indicator
-                if (totalRamGB >= tier.minRamGB) {
+                Text(
+                    text = headerText,
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.SemiBold,
+                    color = if (isTierCompatible) 
+                        MaterialTheme.colorScheme.onSecondaryContainer 
+                    else 
+                        MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                if (!isTierCompatible) {
+                    Spacer(modifier = Modifier.width(8.dp))
                     Icon(
-                        imageVector = Icons.Default.CheckCircle,
-                        contentDescription = "Compatible",
-                        tint = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.size(24.dp)
+                        imageVector = Icons.Default.Info,
+                        contentDescription = null,
+                        modifier = Modifier.size(16.dp),
+                        tint = MaterialTheme.colorScheme.outline
                     )
-                } else {
-                    Icon(
-                        imageVector = Icons.Default.Warning,
-                        contentDescription = "Not Compatible",
-                        tint = MaterialTheme.colorScheme.error,
-                        modifier = Modifier.size(24.dp)
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text(
+                        text = "(Not compatible)",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.outline
                     )
                 }
             }
@@ -1074,30 +775,279 @@ private fun RAMTierSection(
         
         // Models in this tier
         models.forEach { model ->
-            val isSelected = model.id == selectedModelId
-            val isDownloaded = downloadedModels[model.id] == true
-            val isCompatible = model.isCompatibleWith(totalRamGB.toInt())
             val downloadState = downloadProgress[model.id]
-            val isDownloading = downloadState?.isDownloading == true
-            
+            val isModelCompatible = model.isCompatibleWith(totalRamGB.toInt())
             ModelCard(
                 model = model,
-                isSelected = isSelected,
-                isDownloaded = isDownloaded,
-                isCompatible = isCompatible,
-                isDownloading = isDownloading,
+                totalRamGB = totalRamGB,
+                freeRamGB = freeRamGB,
+                isSelected = selectedModelId == model.id,
+                isDownloaded = downloadedModels[model.id] == true,
                 downloadState = downloadState,
                 onSelect = { onModelSelected(model) },
-                onDownload = { onDownload(model, isCompatible) },
-                onCancelDownload = { onCancelDownload(model) },
-                onDelete = { onDelete(model) }
+                onDownload = { compat -> onDownload(model, compat) },
+                onDelete = { onDelete(model) },
+                onCancelDownload = { onCancelDownload(model) }
             )
-            
-            Spacer(modifier = Modifier.height(8.dp))
         }
     }
 }
 
+@Composable
+private fun ModelCard(
+    model: OfflineModelConfig,
+    totalRamGB: Float,
+    freeRamGB: Float,
+    isSelected: Boolean,
+    isDownloaded: Boolean,
+    downloadState: DownloadState?,
+    onSelect: () -> Unit,
+    onDownload: (Boolean) -> Unit,
+    onDelete: () -> Unit,
+    onCancelDownload: () -> Unit
+) {
+    // Check compatibility based on TOTAL RAM (device capability)
+    val isCompatible = model.isCompatibleWith(totalRamGB.toInt())
+    val isDownloading = downloadState?.isDownloading == true
+    
+    Card(
+        onClick = { if (isCompatible) onSelect() },
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 4.dp),
+        enabled = isCompatible,
+        colors = CardDefaults.cardColors(
+            containerColor = when {
+                isSelected && isCompatible -> MaterialTheme.colorScheme.primaryContainer
+                !isCompatible -> MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f)
+                else -> MaterialTheme.colorScheme.surface
+            },
+            disabledContainerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f)
+        ),
+        border = if (isSelected && isCompatible) {
+            CardDefaults.outlinedCardBorder().copy(
+                width = 2.dp,
+                brush = androidx.compose.ui.graphics.SolidColor(MaterialTheme.colorScheme.primary)
+            )
+        } else null
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(12.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            // Selection indicator (radio button style)
+            if (isCompatible) {
+                RadioButton(
+                    selected = isSelected,
+                    onClick = onSelect,
+                    enabled = isDownloaded
+                )
+            } else {
+                // Incompatible - show disabled indicator
+                RadioButton(
+                    selected = false,
+                    onClick = {},
+                    enabled = false
+                )
+            }
+            
+            Spacer(modifier = Modifier.width(12.dp))
+            
+            // Model info
+            Column(
+                modifier = Modifier.weight(1f)
+            ) {
+                // Name row with badges
+                Row(
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = model.displayName,
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        color = if (isCompatible) 
+                            MaterialTheme.colorScheme.onSurface 
+                        else 
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    
+                    if (model.isRecommended && isCompatible) {
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Surface(
+                            color = MaterialTheme.colorScheme.primary,
+                            shape = MaterialTheme.shapes.small
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Star,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(12.dp),
+                                    tint = MaterialTheme.colorScheme.onPrimary
+                                )
+                                Spacer(modifier = Modifier.width(2.dp))
+                                Text(
+                                    text = "BEST",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onPrimary
+                                )
+                            }
+                        }
+                    }
+                }
+                
+                Spacer(modifier = Modifier.height(2.dp))
+                
+                // Description and size
+                Text(
+                    text = model.description,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                
+                Spacer(modifier = Modifier.height(2.dp))
+                
+                // RAM requirement badge - show actual min RAM
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        text = "${model.sizeGB}GB",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.outline
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Surface(
+                        color = if (isCompatible) 
+                            MaterialTheme.colorScheme.tertiaryContainer 
+                        else 
+                            MaterialTheme.colorScheme.errorContainer,
+                        shape = MaterialTheme.shapes.small
+                    ) {
+                        val ramText = when (model.minRamGB) {
+                            2 -> "✓ Needs 2GB RAM"
+                            3 -> "✓ Needs 3GB RAM"
+                            4 -> "✓ Needs 4GB RAM"
+                            5 -> "✓ Needs 5GB RAM"
+                            6 -> "✓ Needs 6GB RAM"
+                            8 -> "✓ Needs 8GB RAM"
+                            10 -> "✓ Needs 10GB RAM"
+                            else -> "✓ Needs ${model.minRamGB}GB RAM"
+                        }
+                        val incompatibleText = when (model.minRamGB) {
+                            2 -> "⚠ Needs 2GB RAM"
+                            3 -> "⚠ Needs 3GB RAM"
+                            4 -> "⚠ Needs 4GB RAM"
+                            5 -> "⚠ Needs 5GB RAM"
+                            6 -> "⚠ Needs 6GB RAM"
+                            8 -> "⚠ Needs 8GB RAM"
+                            10 -> "⚠ Needs 10GB RAM"
+                            else -> "⚠ Needs ${model.minRamGB}GB RAM"
+                        }
+                        Text(
+                            text = if (isCompatible) ramText else incompatibleText,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = if (isCompatible) 
+                                MaterialTheme.colorScheme.onTertiaryContainer 
+                            else 
+                                MaterialTheme.colorScheme.onErrorContainer,
+                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                        )
+                    }
+                }
+            }
+            
+            Spacer(modifier = Modifier.width(8.dp))
+            
+            // Action button area
+            Box(
+                modifier = Modifier.widthIn(min = 90.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                when {
+                    isDownloading -> {
+                        // Show progress with cancel button
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            Box(contentAlignment = Alignment.Center) {
+                                CircularProgressIndicator(
+                                    progress = { downloadState?.progress ?: 0f },
+                                    modifier = Modifier.size(40.dp),
+                                    strokeWidth = 3.dp
+                                )
+                                Text(
+                                    text = "${((downloadState?.progress ?: 0f) * 100).toInt()}%",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontSize = 10.sp
+                                )
+                            }
+                            Spacer(modifier = Modifier.height(4.dp))
+                            TextButton(
+                                onClick = onCancelDownload,
+                                modifier = Modifier.height(24.dp),
+                                contentPadding = PaddingValues(horizontal = 8.dp)
+                            ) {
+                                Text("Cancel", style = MaterialTheme.typography.labelSmall)
+                            }
+                        }
+                    }
+                    isDownloaded -> {
+                        // Downloaded - show checkmark and delete option
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            Icon(
+                                imageVector = Icons.Default.CheckCircle,
+                                contentDescription = "Downloaded",
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(28.dp)
+                            )
+                            Spacer(modifier = Modifier.height(4.dp))
+                            TextButton(
+                                onClick = onDelete,
+                                modifier = Modifier.height(24.dp),
+                                contentPadding = PaddingValues(horizontal = 8.dp)
+                            ) {
+                                Text("Delete", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.error)
+                            }
+                        }
+                    }
+                    else -> {
+                        // Not downloaded - show download button for ALL models (even incompatible)
+                        // Incompatible models will show a warning dialog before downloading
+                        FilledTonalButton(
+                            onClick = { onDownload(isCompatible) },
+                            modifier = Modifier.height(36.dp),
+                            contentPadding = PaddingValues(horizontal = 16.dp),
+                            colors = if (isCompatible) {
+                                ButtonDefaults.filledTonalButtonColors()
+                            } else {
+                                // Use error colors for incompatible models to indicate risk
+                                ButtonDefaults.filledTonalButtonColors(
+                                    containerColor = MaterialTheme.colorScheme.errorContainer,
+                                    contentColor = MaterialTheme.colorScheme.onErrorContainer
+                                )
+                            }
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Add,
+                                contentDescription = null,
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text("Get", style = MaterialTheme.typography.labelMedium)
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Download state for tracking progress
+ */
 private data class DownloadState(
     val isDownloading: Boolean = false,
     val progress: Float = 0f,
@@ -1105,258 +1055,185 @@ private data class DownloadState(
     val totalBytes: Long = 0
 )
 
-@Composable
-private fun ModelCard(
-    model: OfflineModelConfig,
-    isSelected: Boolean,
-    isDownloaded: Boolean,
-    isCompatible: Boolean,
-    isDownloading: Boolean,
-    downloadState: DownloadState?,
-    onSelect: () -> Unit,
-    onDownload: () -> Unit,
-    onCancelDownload: () -> Unit,
-    onDelete: () -> Unit
-) {
-    val cardColor = when {
-        isSelected -> MaterialTheme.colorScheme.primaryContainer
-        !isCompatible -> MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.3f)
-        else -> MaterialTheme.colorScheme.surface
-    }
-    
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(containerColor = cardColor),
-        onClick = {
-            if (isDownloaded && isCompatible) {
-                onSelect()
-            }
-        }
-    ) {
-        Column(
-            modifier = Modifier.padding(12.dp)
-        ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.Top
-            ) {
-                // Model info
-                Column(modifier = Modifier.weight(1f)) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text(
-                            text = model.displayName,
-                            style = MaterialTheme.typography.titleSmall,
-                            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal
-                        )
-                        if (model.isRecommended && isCompatible) {
-                            Spacer(modifier = Modifier.width(4.dp))
-                            Icon(
-                                imageVector = Icons.Default.Star,
-                                contentDescription = "Recommended",
-                                tint = MaterialTheme.colorScheme.primary,
-                                modifier = Modifier.size(16.dp)
-                            )
-                        }
-                    }
-                    
-                    Text(
-                        text = model.description,
-                        style = MaterialTheme.typography.bodySmall,
-                        maxLines = 2,
-                        overflow = TextOverflow.Ellipsis,
-                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
-                    )
-                    
-                    Spacer(modifier = Modifier.height(4.dp))
-                    
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text(
-                            text = "${model.sizeGB}GB",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.outline
-                        )
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Surface(
-                            color = if (isCompatible) 
-                                MaterialTheme.colorScheme.tertiaryContainer 
-                            else 
-                                MaterialTheme.colorScheme.errorContainer,
-                            shape = MaterialTheme.shapes.small
-                        ) {
-                            val ramText = when (model.minRamGB) {
-                                2 -> "✓ Needs 2GB RAM"
-                                3 -> "✓ Needs 3GB RAM"
-                                4 -> "✓ Needs 4GB RAM"
-                                5 -> "✓ Needs 5GB RAM"
-                                6 -> "✓ Needs 6GB RAM"
-                                8 -> "✓ Needs 8GB RAM"
-                                10 -> "✓ Needs 10GB RAM"
-                                else -> "✓ Needs ${model.minRamGB}GB RAM"
-                            }
-                            val incompatibleText = when (model.minRamGB) {
-                                2 -> "⚠ Needs 2GB RAM"
-                                3 -> "⚠ Needs 3GB RAM"
-                                4 -> "⚠ Needs 4GB RAM"
-                                5 -> "⚠ Needs 5GB RAM"
-                                6 -> "⚠ Needs 6GB RAM"
-                                8 -> "⚠ Needs 8GB RAM"
-                                10 -> "⚠ Needs 10GB RAM"
-                                else -> "⚠ Needs ${model.minRamGB}GB RAM"
-                            }
-                            Text(
-                                text = if (isCompatible) ramText else incompatibleText,
-                                style = MaterialTheme.typography.labelSmall,
-                                color = if (isCompatible) 
-                                    MaterialTheme.colorScheme.onTertiaryContainer 
-                                else 
-                                    MaterialTheme.colorScheme.onErrorContainer,
-                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-                            )
-                        }
-                    }
-                }
-                
-                Spacer(modifier = Modifier.width(8.dp))
-                
-                // Action button area
-                Box(
-                    modifier = Modifier.widthIn(min = 90.dp),
-                    contentAlignment = Alignment.Center
-                ) {
-                    when {
-                        isDownloading -> {
-                            // Show progress with cancel button
-                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                Box(contentAlignment = Alignment.Center) {
-                                    CircularProgressIndicator(
-                                        progress = { downloadState?.progress ?: 0f },
-                                        modifier = Modifier.size(40.dp),
-                                        strokeWidth = 3.dp
-                                    )
-                                    Text(
-                                        text = "${((downloadState?.progress ?: 0f) * 100).toInt()}%",
-                                        style = MaterialTheme.typography.labelSmall,
-                                        fontSize = 10.sp
-                                    )
-                                }
-                                Spacer(modifier = Modifier.height(4.dp))
-                                TextButton(
-                                    onClick = onCancelDownload,
-                                    modifier = Modifier.height(24.dp),
-                                    contentPadding = PaddingValues(horizontal = 8.dp)
-                                ) {
-                                    Text("Cancel", style = MaterialTheme.typography.labelSmall)
-                                }
-                            }
-                        }
-                        isDownloaded -> {
-                            // Downloaded - show checkmark and delete option
-                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                Icon(
-                                    imageVector = Icons.Default.CheckCircle,
-                                    contentDescription = "Downloaded",
-                                    tint = MaterialTheme.colorScheme.primary,
-                                    modifier = Modifier.size(28.dp)
-                                )
-                                Spacer(modifier = Modifier.height(4.dp))
-                                TextButton(
-                                    onClick = onDelete,
-                                    modifier = Modifier.height(24.dp),
-                                    contentPadding = PaddingValues(horizontal = 8.dp)
-                                ) {
-                                    Text("Delete", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.error)
-                                }
-                            }
-                        }
-                        else -> {
-                            // Not downloaded - show download button
-                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                Button(
-                                    onClick = onDownload,
-                                    enabled = true,
-                                    modifier = Modifier.height(32.dp),
-                                    contentPadding = PaddingValues(horizontal = 12.dp)
-                                ) {
-                                    Text("+ Get", style = MaterialTheme.typography.labelMedium)
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
+/**
+ * Active downloads map
+ */
+private val activeDownloads = mutableMapOf<String, okhttp3.Call>()
 
+/**
+ * Start actual file download with progress tracking
+ */
 private fun startDownload(
     context: Context,
     model: OfflineModelConfig,
     onProgress: (Float, Long, Long) -> Unit,
     onComplete: (Boolean, String?) -> Unit
 ) {
-    // Launch download in background thread
-    Thread {
-        try {
-            val url = model.downloadUrl
-            val fileName = model.fileName
+    Log.i(TAG, "Starting download for ${model.displayName} from ${model.downloadUrl}")
+    
+    // FIX: Create OkHttp client with redirect following enabled
+    val client = okhttp3.OkHttpClient.Builder()
+        .connectTimeout(60, java.util.concurrent.TimeUnit.SECONDS)
+        .readTimeout(120, java.util.concurrent.TimeUnit.SECONDS)
+        .writeTimeout(120, java.util.concurrent.TimeUnit.SECONDS)
+        .followRedirects(true)
+        .followSslRedirects(true)
+        .retryOnConnectionFailure(true)
+        .build()
+    
+    val request = okhttp3.Request.Builder()
+        .url(model.downloadUrl)
+        .header("User-Agent", "Hey-Nilo/1.0 (Android)")
+        .header("Accept", "*/*")
+        .build()
+    
+    val call = client.newCall(request)
+    activeDownloads[model.id] = call
+    
+    call.enqueue(object : okhttp3.Callback {
+        override fun onFailure(call: okhttp3.Call, e: java.io.IOException) {
+            val errorMsg = e.message ?: e.javaClass.simpleName
+            Log.e(TAG, "Download failed for ${model.displayName}: $errorMsg", e)
+            activeDownloads.remove(model.id)
+            android.os.Handler(android.os.Looper.getMainLooper()).post {
+                onComplete(false, "Network error: $errorMsg")
+            }
+        }
+        
+        override fun onResponse(call: okhttp3.Call, response: okhttp3.Response) {
+            // FIX: Log the response for debugging
+            Log.d(TAG, "Download response for ${model.displayName}: HTTP ${response.code}, " +
+                      "content-length: ${response.body?.contentLength()}, " +
+                      "redirected: ${response.isRedirect}, " +
+                      "final-url: ${response.request.url}")
             
-            // Create models directory
-            val modelsDir = File(context.getExternalFilesDir(null), "models")
-            if (!modelsDir.exists()) {
-                modelsDir.mkdirs()
+            if (!response.isSuccessful) {
+                val errorMsg = "HTTP ${response.code}: ${response.message}"
+                Log.e(TAG, "Download failed for ${model.displayName}: $errorMsg")
+                activeDownloads.remove(model.id)
+                android.os.Handler(android.os.Looper.getMainLooper()).post {
+                    onComplete(false, errorMsg)
+                }
+                return
             }
             
-            val outputFile = File(modelsDir, fileName)
+            // FIX: Check if body is null
+            if (response.body == null) {
+                Log.e(TAG, "Download failed for ${model.displayName}: Empty response body")
+                activeDownloads.remove(model.id)
+                android.os.Handler(android.os.Looper.getMainLooper()).post {
+                    onComplete(false, "Empty response from server")
+                }
+                return
+            }
             
-            // Download file
-            val connection = java.net.URL(url).openConnection()
-            connection.connect()
-            
-            val totalBytes = connection.contentLength.toLong()
-            val input = connection.getInputStream()
-            val output = java.io.FileOutputStream(outputFile)
-            
-            val buffer = ByteArray(8192)
-            var bytesRead: Int
-            var totalRead: Long = 0
-            var lastProgressUpdate = 0L
-            
-            while (input.read(buffer).also { bytesRead = it } != -1) {
-                output.write(buffer, 0, bytesRead)
-                totalRead += bytesRead
+            try {
+                val modelsDir = java.io.File(context.getExternalFilesDir(null), "models")
+                if (!modelsDir.exists() && !modelsDir.mkdirs()) {
+                    throw java.io.IOException("Failed to create models directory: ${modelsDir.absolutePath}")
+                }
                 
-                // Update progress every 100ms
-                val now = System.currentTimeMillis()
-                if (now - lastProgressUpdate > 100) {
-                    val progress = if (totalBytes > 0) totalRead.toFloat() / totalBytes else 0f
-                    onProgress(progress, totalRead, totalBytes)
-                    lastProgressUpdate = now
+                val outputFile = java.io.File(modelsDir, model.fileName)
+                val tempFile = java.io.File(modelsDir, "${model.fileName}.tmp")
+                
+                // Delete temp file if exists
+                if (tempFile.exists()) {
+                    tempFile.delete()
+                }
+                
+                val totalBytes = response.body!!.contentLength()
+                var downloadedBytes = 0L
+                
+                Log.i(TAG, "Downloading ${model.displayName}: ${formatBytes(totalBytes)} total")
+                
+                response.body!!.byteStream().use { input ->
+                    java.io.FileOutputStream(tempFile).use { output ->
+                        val buffer = ByteArray(8192)
+                        var bytesRead: Int
+                        var lastProgressUpdate = 0L
+                        
+                        while (input.read(buffer).also { bytesRead = it } != -1) {
+                            output.write(buffer, 0, bytesRead)
+                            downloadedBytes += bytesRead
+                            
+                            // Update progress every 200ms
+                            val now = System.currentTimeMillis()
+                            if (now - lastProgressUpdate > 200) {
+                                val progress = if (totalBytes > 0) {
+                                    downloadedBytes.toFloat() / totalBytes
+                                } else 0f
+                                
+                                android.os.Handler(android.os.Looper.getMainLooper()).post {
+                                    onProgress(progress, downloadedBytes, totalBytes)
+                                }
+                                lastProgressUpdate = now
+                            }
+                        }
+                        
+                        // Ensure all data is written
+                        output.flush()
+                    }
+                }
+                
+                // Verify download completed
+                if (totalBytes > 0 && tempFile.length() < totalBytes * 0.99) {
+                    throw java.io.IOException("Download incomplete: ${tempFile.length()}/$totalBytes bytes")
+                }
+                
+                // Rename temp file to final
+                if (!tempFile.renameTo(outputFile)) {
+                    throw java.io.IOException("Failed to move downloaded file to final location")
+                }
+                
+                activeDownloads.remove(model.id)
+                
+                android.os.Handler(android.os.Looper.getMainLooper()).post {
+                    onComplete(true, null)
+                }
+                
+                Log.i(TAG, "Download completed: ${model.displayName} -> ${outputFile.absolutePath} (${formatBytes(outputFile.length())})")
+                
+            } catch (e: Exception) {
+                val errorMsg = e.message ?: e.javaClass.simpleName
+                Log.e(TAG, "Error saving download for ${model.displayName}: $errorMsg", e)
+                activeDownloads.remove(model.id)
+                // Clean up temp file on error
+                try {
+                    val tempFile = java.io.File(context.getExternalFilesDir(null), "models/${model.fileName}.tmp")
+                    if (tempFile.exists()) tempFile.delete()
+                } catch (_: Exception) {}
+                android.os.Handler(android.os.Looper.getMainLooper()).post {
+                    onComplete(false, "Save error: $errorMsg")
                 }
             }
-            
-            output.flush()
-            output.close()
-            input.close()
-            
-            onComplete(true, null)
-            
-        } catch (e: Exception) {
-            Log.e(TAG, "Download failed", e)
-            onComplete(false, e.message)
         }
-    }.start()
+    })
 }
 
+/**
+ * Cancel active download
+ */
+private fun cancelDownload(modelId: String) {
+    activeDownloads[modelId]?.cancel()
+    activeDownloads.remove(modelId)
+}
+
+/**
+ * Delete downloaded model file
+ */
 private fun deleteModel(context: Context, model: OfflineModelConfig): Boolean {
     return try {
-        val modelsDir = File(context.getExternalFilesDir(null), "models")
-        val modelFile = File(modelsDir, model.fileName)
-        if (modelFile.exists()) {
-            modelFile.delete()
-        } else {
-            false
+        val modelsDir = java.io.File(context.getExternalFilesDir(null), "models")
+        val file = java.io.File(modelsDir, model.fileName)
+        if (file.exists()) {
+            file.delete()
         }
+        val tempFile = java.io.File(modelsDir, "${model.fileName}.tmp")
+        if (tempFile.exists()) {
+            tempFile.delete()
+        }
+        Log.i(TAG, "Deleted model: ${model.displayName}")
+        true
     } catch (e: Exception) {
         Log.e(TAG, "Error deleting model", e)
         false

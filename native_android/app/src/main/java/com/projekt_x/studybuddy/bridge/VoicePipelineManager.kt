@@ -1320,19 +1320,20 @@ class VoicePipelineManager(
         
         // CRITICAL FIX: Briefly restart audio recorder to ensure clean audio pipeline
         // This reinitializes audio effects (AEC, NS, AGC) which can degrade over time
-        // CRITICAL: Always force restart - don't check if recording, just restart!
-        Log.i(TAG, "🎤 FORCE: Stopping and restarting audio recorder...")
-        audioRecorder?.stopRecording()
-        pipelineJob?.cancel()
-        pipelineJob = null
-        
-        // CRITICAL FIX: Start recording immediately with minimal delay
-        // Don't wait for async cleanup - force immediate restart
-        scope.launch {
-            delay(50)  // Minimal delay for hardware
-            if (isRunning.get()) {
+        if (audioRecorder?.isRecording() == true) {
+            Log.i(TAG, "🎤 Restarting audio recorder for clean state...")
+            audioRecorder?.stopRecording()
+            scope.launch {
+                delay(100)  // Brief delay for hardware to settle
                 startRecording()
-                Log.i(TAG, "✅ Audio recorder restarted")
+            }
+        } else if (isRunning.get()) {
+            // CRITICAL FIX: If recorder is not running but pipeline is active, start it!
+            // This fixes the issue where X button press leaves recorder stopped
+            Log.i(TAG, "🎤 Audio recorder not running - starting it now...")
+            scope.launch {
+                delay(50)
+                startRecording()
             }
         }
         
@@ -1966,14 +1967,7 @@ class VoicePipelineManager(
             Log.w(TAG, "TTS job already active, skipping new start")
             return
         }
-        if (isStreamingTTSActive) {
-            Log.w(TAG, "TTS already active (isStreamingTTSActive=true), skipping")
-            return
-        }
-        if (kokoroTTS?.isReady != true) {
-            Log.e(TAG, "TTS not ready (isReady=${kokoroTTS?.isReady}), cannot start")
-            return
-        }
+        if (isStreamingTTSActive || kokoroTTS?.isReady != true) return
         
         isStreamingTTSActive = true
         Log.i(TAG, "Starting TTS (hybrid mode - streams sentences from finalBubbleText only)")

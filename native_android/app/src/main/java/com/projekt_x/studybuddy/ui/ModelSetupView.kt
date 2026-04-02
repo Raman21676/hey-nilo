@@ -284,16 +284,13 @@ fun ModelSetupView(
                         when (selectedMode) {
                             is AppMode.Offline -> {
                                 if (selectedOfflineModel != null) {
-                                    // CRITICAL FIX: Check if this is a custom model
+                                    // Check if this is a custom model
                                     val customModel = CustomModelManager.getCustomModel(context)
-                                    val isCustomModel = selectedOfflineModel!!.id.startsWith("custom_") ||
-                                        (customModel != null && customModel.path.endsWith(selectedOfflineModel!!.fileName))
+                                    val isCustomModel = selectedOfflineModel!!.id.startsWith("custom_")
                                     
                                     val modelPath = if (isCustomModel && customModel != null) {
-                                        // Use custom model path
                                         customModel.path
                                     } else {
-                                        // Use standard model path
                                         File(context.getExternalFilesDir(null), "models/${selectedOfflineModel!!.fileName}").absolutePath
                                     }
                                     

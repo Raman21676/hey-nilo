@@ -1327,11 +1327,12 @@ class VoicePipelineManager(
         
         // CRITICAL FIX: Briefly restart audio recorder to ensure clean audio pipeline
         // This reinitializes audio effects (AEC, NS, AGC) which can degrade over time
+        // FIX: Use 50ms delay (not 300ms) for immediate restart - prevents 5-second hearing delay
         if (audioRecorder?.isRecording() == true) {
             Log.i(TAG, "🎤 Restarting audio recorder for clean state...")
             audioRecorder?.stopRecording()
             scope.launch {
-                delay(300)  // CRITICAL: Longer delay for hardware to fully stabilize
+                delay(50)  // CRITICAL FIX: Short delay for immediate restart (was 300ms causing 5s delay)
                 startRecording()
             }
         } else if (isRunning.get()) {
@@ -1339,7 +1340,7 @@ class VoicePipelineManager(
             // This fixes the issue where X button press leaves recorder stopped
             Log.i(TAG, "🎤 Audio recorder not running - starting it now...")
             scope.launch {
-                delay(300)  // CRITICAL: Longer delay for hardware to fully stabilize
+                delay(50)  // CRITICAL FIX: Short delay for immediate restart (was 300ms causing 5s delay)
                 startRecording()
             }
         }
@@ -1566,9 +1567,11 @@ class VoicePipelineManager(
                                 }
                             }
                             
-                            // CRITICAL FIX: Start TTS as soon as we have a complete sentence (streaming TTS)
+                            // CRITICAL FIX: Update finalBubbleText during streaming so TTS always uses filtered text
                             val currentText = removeImEndTokenOnly(fullResponseText.toString())
+                            finalBubbleText = currentText  // Keep finalBubbleText in sync during streaming
                             
+                            // CRITICAL FIX: Start TTS as soon as we have a complete sentence (streaming TTS)
                             if (!isStreamingTTSActive && streamingTTSJob?.isActive != true && hasCompleteSentence(currentText)) {
                                 Log.i(TAG, "First sentence ready, starting TTS streaming")
                                 startStreamingTTS(currentText)
@@ -1779,6 +1782,7 @@ class VoicePipelineManager(
                                 
                                 // Update UI in real time
                                 val uiText = removeImEndTokenOnly(fullResponseText.toString())
+                                finalBubbleText = uiText  // CRITICAL FIX: Keep finalBubbleText in sync during streaming
                                 Log.d(TAG, "NILO_DEBUG: RAW: '${fullResponseText}'")
                                 Log.d(TAG, "NILO_DEBUG: UI TEXT: '$uiText'")
                                 Log.d(TAG, "NILO_DEBUG: onResponseUpdate LEGACY_STREAM: ${fullResponseText.length} chars")
@@ -2027,11 +2031,14 @@ class VoicePipelineManager(
             
             try {
                 while (isActive) {
-                    // CRITICAL FIX: During streaming, use fullResponseText which keeps growing
-                    // Only use finalBubbleText when LLM is complete
-                    val sourceText = if (isLLMResponseComplete && finalBubbleText.isNotBlank()) {
+                    // CRITICAL FIX: ALWAYS use finalBubbleText as single source of truth
+                    // This ensures TTS only speaks what the user sees in the bubble
+                    // finalBubbleText is set when LLM completes and is properly filtered
+                    val sourceText = if (finalBubbleText.isNotBlank()) {
                         finalBubbleText
                     } else {
+                        // Fallback: use filtered fullResponseText during streaming
+                        // but truncate at any role leakage to prevent speaking hidden content
                         removeImEndTokenOnly(fullResponseText.toString())
                     }
                     

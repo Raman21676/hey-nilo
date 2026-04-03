@@ -30,3 +30,17 @@ native_android/app/src/main/assets/models/
 # Large dependencies (submodules)
 llama.cpp/
 whisper.cpp/
+
+# Sensitive project documentation (keep local only)
+AGENTS.md
+FEATURES_PLAN.md
+MEMORY_IMPLEMENTATION_STATUS.md
+MODEL_EXPANSION_SUMMARY.md
+NEXT_SESSION_PROMPT.md
+PLANNING.md
+SECURITY_AUDIT.md
+SESSION_LOG_*.md
+SESSION_SUMMARY.md
+TODO.md
+logs/*.md
+native_android/DEVELOPMENT_LOG.md

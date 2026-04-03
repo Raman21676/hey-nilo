@@ -352,20 +352,22 @@ class VoicePipelineManager(
                 Log.i(TAG, "\n[Step 4/5] Initializing Kokoro TTS...")
                 try {
                     kokoroTTS = KokoroTTSBridge(context)
-                    // Wait for TTS initialization with timeout
-                    val ttsOk = withTimeoutOrNull(10000) {
-                        kokoroTTS!!.initialize()
+                    // CRITICAL FIX: Wait for TTS initialization with timeout and retry
+                    val ttsOk = withTimeoutOrNull(15000) {
+                        kokoroTTS!!.initialize(maxRetries = 2)
                     } ?: false
                     
                     if (ttsOk && kokoroTTS!!.isReady) {
-                        Log.i(TAG, "✓ Kokoro TTS initialized")
+                        Log.i(TAG, "✓ Kokoro TTS initialized successfully")
                     } else {
-                        Log.w(TAG, "✗ Kokoro TTS failed")
-                        kokoroTTS = null
+                        val error = kokoroTTS!!.getInitError() ?: "Unknown error"
+                        Log.e(TAG, "✗ Kokoro TTS failed: $error")
+                        // CRITICAL FIX: Don't set to null - keep it for potential retry
+                        // kokoroTTS = null
                     }
                 } catch (e: Exception) {
-                    Log.e(TAG, "Kokoro TTS exception: ${e.message}")
-                    kokoroTTS = null
+                    Log.e(TAG, "Kokoro TTS exception: ${e.message}", e)
+                    // kokoroTTS = null
                 }
                 
                 // Step 5: Initialize LLM Provider (if not already provided)
@@ -381,11 +383,14 @@ class VoicePipelineManager(
                 
                 isInitialized = pipelineValid
                 
+                // CRITICAL FIX: Log TTS error if initialization failed
+                val ttsError = kokoroTTS?.getInitError()
+                
                 Log.i(TAG, "\n" + "=".repeat(60))
                 Log.i(TAG, "PIPELINE STATUS:")
                 Log.i(TAG, "  VAD: ${if (vadBridge?.isAvailable() == true) "✓" else "✗"} ${vadBridge?.getName() ?: "None"}")
                 Log.i(TAG, "  STT: ${if (sttBridge?.isAvailable() == true) "✓" else "✗"} ${sttBridge?.getName() ?: "None"}")
-                Log.i(TAG, "  TTS: ${if (kokoroTTS?.isReady == true) "✓" else "✗"} Kokoro TTS")
+                Log.i(TAG, "  TTS: ${if (kokoroTTS?.isReady == true) "✓" else "✗"} Kokoro TTS ${if (ttsError != null) "(Error: $ttsError)" else ""}")
                 Log.i(TAG, "  Audio: ${if (audioRecorder != null) "✓" else "✗"}")
                 Log.i(TAG, "  LLM: ${if (llmProvider?.isAvailable() == true) "✓" else "✗"} ${llmProvider?.displayName ?: "Legacy"}")
                 Log.i(TAG, "  Memory: ${if (memoryManager != null) "✓" else "✗"} ${if (memoryManager != null) "Active" else "Disabled"}")
@@ -1962,6 +1967,8 @@ class VoicePipelineManager(
      * STREAMING TTS: Speaks text as it arrives, waits for both LLM and TTS to complete
      * Flow: Start with initial sentence → continue speaking new text → wait for LLM done → 
      *       speak remaining → wait for TTS done → transition to LISTENING
+     * 
+     * CRITICAL FIX: Added TTS re-initialization if not ready
      */
     private fun startStreamingTTS(initialText: String) {
         // CRITICAL FIX: Prevent multiple concurrent TTS jobs
@@ -1969,7 +1976,30 @@ class VoicePipelineManager(
             Log.w(TAG, "TTS job already active, skipping new start")
             return
         }
-        if (isStreamingTTSActive || kokoroTTS?.isReady != true) return
+        
+        // CRITICAL FIX: Check if TTS is ready, try to re-initialize if not
+        if (kokoroTTS?.isReady != true) {
+            Log.w(TAG, "TTS not ready when starting streaming, attempting re-initialization...")
+            scope.launch {
+                val reinitSuccess = kokoroTTS?.ensureReady() == true
+                if (reinitSuccess) {
+                    Log.i(TAG, "TTS re-initialized successfully, starting streaming")
+                    startStreamingTTS(initialText)
+                } else {
+                    Log.e(TAG, "TTS re-initialization failed, cannot speak response")
+                    // Show error to user
+                    withContext(Dispatchers.Main) {
+                        onError?.invoke("Text-to-Speech failed. Please check your device TTS settings.")
+                    }
+                }
+            }
+            return
+        }
+        
+        if (isStreamingTTSActive) {
+            Log.w(TAG, "TTS streaming already active, skipping")
+            return
+        }
         
         isStreamingTTSActive = true
         Log.i(TAG, "Starting TTS (hybrid mode - streams sentences from finalBubbleText only)")
@@ -2040,7 +2070,13 @@ class VoicePipelineManager(
                                 if (filtered.isNotBlank()) {
                                     val queueMode = if (isFirstChunk) TextToSpeech.QUEUE_FLUSH else TextToSpeech.QUEUE_ADD
                                     Log.i(TAG, "TTS final remainder: '$filtered'")
-                                    kokoroTTS?.speakQueued(filtered, queueMode)
+                                    
+                                    // CRITICAL FIX: Check TTS is still ready before speaking
+                                    if (kokoroTTS?.isReady == true) {
+                                        kokoroTTS?.speakQueued(filtered, queueMode)
+                                    } else {
+                                        Log.e(TAG, "TTS became unavailable before speaking final remainder")
+                                    }
                                 }
                             }
                         }
@@ -2048,10 +2084,16 @@ class VoicePipelineManager(
                         // CRITICAL FIX: Wait for actual TTS completion via utterance listener
                         // isSpeaking() API is broken on Samsung Tab A7 Lite
                         Log.i(TAG, "TTS: Waiting for actual completion via utterance listener...")
-                        withTimeoutOrNull(30000) {
-                            kokoroTTS?.waitForCompletion(30000)
+                        
+                        // CRITICAL FIX: Only wait if TTS is still ready
+                        if (kokoroTTS?.isReady == true) {
+                            withTimeoutOrNull(30000) {
+                                kokoroTTS?.waitForCompletion(30000)
+                            }
+                            Log.i(TAG, "NILO_DEBUG: TTS finished")
+                        } else {
+                            Log.w(TAG, "TTS not ready during completion wait, skipping")
                         }
-                        Log.i(TAG, "NILO_DEBUG: TTS finished")
                         break
                     }
                     

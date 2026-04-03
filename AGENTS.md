@@ -44,6 +44,39 @@ cat TODO.md | grep -A 5 "Project Status Overview"
 
 ## 🆕 Recent Changes (April 3, 2026)
 
+### TTS Permanent Fix - IMPLEMENTED ✅
+**Status**: Robust TTS with auto-retry and health monitoring  
+**Problem**: TTS frequently stopped working after app updates - initialization would fail silently
+
+#### Root Cause:
+1. **Silent initialization failure** - `kokoroTTS` was set to `null` on failure, hiding the error
+2. **No retry mechanism** - If TTS init failed once, it never recovered
+3. **No diagnostics** - No way to know why TTS failed
+
+#### Permanent Solution:
+```kotlin
+// KokoroTTSBridge.kt - Key changes:
+1. Added automatic retry (max 2 retries) with 500ms delay
+2. Added fallback locales: US → Default → UK
+3. Added TTS engine availability check before init
+4. Added detailed error tracking (getInitError())
+5. Added ensureReady() for on-demand re-initialization
+6. Added healthCheck() for periodic verification
+7. Added comprehensive logging at every step
+
+// VoicePipelineManager.kt - Key changes:
+1. TTS re-initialization attempt if not ready when starting streaming
+2. TTS error shown to user if re-init fails
+3. Detailed TTS status logging in pipeline initialization
+4. TTS marked as not ready if speak() returns ERROR
+```
+
+#### Files Modified:
+- `native_android/app/src/main/java/com/projekt_x/studybuddy/bridge/KokoroTTSBridge.kt`
+- `native_android/app/src/main/java/com/projekt_x/studybuddy/bridge/VoicePipelineManager.kt`
+
+---
+
 ### Hugging Face Model Download - IMPLEMENTED ✅
 **Status**: Feature complete and tested  
 **Commit**: `5a53e56` pushed to GitHub  

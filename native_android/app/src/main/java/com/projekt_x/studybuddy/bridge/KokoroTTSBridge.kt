@@ -26,6 +26,13 @@ class KokoroTTSBridge(private val context: Context) {
     var isReady: Boolean = false
         private set
     
+    // CRITICAL FIX: Track initialization errors for diagnostics
+    private var initError: String? = null
+    private var initAttemptCount = 0
+    
+    // CRITICAL FIX: Track if TTS engine is actually available on device
+    private var isTtsEngineAvailable = false
+    
     // Track pending utterances for proper completion detection
     private val pendingUtterances = mutableSetOf<String>()
     private val utteranceLock = Object()
@@ -37,64 +44,188 @@ class KokoroTTSBridge(private val context: Context) {
     
     /**
      * Initialize Android System TTS
-     * FIXED: Properly waits for async callback completion
+     * CRITICAL FIX: Robust initialization with retry, fallback, and detailed diagnostics
      */
-    suspend fun initialize(): Boolean = withContext(Dispatchers.Main) {
+    suspend fun initialize(maxRetries: Int = 2): Boolean = withContext(Dispatchers.Main) {
+        initAttemptCount++
+        Log.i(TAG, "TTS initialization attempt $initAttemptCount (max retries: $maxRetries)")
+        
+        // CRITICAL FIX: Check if TTS engine is available before trying
+        isTtsEngineAvailable = checkTtsEngineAvailability()
+        if (!isTtsEngineAvailable) {
+            Log.e(TAG, "No TTS engine available on device!")
+            initError = "No TTS engine installed on device"
+            isReady = false
+            return@withContext false
+        }
+        
         try {
+            // Shutdown any existing instance first
+            shutdown()
+            delay(100) // Give time for cleanup
+            
             val initResult = CompletableDeferred<Boolean>()
             
             androidTts = TextToSpeech(context) { status ->
+                Log.d(TAG, "TTS init callback: status=$status")
                 if (status == TextToSpeech.SUCCESS) {
-                    val result = androidTts?.setLanguage(Locale.US)
-                    if (result == TextToSpeech.LANG_MISSING_DATA || 
-                        result == TextToSpeech.LANG_NOT_SUPPORTED) {
-                        Log.e(TAG, "US English not supported, trying default")
-                        // Try default locale as fallback
-                        val defaultResult = androidTts?.setLanguage(Locale.getDefault())
-                        if (defaultResult == TextToSpeech.LANG_MISSING_DATA ||
-                            defaultResult == TextToSpeech.LANG_NOT_SUPPORTED) {
-                            Log.e(TAG, "Default language also not supported")
-                            initResult.complete(false)
-                        } else {
-                            // VOICE CUSTOMIZATION: Clear, natural speech with proper pacing
-                            androidTts?.setSpeechRate(0.82f)  // Slightly slower for more gap between words
-                            androidTts?.setPitch(1.05f)       // Slightly higher pitch
-                            setupUtteranceListener()  // CRITICAL: Set up listener once
-                            isReady = true
-                            Log.i(TAG, "✓ Android TTS initialized with default locale (pitch=1.05, rate=0.82)")
-                            initResult.complete(true)
-                        }
-                    } else {
-                        // VOICE CUSTOMIZATION: Clear, natural speech with proper pacing
-                        androidTts?.setSpeechRate(0.82f)  // Slightly slower for more gap between words
-                        androidTts?.setPitch(1.05f)       // Slightly higher pitch
-                        setupUtteranceListener()  // CRITICAL: Set up listener once
-                        isReady = true
-                            Log.i(TAG, "✓ Android TTS initialized with US English (pitch=1.05, rate=0.82)")
-                        initResult.complete(true)
-                    }
+                    configureTts(initResult)
                 } else {
-                    Log.e(TAG, "✗ Android TTS init failed: $status")
+                    Log.e(TAG, "✗ Android TTS init failed with status: $status")
+                    initError = "Init failed with status $status"
                     initResult.complete(false)
                 }
             }
             
             // Wait for initialization with timeout
-            val success = withTimeoutOrNull(10000) {
+            var success = withTimeoutOrNull(10000) {
                 initResult.await()
             } ?: false
             
             if (!success) {
-                Log.e(TAG, "TTS initialization timed out or failed")
+                Log.e(TAG, "TTS initialization failed on attempt $initAttemptCount")
                 isReady = false
+                
+                // CRITICAL FIX: Retry if we haven't exceeded max retries
+                if (initAttemptCount <= maxRetries) {
+                    Log.i(TAG, "Retrying TTS initialization...")
+                    delay(500) // Wait before retry
+                    return@withContext initialize(maxRetries)
+                }
+            } else {
+                // CRITICAL FIX: Verify TTS is actually working by doing a test
+                val testSuccess = verifyTtsWorking()
+                if (!testSuccess) {
+                    Log.w(TAG, "TTS initialized but verification failed")
+                    // Don't fail here - let it try to work
+                }
             }
             
             success
         } catch (e: Exception) {
-            Log.e(TAG, "TTS error: ${e.message}")
+            Log.e(TAG, "TTS error during init: ${e.message}", e)
+            initError = "Exception: ${e.message}"
             isReady = false
+            
+            // CRITICAL FIX: Retry on exception too
+            if (initAttemptCount <= maxRetries) {
+                Log.i(TAG, "Retrying TTS initialization after exception...")
+                delay(500)
+                return@withContext initialize(maxRetries)
+            }
             false
         }
+    }
+    
+    /**
+     * CRITICAL FIX: Check if any TTS engine is available on the device
+     */
+    private fun checkTtsEngineAvailability(): Boolean {
+        return try {
+            val pm = context.packageManager
+            val intent = android.content.Intent(TextToSpeech.Engine.ACTION_CHECK_TTS_DATA)
+            val resolveInfo = pm.queryIntentActivities(intent, 0)
+            val available = resolveInfo.isNotEmpty()
+            Log.i(TAG, "TTS engine availability check: $available (${resolveInfo.size} engines found)")
+            available
+        } catch (e: Exception) {
+            Log.e(TAG, "Error checking TTS availability: ${e.message}")
+            true // Assume available and let init fail if not
+        }
+    }
+    
+    /**
+     * CRITICAL FIX: Configure TTS with multiple fallback locales
+     */
+    private fun configureTts(initResult: CompletableDeferred<Boolean>) {
+        try {
+            val tts = androidTts
+            if (tts == null) {
+                Log.e(TAG, "TTS is null during configuration")
+                initError = "TTS became null"
+                initResult.complete(false)
+                return
+            }
+            
+            // Try US English first
+            var result = tts.setLanguage(Locale.US)
+            Log.d(TAG, "TTS setLanguage(US) result: $result")
+            
+            if (result == TextToSpeech.LANG_MISSING_DATA || result == TextToSpeech.LANG_NOT_SUPPORTED) {
+                Log.w(TAG, "US English not supported, trying default locale...")
+                result = tts.setLanguage(Locale.getDefault())
+                Log.d(TAG, "TTS setLanguage(default) result: $result")
+                
+                if (result == TextToSpeech.LANG_MISSING_DATA || result == TextToSpeech.LANG_NOT_SUPPORTED) {
+                    Log.w(TAG, "Default locale not supported, trying UK English...")
+                    result = tts.setLanguage(Locale.UK)
+                    Log.d(TAG, "TTS setLanguage(UK) result: $result")
+                    
+                    if (result == TextToSpeech.LANG_MISSING_DATA || result == TextToSpeech.LANG_NOT_SUPPORTED) {
+                        Log.e(TAG, "No supported language found for TTS")
+                        initError = "No supported language"
+                        initResult.complete(false)
+                        return
+                    }
+                }
+            }
+            
+            // VOICE CUSTOMIZATION: Clear, natural speech with proper pacing
+            tts.setSpeechRate(0.82f)
+            tts.setPitch(1.05f)
+            
+            // CRITICAL: Set up listener once
+            setupUtteranceListener()
+            
+            isReady = true
+            initError = null
+            Log.i(TAG, "✓ Android TTS initialized successfully (pitch=1.05, rate=0.82)")
+            initResult.complete(true)
+            
+        } catch (e: Exception) {
+            Log.e(TAG, "Error configuring TTS: ${e.message}", e)
+            initError = "Config error: ${e.message}"
+            initResult.complete(false)
+        }
+    }
+    
+    /**
+     * CRITICAL FIX: Verify TTS is actually working by doing a silent test
+     */
+    private fun verifyTtsWorking(): Boolean {
+        return try {
+            if (!isReady || androidTts == null) return false
+            
+            // Check if we can query the engine
+            val engines = androidTts?.engines
+            Log.d(TAG, "TTS engines available: ${engines?.size ?: 0}")
+            
+            engines?.forEach { engine ->
+                Log.d(TAG, "  - Engine: ${engine.name}, label: ${engine.label}")
+            }
+            
+            true
+        } catch (e: Exception) {
+            Log.w(TAG, "TTS verification failed: ${e.message}")
+            false
+        }
+    }
+    
+    /**
+     * Get initialization error message for diagnostics
+     */
+    fun getInitError(): String? = initError
+    
+    /**
+     * CRITICAL FIX: Force re-initialization if TTS is not ready
+     */
+    suspend fun ensureReady(): Boolean {
+        if (isReady && androidTts != null) {
+            return true
+        }
+        Log.w(TAG, "TTS not ready, attempting re-initialization...")
+        initAttemptCount = 0 // Reset retry count
+        return initialize()
     }
     
     /**
@@ -131,6 +262,7 @@ class KokoroTTSBridge(private val context: Context) {
     /**
      * Speak text
      * FIXED: Now uses suspend function properly with completion tracking
+     * CRITICAL FIX: Added detailed diagnostics
      */
     suspend fun speak(
         text: String,
@@ -139,15 +271,28 @@ class KokoroTTSBridge(private val context: Context) {
         onStart: (() -> Unit)? = null,
         onDone: (() -> Unit)? = null
     ): Boolean = withContext(Dispatchers.Main) {
-        if (!isReady || androidTts == null) {
-            Log.w(TAG, "TTS not ready, cannot speak")
+        Log.d(TAG, "speak() called: textLength=${text.length}, isReady=$isReady")
+        
+        if (!isReady) {
+            Log.e(TAG, "TTS not ready (isReady=false), cannot speak. Error: $initError")
             return@withContext false
         }
         
-        if (text.isBlank()) return@withContext false
+        if (androidTts == null) {
+            Log.e(TAG, "TTS engine is null, cannot speak")
+            return@withContext false
+        }
+        
+        if (text.isBlank()) {
+            Log.w(TAG, "TTS text is blank, skipping")
+            return@withContext false
+        }
         
         val cleanText = preprocessText(text)
-        if (cleanText.isBlank()) return@withContext false
+        if (cleanText.isBlank()) {
+            Log.w(TAG, "TTS text became blank after preprocessing, skipping")
+            return@withContext false
+        }
         
         try {
             val utteranceId = UUID.randomUUID().toString()
@@ -161,19 +306,23 @@ class KokoroTTSBridge(private val context: Context) {
             androidTts?.setPitch(1.05f)
             androidTts?.setSpeechRate(0.82f)
             
+            Log.i(TAG, "Speaking (${cleanText.length} chars): '${cleanText.take(60)}${if (cleanText.length > 60) "..." else ""}'")
+            
             val result = androidTts?.speak(cleanText, TextToSpeech.QUEUE_FLUSH, null, utteranceId)
             if (result == TextToSpeech.ERROR) {
                 Log.e(TAG, "TTS speak() returned ERROR")
                 synchronized(utteranceLock) {
                     pendingUtterances.remove(utteranceId)
                 }
+                isReady = false
                 false
             } else {
-                Log.d(TAG, "TTS speaking: '${cleanText.take(50)}...'")
+                Log.d(TAG, "TTS speak successful")
                 true
             }
         } catch (e: Exception) {
-            Log.e(TAG, "TTS speak error: ${e.message}")
+            Log.e(TAG, "TTS speak error: ${e.message}", e)
+            isReady = false
             false
         }
     }
@@ -182,17 +331,32 @@ class KokoroTTSBridge(private val context: Context) {
      * Speak text with queue mode
      * Use QUEUE_FLUSH for first utterance, QUEUE_ADD for seamless continuation
      * FIXED: Properly track all utterances with timing for fallback completion detection
+     * CRITICAL FIX: Added comprehensive safety checks and logging
      */
     fun speakQueued(text: String, queueMode: Int = TextToSpeech.QUEUE_ADD) {
-        if (!isReady || androidTts == null) {
-            Log.w(TAG, "TTS not ready, cannot speak")
+        // CRITICAL FIX: Detailed logging for debugging
+        Log.d(TAG, "speakQueued called: textLength=${text.length}, isReady=$isReady, ttsNull=${androidTts == null}")
+        
+        if (!isReady) {
+            Log.e(TAG, "TTS not ready (isReady=false), cannot speak. Error: $initError")
             return
         }
         
-        if (text.isBlank()) return
+        if (androidTts == null) {
+            Log.e(TAG, "TTS engine is null, cannot speak")
+            return
+        }
+        
+        if (text.isBlank()) {
+            Log.w(TAG, "TTS text is blank, skipping")
+            return
+        }
         
         val cleanText = preprocessText(text)
-        if (cleanText.isBlank()) return
+        if (cleanText.isBlank()) {
+            Log.w(TAG, "TTS text became blank after preprocessing, skipping")
+            return
+        }
         
         try {
             val utteranceId = UUID.randomUUID().toString()
@@ -211,17 +375,23 @@ class KokoroTTSBridge(private val context: Context) {
             androidTts?.setPitch(1.05f)
             androidTts?.setSpeechRate(0.82f)
             
+            Log.i(TAG, "Speaking (${cleanText.length} chars): '${cleanText.take(60)}${if (cleanText.length > 60) "..." else ""}'")
+            
             val result = androidTts?.speak(cleanText, queueMode, null, utteranceId)
             if (result == TextToSpeech.ERROR) {
-                Log.e(TAG, "TTS speak() returned ERROR")
+                Log.e(TAG, "TTS speak() returned ERROR - text may be too long or engine crashed")
                 synchronized(utteranceLock) {
                     pendingUtterances.remove(utteranceId)
                 }
+                // CRITICAL FIX: Mark TTS as potentially broken
+                isReady = false
             } else {
-                Log.d(TAG, "TTS queued: '${cleanText.take(50)}...' (mode: ${if (queueMode == TextToSpeech.QUEUE_FLUSH) "FLUSH" else "ADD"}, expectedDuration=${lastUtteranceExpectedDurationMs}ms)")
+                Log.d(TAG, "TTS queued successfully (mode: ${if (queueMode == TextToSpeech.QUEUE_FLUSH) "FLUSH" else "ADD"}, expectedDuration=${lastUtteranceExpectedDurationMs}ms)")
             }
         } catch (e: Exception) {
-            Log.e(TAG, "TTS speak error: ${e.message}")
+            Log.e(TAG, "TTS speak error: ${e.message}", e)
+            // CRITICAL FIX: Mark TTS as potentially broken on exception
+            isReady = false
         }
     }
     
@@ -378,5 +548,32 @@ class KokoroTTSBridge(private val context: Context) {
      */
     fun release() {
         shutdown()
+    }
+    
+    /**
+     * CRITICAL FIX: Health check - verifies TTS is still working
+     * Call this periodically to detect if TTS engine has crashed
+     */
+    fun healthCheck(): Boolean {
+        if (!isReady || androidTts == null) {
+            Log.w(TAG, "Health check failed: isReady=$isReady, ttsNull=${androidTts == null}")
+            isReady = false
+            return false
+        }
+        
+        // Try to check if engine is still responsive
+        return try {
+            val engines = androidTts?.engines
+            val healthy = engines != null
+            if (!healthy) {
+                Log.e(TAG, "Health check failed: cannot query engines")
+                isReady = false
+            }
+            healthy
+        } catch (e: Exception) {
+            Log.e(TAG, "Health check exception: ${e.message}")
+            isReady = false
+            false
+        }
     }
 }

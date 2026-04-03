@@ -591,23 +591,28 @@ class VoicePipelineManager(
         // CRITICAL FIX: Use helper to respect TTS cooldown
         transitionToListeningImmediate()
         
-        // Start recording
-        startRecording()
+        // Start recording in a coroutine since startRecording is now suspend
+        scope.launch {
+            startRecording()
+        }
     }
     
     /**
      * Start audio recording with VAD processing
      * Extracted to allow restarting after TTS playback
+     * 
+     * CRITICAL FIX: Changed Thread.sleep to non-blocking delay to prevent UI delays
      */
-    private fun startRecording() {
+    private suspend fun startRecording() {
         if (audioRecorder?.isRecording() == true) {
             Log.w(TAG, "Recording already active, stopping first then restarting")
             audioRecorder?.stopRecording()
             // Cancel existing job
             pipelineJob?.cancel()
             pipelineJob = null
-            // CRITICAL: Wait for hardware to release
-            Thread.sleep(150)
+            // CRITICAL FIX: Use non-blocking delay instead of Thread.sleep
+            // Thread.sleep was blocking the thread and causing 5-second delays!
+            delay(50)  // Reduced from 150ms to 50ms
         }
         
         // Ensure we're in the LISTENING state
@@ -616,6 +621,7 @@ class VoicePipelineManager(
             transitionToListeningImmediate()
         }
         
+        // CRITICAL FIX: Start recording immediately in a new coroutine
         pipelineJob = scope.launch {
             Log.i(TAG, "Voice pipeline started - listening for speech...")
             
@@ -1269,6 +1275,7 @@ class VoicePipelineManager(
      * 
      * CRITICAL FIX: Also clears native LLM context to prevent contamination
      * from previous failed/corrupted conversation turns.
+     * CRITICAL FIX: Now uses suspend function to ensure recording starts immediately
      */
     fun restartForNewQuestion() {
         Log.i(TAG, "🔄 Restarting voice mode for new question (HARD RESET)")
@@ -1325,34 +1332,29 @@ class VoicePipelineManager(
         // Reset audio recorder TTS speaking state
         audioRecorder?.setTTSSpeaking(false)
         
-        // CRITICAL FIX: Briefly restart audio recorder to ensure clean audio pipeline
-        // This reinitializes audio effects (AEC, NS, AGC) which can degrade over time
-        // FIX: Use 50ms delay (not 300ms) for immediate restart - prevents 5-second hearing delay
-        if (audioRecorder?.isRecording() == true) {
-            Log.i(TAG, "🎤 Restarting audio recorder for clean state...")
-            audioRecorder?.stopRecording()
-            scope.launch {
-                delay(50)  // CRITICAL FIX: Short delay for immediate restart (was 300ms causing 5s delay)
-                startRecording()
+        // CRITICAL FIX: Do ALL audio operations in a single coroutine with minimal delay
+        // This ensures recording starts immediately without state inconsistency
+        scope.launch {
+            // Stop recording if active
+            if (audioRecorder?.isRecording() == true) {
+                Log.i(TAG, "🎤 Stopping audio recorder for restart...")
+                audioRecorder?.stopRecording()
+                delay(50)  // Minimal delay for hardware to release
             }
-        } else if (isRunning.get()) {
-            // CRITICAL FIX: If recorder is not running but pipeline is active, start it!
-            // This fixes the issue where X button press leaves recorder stopped
-            Log.i(TAG, "🎤 Audio recorder not running - starting it now...")
-            scope.launch {
-                delay(50)  // CRITICAL FIX: Short delay for immediate restart (was 300ms causing 5s delay)
+            
+            // Start recording immediately
+            if (isRunning.get()) {
+                Log.i(TAG, "🎤 Starting audio recorder immediately...")
                 startRecording()
+                
+                // Set state to LISTENING only AFTER recording has started
+                Log.i(TAG, "🎤 FORCE: Returning to LISTENING state (from $currentState)")
+                transitionToState(PipelineState.LISTENING)
+            } else {
+                // If somehow stopped, restart the voice conversation
+                Log.i(TAG, "🎤 Voice pipeline was stopped, restarting...")
+                startVoiceConversation()
             }
-        }
-        
-        // CRITICAL FIX: Reset from ANY state (including ERROR) back to LISTENING
-        if (isRunning.get()) {
-            Log.i(TAG, "🎤 FORCE: Returning to LISTENING state for new question (from $currentState)")
-            transitionToState(PipelineState.LISTENING)
-        } else {
-            // If somehow stopped, restart the voice conversation
-            Log.i(TAG, "🎤 Voice pipeline was stopped, restarting...")
-            startVoiceConversation()
         }
     }
     

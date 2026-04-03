@@ -139,6 +139,7 @@ object LLMProviderFactory {
     ): LLMProvider? {
         return when (mode) {
             is AppMode.Offline -> offlineProvider
+            is AppMode.HuggingFace -> offlineProvider
             is AppMode.Online -> {
                 when (mode.provider) {
                     ApiProvider.OFFLINE -> offlineProvider
@@ -197,6 +198,7 @@ class LLMProviderManager {
     fun setMode(mode: AppMode): Boolean {
         val provider = when (mode) {
             is AppMode.Offline -> providers[ApiProvider.OFFLINE]
+            is AppMode.HuggingFace -> providers[ApiProvider.OFFLINE]
             is AppMode.Online -> providers[mode.provider]
         }
         
@@ -225,6 +227,7 @@ class LLMProviderManager {
     fun canSwitchTo(mode: AppMode): Boolean {
         return when (mode) {
             is AppMode.Offline -> providers[ApiProvider.OFFLINE]?.isAvailable() == true
+            is AppMode.HuggingFace -> providers[ApiProvider.OFFLINE]?.isAvailable() == true
             is AppMode.Online -> providers[mode.provider]?.isAvailable() == true
         }
     }

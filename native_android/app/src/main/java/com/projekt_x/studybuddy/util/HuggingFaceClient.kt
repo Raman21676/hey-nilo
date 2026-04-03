@@ -213,16 +213,27 @@ class HuggingFaceClient {
     
     /**
      * Download a GGUF file with progress tracking
+     * FIX: Uses atomic file write (.tmp -> rename) and explicit flush/sync
+     * to prevent partial/corrupted files and ensure filesystem visibility.
      */
     fun downloadModel(
         modelId: String,
         filePath: String,
         destinationFile: File
     ): Flow<DownloadProgress> = flow {
+        val tempFile = File(destinationFile.parentFile, "${destinationFile.name}.tmp")
         try {
             val url = "$HF_CDN_BASE/$modelId/resolve/main/$filePath"
             
             Log.i(TAG, "Downloading: $url")
+            Log.i(TAG, "Temp file: ${tempFile.absolutePath}")
+            Log.i(TAG, "Destination: ${destinationFile.absolutePath}")
+            
+            // Clean up any stale temp file
+            if (tempFile.exists()) {
+                Log.w(TAG, "Deleting stale temp file: ${tempFile.absolutePath}")
+                tempFile.delete()
+            }
             
             val request = Request.Builder()
                 .url(url)
@@ -231,11 +242,13 @@ class HuggingFaceClient {
             val response = client.newCall(request).execute()
             
             if (!response.isSuccessful) {
+                Log.e(TAG, "Download failed with HTTP ${response.code}")
                 emit(DownloadProgress.Error("Download failed: ${response.code}"))
                 return@flow
             }
             
             val body = response.body ?: run {
+                Log.e(TAG, "Empty response body")
                 emit(DownloadProgress.Error("Empty response"))
                 return@flow
             }
@@ -243,12 +256,14 @@ class HuggingFaceClient {
             val totalBytes = body.contentLength()
             var downloadedBytes = 0L
             
+            Log.i(TAG, "Total bytes to download: $totalBytes")
             emit(DownloadProgress.Started(totalBytes))
             
-            FileOutputStream(destinationFile).use { output ->
+            FileOutputStream(tempFile).use { output ->
                 body.byteStream().use { input ->
                     val buffer = ByteArray(8192)
                     var bytesRead: Int
+                    var lastProgress = -1
                     
                     while (input.read(buffer).also { bytesRead = it } != -1) {
                         output.write(buffer, 0, bytesRead)
@@ -256,16 +271,55 @@ class HuggingFaceClient {
                         
                         if (totalBytes > 0) {
                             val progress = (downloadedBytes * 100 / totalBytes).toInt()
-                            emit(DownloadProgress.Progress(progress, downloadedBytes, totalBytes))
+                            if (progress != lastProgress) {
+                                lastProgress = progress
+                                emit(DownloadProgress.Progress(progress, downloadedBytes, totalBytes))
+                            }
                         }
                     }
+                    
+                    // FIX: Explicit flush to ensure all data is written to OS buffers
+                    output.flush()
                 }
             }
             
+            // FIX: Sync filesystem to ensure file is physically on disk
+            tempFile.inputStream().use { it.channel.force(true) }
+            
+            // FIX: Verify the temp file exists and has content
+            if (!tempFile.exists() || tempFile.length() == 0L) {
+                Log.e(TAG, "Downloaded file is missing or empty after write")
+                emit(DownloadProgress.Error("Downloaded file is missing or empty"))
+                return@flow
+            }
+            
+            if (totalBytes > 0 && tempFile.length() < totalBytes * 0.99) {
+                Log.e(TAG, "Download incomplete: ${tempFile.length()} / $totalBytes")
+                emit(DownloadProgress.Error("Download incomplete"))
+                return@flow
+            }
+            
+            // FIX: Atomic rename from temp to final destination
+            if (!tempFile.renameTo(destinationFile)) {
+                Log.e(TAG, "Failed to rename temp file to destination")
+                emit(DownloadProgress.Error("Failed to finalize download"))
+                return@flow
+            }
+            
+            // Final verification
+            if (!destinationFile.exists()) {
+                Log.e(TAG, "Destination file does not exist after rename")
+                emit(DownloadProgress.Error("File verification failed after rename"))
+                return@flow
+            }
+            
+            Log.i(TAG, "Download complete: ${destinationFile.absolutePath}, size: ${destinationFile.length()}")
             emit(DownloadProgress.Completed(destinationFile))
             
         } catch (e: Exception) {
             Log.e(TAG, "Download error", e)
+            // Clean up temp file on error
+            try { tempFile.delete() } catch (_: Exception) {}
             emit(DownloadProgress.Error(e.message ?: "Unknown error"))
         }
     }.flowOn(Dispatchers.IO)

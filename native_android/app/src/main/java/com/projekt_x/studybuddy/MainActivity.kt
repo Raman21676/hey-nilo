@@ -486,9 +486,9 @@ fun HeyNiloApp(
                 )
                 !isModelLoaded && activeOnlineConfig == null -> ModelSetupView(
                     bridge = bridge,
-                    onModelLoaded = { 
+                    onModelLoaded = { loadedMode ->
                         isModelLoaded = true
-                        currentMode = AppMode.Offline
+                        currentMode = loadedMode
                         // Update metrics with config
                         metricsState.updateSystemStats(
                             temperature = bridge.getCurrentTemperature(),
@@ -514,7 +514,11 @@ fun HeyNiloApp(
                     onlineConfig = activeOnlineConfig,
                     isVoiceModeActive = isVoiceModeActive,
                     onVoiceModeChange = { isVoiceModeActive = it },
-                    currentMode = if (activeOnlineConfig != null) "online" else "offline"
+                    currentMode = when (currentMode) {
+                        is AppMode.Online -> "online"
+                        is AppMode.HuggingFace -> "huggingface"
+                        else -> "offline"
+                    }
                 )
             }
             
@@ -610,6 +614,8 @@ fun filterStreamingToken(text: String): String {
     // AGGRESSIVE: Remove partial/imcomplete special tokens that may leak during streaming
     filtered = filtered.replace("<|im_end|>", " ")
     filtered = filtered.replace("<|im_start|>", " ")
+    filtered = filtered.replace("<|im_end|", " ")  // Missing closing >
+    filtered = filtered.replace("<|im_start|", " ")  // Missing closing >
     filtered = filtered.replace("|im_end|>", " ")
     filtered = filtered.replace("|im_start|>", " ")
     filtered = filtered.replace("<|im_end", " ")

@@ -427,25 +427,36 @@ private suspend fun downloadModel(
 ) {
     try {
         val modelsDir = File(context.getExternalFilesDir(null), "models/hf_downloads")
-        modelsDir.mkdirs()
+        val dirCreated = modelsDir.mkdirs()
+        Log.i(TAG, "Download directory: ${modelsDir.absolutePath}, created=$dirCreated, exists=${modelsDir.exists()}")
         
         val fileName = ggufFile.path.substringAfterLast("/")
         val destinationFile = File(modelsDir, fileName)
         
+        Log.i(TAG, "Starting download for ${model.id}, file: $fileName")
         onProgress(0, "Starting download...")
         
         client.downloadModel(model.id, ggufFile.path, destinationFile).collect { progress ->
             when (progress) {
                 is HuggingFaceClient.DownloadProgress.Started -> {
+                    Log.i(TAG, "Download started, totalBytes=${progress.totalBytes}")
                     onProgress(0, "Connected...")
                 }
                 is HuggingFaceClient.DownloadProgress.Progress -> {
                     onProgress(progress.percent, "Downloading...")
                 }
                 is HuggingFaceClient.DownloadProgress.Completed -> {
-                    onComplete(progress.file)
+                    Log.i(TAG, "Download completed: ${progress.file.absolutePath}, size=${progress.file.length()}")
+                    // FIX: Verify file actually exists before calling onComplete
+                    if (progress.file.exists() && progress.file.length() > 0) {
+                        onComplete(progress.file)
+                    } else {
+                        Log.e(TAG, "Download reported complete but file is missing or empty")
+                        onError("Download failed: file missing after completion")
+                    }
                 }
                 is HuggingFaceClient.DownloadProgress.Error -> {
+                    Log.e(TAG, "Download error: ${progress.message}")
                     onError(progress.message)
                 }
             }

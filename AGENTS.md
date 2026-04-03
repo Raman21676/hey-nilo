@@ -2,9 +2,11 @@
 
 **For**: AI Agents working on the Hey-Nilo project  
 **Purpose**: Complete project context and working guidelines  
-**Last Updated**: March 30, 2026
+**Last Updated**: April 3, 2026
 
-> **📋 RECENT SESSION**: See `logs/session-2025-03-31.md` for today's work (March 31, 2026) - ✅ CRITICAL FIXES COMPLETED: LLM generation truncation fixed, TTS completion detection fixed, voice pipeline now stable. Previous issues from March 30 resolved.  
+> **📋 RECENT SESSION**: See `SESSION_LOG_2025_04_03.md` for today's work - ✅ Hugging Face model download added, UI click issues fixed, Release APK/AAB built.
+
+> **📋 PREVIOUS SESSION**: See `logs/session-2025-03-31.md` for March 31 work - ✅ CRITICAL FIXES COMPLETED: LLM generation truncation fixed, TTS completion detection fixed, voice pipeline now stable.  
 
 > **⚠️ IMPORTANT**: Read this entire document before writing any code. This is your source of truth for the project.
 
@@ -23,7 +25,8 @@ Hey-Nilo is an **Android AI Voice Assistant** that operates in two modes:
 1. **This file** (`AGENTS.md`) - You're here
 2. **`PLANNING.md`** - Architecture and technical specifications
 3. **`TODO.md`** - Current tasks and progress tracking
-4. **Last `logs/session-YYYY-MM-DD.md`** - See what was done in previous session
+4. **Last `SESSION_LOG_YYYY_MM_DD.md`** - See what was done in previous session
+   - Format changed April 2026: Session logs now in root folder with `SESSION_LOG_YYYY_MM_DD.md` naming
 
 ### Step 3: Check Current Status
 ```bash
@@ -36,6 +39,26 @@ cat TODO.md | grep -A 5 "Project Status Overview"
 - Find the first incomplete task in `TODO.md`
 - Start working on it
 - **Document everything** in the session log (see below)
+
+---
+
+## 🆕 Recent Changes (April 3, 2026)
+
+### Hugging Face Model Download - IMPLEMENTED ✅
+**Status**: Feature complete and tested  
+**Commit**: `5a53e56` pushed to GitHub  
+**See detailed log**: `SESSION_LOG_2025_04_03.md`
+
+#### Features Added:
+1. **HuggingFaceSearchScreen** - Browse and download GGUF models directly from Hugging Face Hub
+2. **HuggingFaceClient** - API client with download progress tracking
+3. **LastModelPreference** - Remember last used model with resume dialog
+4. **Release Builds** - Signed APK (181 MB) and AAB (156 MB) ready for Play Store
+
+#### UI Fixes Applied:
+1. **ModeCard Click Handling** - Restructured to fix Configure button clicks
+2. **Download Button** - Replaced IconButton with Button for better click handling
+3. **Progress Dialog** - Fixed missing state assignment causing dialog not to show
 
 ---
 
@@ -224,7 +247,14 @@ hey-nilo/
         │   │   ├── Relationship.kt
         │   │   ├── Reminder.kt
         │   │   └── MemoryStats.kt
-        │   └── ui/                  ← UI screens
+        │   ├── ui/                  ← UI screens
+        │   │   ├── ModelSetupView.kt
+        │   │   ├── OfflineModelPickerScreen.kt
+        │   │   ├── HuggingFaceSearchScreen.kt  ← NEW: HF model browser
+        │   │   └── ChatActivity.kt
+        │   └── util/                ← Utilities
+        │       ├── HuggingFaceClient.kt        ← NEW: HF API client
+        │       └── LastModelPreference.kt      ← NEW: Model persistence
         │
         └── cpp/
             └── ai_chat_jni.cpp      ← DON'T TOUCH (existing)

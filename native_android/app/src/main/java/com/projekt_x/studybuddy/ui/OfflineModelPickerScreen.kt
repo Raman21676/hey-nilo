@@ -28,6 +28,7 @@ import com.projekt_x.studybuddy.model.OfflineModelConfig
 import com.projekt_x.studybuddy.model.MODELS_BY_RAM_TIER
 import com.projekt_x.studybuddy.model.RAMTier
 import com.projekt_x.studybuddy.model.CustomModelManager
+import com.projekt_x.studybuddy.model.ModelCategory
 import com.projekt_x.studybuddy.bridge.DeviceInfo
 import java.io.File
 
@@ -559,6 +560,19 @@ private fun CustomModelSection(
     var showPermissionRationale by remember { mutableStateOf(false) }
     var showFileBrowser by remember { mutableStateOf(false) }
     
+    // FIX: Track HuggingFace downloaded models
+    var hfDownloadedModels by remember { mutableStateOf<List<File>>(emptyList()) }
+    
+    LaunchedEffect(Unit) {
+        val hfDir = File(context.getExternalFilesDir(null), "models/hf_downloads")
+        if (hfDir.exists() && hfDir.canRead()) {
+            hfDownloadedModels = hfDir.listFiles()
+                ?.filter { it.isFile && it.name.endsWith(".gguf", ignoreCase = true) }
+                ?.sortedBy { it.name }
+                ?: emptyList()
+        }
+    }
+    
     // Permission launcher
     val permissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission()
@@ -573,7 +587,7 @@ private fun CustomModelSection(
     
     // Load saved custom model
     val customModel = remember { CustomModelManager.getCustomModel(context) }
-    val isCustomModelSelected = selectedModelId?.startsWith("custom_") == true
+    val isCustomModelSelected = selectedModelId?.startsWith("custom_") == true || selectedModelId?.startsWith("hf_") == true
     
     Card(
         modifier = Modifier
@@ -596,6 +610,65 @@ private fun CustomModelSection(
             )
             
             Spacer(modifier = Modifier.height(8.dp))
+            
+            // FIX: Show HuggingFace downloaded models automatically
+            if (hfDownloadedModels.isNotEmpty()) {
+                Text(
+                    text = "Downloaded from Hugging Face:",
+                    style = MaterialTheme.typography.bodySmall,
+                    fontWeight = FontWeight.Medium
+                )
+                Spacer(modifier = Modifier.height(4.dp))
+                
+                hfDownloadedModels.forEach { file ->
+                    val modelId = "hf_${file.nameWithoutExtension.replace(" ", "_")}"
+                    val isSelected = selectedModelId == modelId
+                    val sizeGB = file.length() / (1024f * 1024f * 1024f)
+                    
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = file.name,
+                                style = MaterialTheme.typography.bodyMedium,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            Text(
+                                text = "${String.format("%.2f", sizeGB)}GB",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        
+                        Button(
+                            onClick = {
+                                val config = OfflineModelConfig(
+                                    id = modelId,
+                                    displayName = file.nameWithoutExtension,
+                                    fileName = file.name,
+                                    sizeGB = sizeGB,
+                                    minRamGB = 3,
+                                    description = "Downloaded from Hugging Face",
+                                    downloadUrl = "",
+                                    isRecommended = false,
+                                    category = ModelCategory.GENERAL
+                                )
+                                onModelSelected(config)
+                            }
+                        ) {
+                            Text(if (isSelected) "Selected" else "Select")
+                        }
+                    }
+                }
+                
+                Divider(modifier = Modifier.padding(vertical = 12.dp))
+            }
             
             // Show current custom model if exists
             if (customModel != null) {
@@ -812,7 +885,8 @@ private fun SimpleFileBrowserDialog(
             android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_DOWNLOADS),
             android.os.Environment.getExternalStorageDirectory(),
             File("/sdcard/Download"),
-            File("/sdcard")
+            File("/sdcard"),
+            File(context.getExternalFilesDir(null), "models/hf_downloads")
         )
         
         val uniqueFiles = mutableMapOf<String, File>()

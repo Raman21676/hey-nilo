@@ -32,8 +32,9 @@ class LastModelPreference(context: Context) {
      * Save the last used offline model configuration
      */
     fun saveOfflineModel(model: OfflineModelConfig, isCustom: Boolean = false, customPath: String? = null) {
+        val isHf = model.id.startsWith("hf_")
         prefs.edit().apply {
-            putString("mode", "Offline")
+            putString("mode", if (isHf) "HuggingFace" else "Offline")
             putString("model_id", model.id)
             putString("model_fileName", model.fileName)
             putString("model_displayName", model.displayName)
@@ -51,7 +52,7 @@ class LastModelPreference(context: Context) {
             remove("online_modelName")
             apply()
         }
-        Log.i(TAG, "Saved offline model: ${model.displayName} (custom=$isCustom)")
+        Log.i(TAG, "Saved offline model: ${model.displayName} (custom=$isCustom, hf=$isHf)")
     }
     
     /**
@@ -88,7 +89,7 @@ class LastModelPreference(context: Context) {
         val modeName = prefs.getString("mode", null) ?: return null
         
         return when (modeName) {
-            "Offline" -> {
+            "Offline", "HuggingFace" -> {
                 val modelId = prefs.getString("model_id", null) ?: return null
                 val fileName = prefs.getString("model_fileName", "") ?: ""
                 val displayName = prefs.getString("model_displayName", "") ?: ""
@@ -119,19 +120,24 @@ class LastModelPreference(context: Context) {
                     category = category
                 )
                 
-                // For custom models, verify the file still exists
-                if (isCustom && customPath != null) {
-                    val file = java.io.File(customPath)
-                    if (!file.exists()) {
-                        Log.w(TAG, "Custom model file no longer exists: $customPath")
-                        // Clear saved config since model is gone
-                        clear()
-                        return null
-                    }
+                val isHf = modelId.startsWith("hf_")
+                val modelPath = when {
+                    isCustom && customPath != null -> customPath
+                    isHf -> java.io.File(context.getExternalFilesDir(null), "models/hf_downloads/${model.fileName}").absolutePath
+                    else -> java.io.File(context.getExternalFilesDir(null), "models/${model.fileName}").absolutePath
+                }
+                
+                // Verify the file still exists
+                val file = java.io.File(modelPath)
+                if (!file.exists()) {
+                    Log.w(TAG, "Model file no longer exists: $modelPath")
+                    // Clear saved config since model is gone
+                    clear()
+                    return null
                 }
                 
                 SavedConfig(
-                    mode = AppMode.Offline,
+                    mode = if (isHf) AppMode.HuggingFace else AppMode.Offline,
                     offlineModel = model,
                     isCustomModel = isCustom,
                     customModelPath = customPath
@@ -172,6 +178,10 @@ class LastModelPreference(context: Context) {
             is AppMode.Offline -> {
                 val modelName = config.offlineModel?.displayName ?: "Unknown Model"
                 if (config.isCustomModel) "Custom: $modelName" else modelName
+            }
+            is AppMode.HuggingFace -> {
+                val modelName = config.offlineModel?.displayName ?: "Unknown Model"
+                "Hugging Face: $modelName"
             }
             is AppMode.Online -> {
                 val provider = config.onlineConfig?.provider?.name ?: "Unknown"

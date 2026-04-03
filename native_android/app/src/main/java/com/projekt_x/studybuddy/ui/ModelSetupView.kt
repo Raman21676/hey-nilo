@@ -50,7 +50,7 @@ private const val TAG = "ModelSetupView"
 @Composable
 fun ModelSetupView(
     bridge: LlamaBridge,
-    onModelLoaded: () -> Unit,
+    onModelLoaded: (AppMode) -> Unit,
     onError: (String) -> Unit,
     onLoading: (Boolean) -> Unit,
     onOnlineConfigured: (ProviderConfig) -> Unit
@@ -79,9 +79,25 @@ fun ModelSetupView(
     var savedConfig by remember { mutableStateOf<LastModelPreference.SavedConfig?>(null) }
     var isAutoLoading by remember { mutableStateOf(false) }
     
+    // FIX: Track HuggingFace downloaded models for dedicated bar
+    var hfDownloadedModels by remember { mutableStateOf<List<File>>(emptyList()) }
+    
+    fun refreshHfModels() {
+        val hfDir = File(context.getExternalFilesDir(null), "models/hf_downloads")
+        hfDownloadedModels = if (hfDir.exists() && hfDir.canRead()) {
+            hfDir.listFiles()
+                ?.filter { it.isFile && it.name.endsWith(".gguf", ignoreCase = true) }
+                ?.sortedBy { it.name }
+                ?: emptyList()
+        } else emptyList()
+    }
+    
     // Check for saved configurations on startup
     LaunchedEffect(Unit) {
         Log.i(TAG, "ModelSetupView launched, checking saved configs")
+        
+        // Scan HF downloads first
+        refreshHfModels()
         
         // Check for last used model (for resume dialog)
         if (lastModelPref.hasSavedConfig()) {
@@ -108,7 +124,7 @@ fun ModelSetupView(
             Log.i(TAG, "Restored online config for ${savedProvider.name}")
         }
         
-        // Check for ALL existing offline models (scan all models)
+        // Check for ALL existing offline models (scan all models + HF downloads)
         val modelsDir = File(context.getExternalFilesDir(null), "models")
         val deviceRamGB = DeviceInfo.getTotalRamGB(context)
         Log.i(TAG, "Scanning for models in: ${modelsDir.absolutePath}")
@@ -126,18 +142,39 @@ fun ModelSetupView(
         
         downloadedModel?.let { model ->
             selectedOfflineModel = model
-            selectedMode = AppMode.Offline  // Auto-select offline mode
+            selectedMode = AppMode.Offline
             Log.i(TAG, "Selected model: ${model.displayName}, auto-selected Offline mode")
         } ?: run {
-            Log.i(TAG, "No offline models found. Available models: ${allModels.size}")
+            // Auto-select first HF downloaded model if no predefined model found
+            val firstHf = hfDownloadedModels.firstOrNull()
+            firstHf?.let { file ->
+                val config = OfflineModelConfig(
+                    id = "hf_${file.nameWithoutExtension.replace(" ", "_")}",
+                    displayName = file.nameWithoutExtension,
+                    fileName = file.name,
+                    sizeGB = file.length() / (1024f * 1024f * 1024f),
+                    minRamGB = 3,
+                    description = "Downloaded from Hugging Face",
+                    downloadUrl = "",
+                    isRecommended = false,
+                    category = com.projekt_x.studybuddy.model.ModelCategory.GENERAL
+                )
+                selectedOfflineModel = config
+                selectedMode = AppMode.HuggingFace
+                Log.i(TAG, "Auto-selected HF model: ${config.displayName}")
+            } ?: run {
+                Log.i(TAG, "No offline models found. Available models: ${allModels.size}")
+            }
         }
     }
     
     // CRITICAL FIX: Poll for model download completion and auto-load
-    // This handles the case where download finishes while user is away from picker
     LaunchedEffect(Unit) {
         while (true) {
             kotlinx.coroutines.delay(2000) // Check every 2 seconds
+            
+            // Refresh HF models list
+            refreshHfModels()
             
             // If no model selected yet, check if one appeared
             if (selectedOfflineModel == null) {
@@ -152,7 +189,7 @@ fun ModelSetupView(
                     selectedOfflineModel = model
                     selectedMode = AppMode.Offline
                     
-                    // CRITICAL FIX: Auto-load the model immediately after detection
+                    // Auto-load the model immediately after detection
                     if (!bridge.isLoaded()) {
                         Log.i(TAG, "Auto-loading model after detection: ${model.displayName}")
                         onLoading(true)
@@ -163,7 +200,7 @@ fun ModelSetupView(
                             if (success) {
                                 bridge.setSystemPrompt(SystemPromptBuilder.buildSystemPrompt())
                                 Log.i(TAG, "Model auto-loaded successfully, navigating to chat")
-                                onModelLoaded()
+                                onModelLoaded(AppMode.Offline)
                             } else {
                                 onError("Failed to auto-load model")
                             }
@@ -173,6 +210,25 @@ fun ModelSetupView(
                         } finally {
                             onLoading(false)
                         }
+                    }
+                } ?: run {
+                    // Auto-select first HF downloaded model
+                    val firstHf = hfDownloadedModels.firstOrNull()
+                    firstHf?.let { file ->
+                        val config = OfflineModelConfig(
+                            id = "hf_${file.nameWithoutExtension.replace(" ", "_")}",
+                            displayName = file.nameWithoutExtension,
+                            fileName = file.name,
+                            sizeGB = file.length() / (1024f * 1024f * 1024f),
+                            minRamGB = 3,
+                            description = "Downloaded from Hugging Face",
+                            downloadUrl = "",
+                            isRecommended = false,
+                            category = com.projekt_x.studybuddy.model.ModelCategory.GENERAL
+                        )
+                        selectedOfflineModel = config
+                        selectedMode = AppMode.HuggingFace
+                        Log.i(TAG, "Auto-selected HF model after detection: ${config.displayName}")
                     }
                 }
             }
@@ -257,12 +313,17 @@ fun ModelSetupView(
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
                 // Offline Mode Card
+                val offlineStatusText = when {
+                    selectedMode is AppMode.Offline && selectedOfflineModel != null -> 
+                        "Model: ${selectedOfflineModel?.displayName} ✓"
+                    selectedMode is AppMode.Offline -> "No model selected"
+                    else -> "Tap to select"
+                }
                 ModeCard(
                     icon = Icons.Default.Settings,
                     title = "Offline",
                     subtitle = "Private · No internet",
-                    statusText = selectedOfflineModel?.let { "Model: ${it.displayName} ✓" } 
-                        ?: "No model selected",
+                    statusText = offlineStatusText,
                     isSelected = selectedMode is AppMode.Offline,
                     onSelect = { 
                         selectedMode = AppMode.Offline
@@ -273,6 +334,44 @@ fun ModelSetupView(
                         Log.i(TAG, "Offline picker opened")
                     }
                 )
+                
+                // Hugging Face Mode Card (only if downloads exist)
+                if (hfDownloadedModels.isNotEmpty()) {
+                    val selectedHfModel = if (selectedMode is AppMode.HuggingFace) selectedOfflineModel else null
+                    ModeCard(
+                        icon = Icons.Default.Search,
+                        title = "Hugging Face",
+                        subtitle = "Downloaded models",
+                        statusText = selectedHfModel?.let { "Model: ${it.displayName} ✓" } 
+                            ?: "Select a model",
+                        isSelected = selectedMode is AppMode.HuggingFace,
+                        onSelect = { 
+                            // Auto-select first HF model if none selected
+                            if (selectedHfModel == null) {
+                                val firstHf = hfDownloadedModels.firstOrNull()
+                                firstHf?.let { file ->
+                                    selectedOfflineModel = OfflineModelConfig(
+                                        id = "hf_${file.nameWithoutExtension.replace(" ", "_")}",
+                                        displayName = file.nameWithoutExtension,
+                                        fileName = file.name,
+                                        sizeGB = file.length() / (1024f * 1024f * 1024f),
+                                        minRamGB = 3,
+                                        description = "Downloaded from Hugging Face",
+                                        downloadUrl = "",
+                                        isRecommended = false,
+                                        category = com.projekt_x.studybuddy.model.ModelCategory.GENERAL
+                                    )
+                                }
+                            }
+                            selectedMode = AppMode.HuggingFace
+                            Log.i(TAG, "HuggingFace mode selected")
+                        },
+                        onConfigure = {
+                            showHuggingFaceSearch = true
+                            Log.i(TAG, "HuggingFace search opened")
+                        }
+                    )
+                }
                 
                 // Online Mode Card
                 ModeCard(
@@ -303,14 +402,13 @@ fun ModelSetupView(
                         when (selectedMode) {
                             is AppMode.Offline -> {
                                 if (selectedOfflineModel != null) {
-                                    // Check if this is a custom model
+                                    // Check model type to determine path
                                     val customModel = CustomModelManager.getCustomModel(context)
                                     val isCustomModel = selectedOfflineModel!!.id.startsWith("custom_")
                                     
-                                    val modelPath = if (isCustomModel && customModel != null) {
-                                        customModel.path
-                                    } else {
-                                        File(context.getExternalFilesDir(null), "models/${selectedOfflineModel!!.fileName}").absolutePath
+                                    val modelPath = when {
+                                        isCustomModel && customModel != null -> customModel.path
+                                        else -> File(context.getExternalFilesDir(null), "models/${selectedOfflineModel!!.fileName}").absolutePath
                                     }
                                     
                                     val modelFile = File(modelPath)
@@ -322,12 +420,12 @@ fun ModelSetupView(
                                                 val success = bridge.loadModel(modelPath, config)
                                                 if (success) {
                                                     bridge.setSystemPrompt(com.projekt_x.studybuddy.bridge.llm.SystemPromptBuilder.buildSystemPrompt())
-                                                    // CRITICAL: Save the config for resume on next app launch
+                                                    // Save config for resume
                                                     val isCustom = selectedOfflineModel!!.id.startsWith("custom_")
                                                     val customPath = if (isCustom) modelPath else null
                                                     lastModelPref.saveOfflineModel(selectedOfflineModel!!, isCustom, customPath)
                                                     Log.i(TAG, "Saved offline model config for resume: ${selectedOfflineModel!!.displayName}")
-                                                    onModelLoaded()
+                                                    onModelLoaded(AppMode.Offline)
                                                 } else {
                                                     onError("Failed to load model")
                                                 }
@@ -344,9 +442,41 @@ fun ModelSetupView(
                                     snackbarMessage = "Tap 'Configure' on Offline card to select a model first."
                                 }
                             }
+                            is AppMode.HuggingFace -> {
+                                if (selectedOfflineModel != null && selectedOfflineModel!!.id.startsWith("hf_")) {
+                                    val modelPath = File(context.getExternalFilesDir(null), "models/hf_downloads/${selectedOfflineModel!!.fileName}").absolutePath
+                                    val modelFile = File(modelPath)
+                                    if (modelFile.exists()) {
+                                        onLoading(true)
+                                        scope.launch {
+                                            try {
+                                                val config = bridge.detectDeviceConfig()
+                                                val success = bridge.loadModel(modelPath, config)
+                                                if (success) {
+                                                    bridge.setSystemPrompt(com.projekt_x.studybuddy.bridge.llm.SystemPromptBuilder.buildSystemPrompt())
+                                                    // Save HF config for resume
+                                                    lastModelPref.saveOfflineModel(selectedOfflineModel!!, false, modelPath)
+                                                    Log.i(TAG, "Saved HF model config for resume: ${selectedOfflineModel!!.displayName}")
+                                                    onModelLoaded(AppMode.HuggingFace)
+                                                } else {
+                                                    onError("Failed to load model")
+                                                }
+                                            } catch (e: Exception) {
+                                                onError("Error: ${e.message}")
+                                            } finally {
+                                                onLoading(false)
+                                            }
+                                        }
+                                    } else {
+                                        snackbarMessage = "Model not found at: $modelPath"
+                                    }
+                                } else {
+                                    snackbarMessage = "Tap 'Configure' on Hugging Face card to download a model first."
+                                }
+                            }
                             is AppMode.Online -> {
                                 if (onlineConfig?.apiKey?.isNotBlank() == true) {
-                                    // CRITICAL: Save the config for resume on next app launch
+                                    // Save the config for resume on next app launch
                                     lastModelPref.saveOnlineConfig(onlineConfig!!)
                                     Log.i(TAG, "Saved online config for resume: ${onlineConfig!!.provider.name}")
                                     onOnlineConfigured(onlineConfig!!)
@@ -355,7 +485,7 @@ fun ModelSetupView(
                                 }
                             }
                             null -> {
-                                snackbarMessage = "Select a mode (Offline or Online) first"
+                                snackbarMessage = "Select a mode first"
                             }
                         }
                     },
@@ -393,8 +523,13 @@ fun ModelSetupView(
         showOfflinePicker = false
     }
     
+    BackHandler(enabled = showHuggingFaceSearch) {
+        Log.i(TAG, "BackHandler: Closing HuggingFaceSearchScreen")
+        showHuggingFaceSearch = false
+    }
+    
     // Handle back button on main setup screen - show quit confirmation
-    BackHandler(enabled = !showOfflinePicker && !showOnlineSetup) {
+    BackHandler(enabled = !showOfflinePicker && !showHuggingFaceSearch && !showOnlineSetup) {
         Log.i(TAG, "BackHandler: Showing quit confirmation dialog")
         showQuitDialog = true
     }
@@ -464,7 +599,32 @@ fun ModelSetupView(
                                                 selectedOfflineModel = model
                                                 selectedMode = AppMode.Offline
                                                 Log.i(TAG, "Auto-loaded offline model: ${model.displayName}")
-                                                onModelLoaded()
+                                                onModelLoaded(AppMode.Offline)
+                                            } else {
+                                                onError("Failed to load model")
+                                                lastModelPref.clear()
+                                            }
+                                        } else {
+                                            onError("Model file not found: $modelPath")
+                                            lastModelPref.clear()
+                                        }
+                                    }
+                                    is AppMode.HuggingFace -> {
+                                        val model = savedConfig!!.offlineModel!!
+                                        val modelPath = savedConfig!!.customModelPath 
+                                            ?: File(context.getExternalFilesDir(null), "models/hf_downloads/${model.fileName}").absolutePath
+                                        
+                                        val modelFile = File(modelPath)
+                                        if (modelFile.exists()) {
+                                            val config = bridge.detectDeviceConfig()
+                                            val success = bridge.loadModel(modelPath, config)
+                                            if (success) {
+                                                bridge.setSystemPrompt(SystemPromptBuilder.buildSystemPrompt())
+                                                // Restore selection state
+                                                selectedOfflineModel = model
+                                                selectedMode = AppMode.HuggingFace
+                                                Log.i(TAG, "Auto-loaded HF model: ${model.displayName}")
+                                                onModelLoaded(AppMode.HuggingFace)
                                             } else {
                                                 onError("Failed to load model")
                                                 lastModelPref.clear()
@@ -544,7 +704,16 @@ fun ModelSetupView(
         HuggingFaceSearchScreen(
             onBack = { showHuggingFaceSearch = false },
             onModelDownloaded = { file, modelId ->
-                showHuggingFaceSearch = false
+                Log.i(TAG, "onModelDownloaded called: file=${file.absolutePath}, size=${file.length()}, modelId=$modelId")
+                
+                // FIX: Verify file exists before updating state
+                if (!file.exists() || file.length() == 0L) {
+                    Log.e(TAG, "Downloaded file missing or empty: ${file.absolutePath}")
+                    snackbarMessage = "Download failed: file missing"
+                    showHuggingFaceSearch = false
+                    return@HuggingFaceSearchScreen
+                }
+                
                 // Create a custom model config for the downloaded file
                 val modelName = file.nameWithoutExtension
                 val customModel = com.projekt_x.studybuddy.model.OfflineModelConfig(
@@ -558,8 +727,20 @@ fun ModelSetupView(
                     downloadUrl = "",
                     category = com.projekt_x.studybuddy.model.ModelCategory.GENERAL
                 )
+                
+                // FIX: Update state BEFORE closing the search screen to avoid recomposition race
                 selectedOfflineModel = customModel
-                selectedMode = com.projekt_x.studybuddy.bridge.llm.AppMode.Offline
+                selectedMode = com.projekt_x.studybuddy.bridge.llm.AppMode.HuggingFace
+                Log.i(TAG, "State updated: selectedOfflineModel=${customModel.displayName}, selectedMode=HuggingFace")
+                
+                // Refresh HF models list AFTER state updates
+                refreshHfModels()
+                
+                // Save the config immediately so resume works
+                lastModelPref.saveOfflineModel(customModel, false, file.absolutePath)
+                
+                // Now close the search screen
+                showHuggingFaceSearch = false
                 snackbarMessage = "Model downloaded: $modelName"
             }
         )
@@ -616,54 +797,53 @@ private fun ModeCard(
                 .padding(16.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            // Icon - clickable for selection
-            Icon(
-                imageVector = icon,
-                contentDescription = null,
-                modifier = Modifier
-                    .size(40.dp)
-                    .clickable { 
-                        Log.i(TAG, "Card icon clicked: $title")
-                        onSelect()
-                    },
-                tint = if (isSelected) 
-                    MaterialTheme.colorScheme.primary 
-                else 
-                    MaterialTheme.colorScheme.onSurfaceVariant
-            )
-            
-            Spacer(modifier = Modifier.width(16.dp))
-            
-            // Text content - clickable for selection
-            Column(
+            // Clickable area for card selection (icon + text)
+            Row(
                 modifier = Modifier
                     .weight(1f)
                     .clickable { 
-                        Log.i(TAG, "Card text clicked: $title")
+                        Log.i(TAG, "Card clicked: $title")
                         onSelect()
-                    }
+                    },
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                Text(
-                    text = title,
-                    style = MaterialTheme.typography.titleLarge,
-                    fontWeight = FontWeight.SemiBold
-                )
-                Text(
-                    text = subtitle,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                Text(
-                    text = statusText,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = if (statusText.contains("✓")) 
+                // Icon
+                Icon(
+                    imageVector = icon,
+                    contentDescription = null,
+                    modifier = Modifier.size(40.dp),
+                    tint = if (isSelected) 
                         MaterialTheme.colorScheme.primary 
                     else 
-                        MaterialTheme.colorScheme.outline
+                        MaterialTheme.colorScheme.onSurfaceVariant
                 )
+                
+                Spacer(modifier = Modifier.width(16.dp))
+                
+                // Text content
+                Column {
+                    Text(
+                        text = title,
+                        style = MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    Text(
+                        text = subtitle,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Text(
+                        text = statusText,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = if (statusText.contains("✓")) 
+                            MaterialTheme.colorScheme.primary 
+                        else 
+                            MaterialTheme.colorScheme.outline
+                    )
+                }
             }
             
-            // Configure button inside Row (not overlay)
+            // Configure button - completely separate from clickable area
             if (isSelected) {
                 Button(
                     onClick = {
@@ -682,6 +862,106 @@ private fun ModeCard(
             } else {
                 // Reserve space when not selected
                 Spacer(modifier = Modifier.width(90.dp))
+            }
+        }
+    }
+}
+
+/**
+ * Dedicated Hugging Face downloaded models bar
+ * Shows below the Offline card when HF models are present
+ */
+@Composable
+private fun HuggingFaceModelsBar(
+    models: List<File>,
+    selectedModelId: String?,
+    onModelSelected: (File) -> Unit,
+    onModelDeselected: () -> Unit
+) {
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.7f)
+        ),
+        shape = MaterialTheme.shapes.small
+    ) {
+        Column(
+            modifier = Modifier.padding(12.dp)
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "🤗 Hugging Face",
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = FontWeight.SemiBold,
+                    color = MaterialTheme.colorScheme.onTertiaryContainer
+                )
+                Spacer(modifier = Modifier.width(4.dp))
+                Text(
+                    text = "Downloaded Models",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.onTertiaryContainer.copy(alpha = 0.8f)
+                )
+            }
+            
+            Spacer(modifier = Modifier.height(8.dp))
+            
+            models.forEach { file ->
+                val modelId = "hf_${file.nameWithoutExtension.replace(" ", "_")}"
+                val isSelected = selectedModelId == modelId
+                val sizeGB = file.length() / (1024f * 1024f * 1024f)
+                
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = file.nameWithoutExtension,
+                            style = MaterialTheme.typography.bodyMedium,
+                            maxLines = 1,
+                            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                            color = MaterialTheme.colorScheme.onTertiaryContainer,
+                            fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Normal
+                        )
+                        Text(
+                            text = "${String.format("%.2f", sizeGB)}GB",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onTertiaryContainer.copy(alpha = 0.7f)
+                        )
+                    }
+                    
+                    if (isSelected) {
+                        OutlinedButton(
+                            onClick = onModelDeselected,
+                            modifier = Modifier.height(32.dp),
+                            contentPadding = PaddingValues(horizontal = 12.dp),
+                            colors = ButtonDefaults.outlinedButtonColors(
+                                contentColor = MaterialTheme.colorScheme.onTertiaryContainer
+                            )
+                        ) {
+                            Text("Selected", style = MaterialTheme.typography.labelMedium)
+                        }
+                    } else {
+                        Button(
+                            onClick = { onModelSelected(file) },
+                            modifier = Modifier.height(32.dp),
+                            contentPadding = PaddingValues(horizontal = 12.dp),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = MaterialTheme.colorScheme.tertiary,
+                                contentColor = MaterialTheme.colorScheme.onTertiary
+                            )
+                        ) {
+                            Text("Select", style = MaterialTheme.typography.labelMedium)
+                        }
+                    }
+                }
             }
         }
     }

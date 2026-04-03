@@ -134,6 +134,11 @@ sealed class AppMode {
         override val displayName = "Offline (TinyLlama)"
     }
     
+    data object HuggingFace : AppMode() {
+        override val name = "huggingface"
+        override val displayName = "Hugging Face"
+    }
+    
     data class Online(val provider: ApiProvider) : AppMode() {
         override val name = "online_${provider.name.lowercase()}"
         override val displayName = "Online (${provider.name})"
@@ -143,6 +148,7 @@ sealed class AppMode {
         fun fromString(mode: String): AppMode {
             return when {
                 mode == "offline" -> Offline
+                mode == "huggingface" -> HuggingFace
                 mode.startsWith("online_") -> {
                     val providerName = mode.removePrefix("online_").uppercase()
                     val provider = ApiProvider.valueOf(providerName)

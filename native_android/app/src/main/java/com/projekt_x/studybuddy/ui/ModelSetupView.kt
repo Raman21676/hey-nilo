@@ -38,6 +38,8 @@ import com.projekt_x.studybuddy.bridge.DeviceInfo
 import com.projekt_x.studybuddy.bridge.llm.SystemPromptBuilder
 import com.projekt_x.studybuddy.util.LastModelPreference
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.Dispatchers
 import java.io.File
 
 private const val TAG = "ModelSetupView"
@@ -82,22 +84,29 @@ fun ModelSetupView(
     // FIX: Track HuggingFace downloaded models for dedicated bar
     var hfDownloadedModels by remember { mutableStateOf<List<File>>(emptyList()) }
     
-    fun refreshHfModels() {
+    // FIX: Refresh HF models - now runs on IO thread to avoid blocking UI
+    suspend fun refreshHfModels() = withContext(Dispatchers.IO) {
         val hfDir = File(context.getExternalFilesDir(null), "models/hf_downloads")
-        hfDownloadedModels = if (hfDir.exists() && hfDir.canRead()) {
+        val models = if (hfDir.exists() && hfDir.canRead()) {
             hfDir.listFiles()
                 ?.filter { it.isFile && it.name.endsWith(".gguf", ignoreCase = true) }
                 ?.sortedBy { it.name }
                 ?: emptyList()
         } else emptyList()
+        
+        // Update state on main thread
+        withContext(Dispatchers.Main) {
+            hfDownloadedModels = models
+        }
+        models
     }
     
-    // Check for saved configurations on startup
+    // Check for saved configurations on startup - NON-BLOCKING
     LaunchedEffect(Unit) {
         Log.i(TAG, "ModelSetupView launched, checking saved configs")
         
-        // Scan HF downloads first
-        refreshHfModels()
+        // Scan HF downloads first (runs on IO thread)
+        val hfModels = refreshHfModels()
         
         // Check for last used model (for resume dialog)
         if (lastModelPref.hasSavedConfig()) {
@@ -124,97 +133,32 @@ fun ModelSetupView(
             Log.i(TAG, "Restored online config for ${savedProvider.name}")
         }
         
-        // Check for ALL existing offline models (scan all models + HF downloads)
-        val modelsDir = File(context.getExternalFilesDir(null), "models")
-        val deviceRamGB = DeviceInfo.getTotalRamGB(context)
-        Log.i(TAG, "Scanning for models in: ${modelsDir.absolutePath}")
-        
-        // Find the first downloaded model (any model)
-        val allModels = getAllModels()
-        val downloadedModel = allModels.find { model ->
-            val modelFile = File(modelsDir, model.fileName)
-            val exists = modelFile.exists()
-            if (exists) {
-                Log.i(TAG, "Found downloaded model: ${model.displayName} at ${modelFile.absolutePath}")
-            }
-            exists
-        }
-        
-        downloadedModel?.let { model ->
-            selectedOfflineModel = model
-            selectedMode = AppMode.Offline
-            Log.i(TAG, "Selected model: ${model.displayName}, auto-selected Offline mode")
-        } ?: run {
-            // Auto-select first HF downloaded model if no predefined model found
-            val firstHf = hfDownloadedModels.firstOrNull()
-            firstHf?.let { file ->
-                val config = OfflineModelConfig(
-                    id = "hf_${file.nameWithoutExtension.replace(" ", "_")}",
-                    displayName = file.nameWithoutExtension,
-                    fileName = file.name,
-                    sizeGB = file.length() / (1024f * 1024f * 1024f),
-                    minRamGB = 3,
-                    description = "Downloaded from Hugging Face",
-                    downloadUrl = "",
-                    isRecommended = false,
-                    category = com.projekt_x.studybuddy.model.ModelCategory.GENERAL
-                )
-                selectedOfflineModel = config
-                selectedMode = AppMode.HuggingFace
-                Log.i(TAG, "Auto-selected HF model: ${config.displayName}")
-            } ?: run {
-                Log.i(TAG, "No offline models found. Available models: ${allModels.size}")
-            }
-        }
-    }
-    
-    // CRITICAL FIX: Poll for model download completion and auto-load
-    LaunchedEffect(Unit) {
-        while (true) {
-            kotlinx.coroutines.delay(2000) // Check every 2 seconds
+        // Check for ALL existing offline models (scan all models + HF downloads) - on IO thread
+        withContext(Dispatchers.IO) {
+            val modelsDir = File(context.getExternalFilesDir(null), "models")
+            val deviceRamGB = DeviceInfo.getTotalRamGB(context)
+            Log.i(TAG, "Scanning for models in: ${modelsDir.absolutePath}")
             
-            // Refresh HF models list
-            refreshHfModels()
-            
-            // If no model selected yet, check if one appeared
-            if (selectedOfflineModel == null) {
-                val modelsDir = File(context.getExternalFilesDir(null), "models")
-                val allModels = getAllModels()
-                val downloadedModel = allModels.find { model ->
-                    File(modelsDir, model.fileName).exists()
+            // Find the first downloaded model (any model)
+            val allModels = getAllModels()
+            val downloadedModel = allModels.find { model ->
+                val modelFile = File(modelsDir, model.fileName)
+                val exists = modelFile.exists()
+                if (exists) {
+                    Log.i(TAG, "Found downloaded model: ${model.displayName} at ${modelFile.absolutePath}")
                 }
-                
+                exists
+            }
+            
+            // Update state on main thread
+            withContext(Dispatchers.Main) {
                 downloadedModel?.let { model ->
-                    Log.i(TAG, "Detected newly downloaded model: ${model.displayName}")
                     selectedOfflineModel = model
                     selectedMode = AppMode.Offline
-                    
-                    // Auto-load the model immediately after detection
-                    if (!bridge.isLoaded()) {
-                        Log.i(TAG, "Auto-loading model after detection: ${model.displayName}")
-                        onLoading(true)
-                        try {
-                            val modelFile = File(modelsDir, model.fileName)
-                            val config = bridge.detectDeviceConfig()
-                            val success = bridge.loadModel(modelFile.absolutePath, config)
-                            if (success) {
-                                bridge.setSystemPrompt(SystemPromptBuilder.buildSystemPrompt())
-                                Log.i(TAG, "Model auto-loaded successfully, navigating to chat")
-                                onModelLoaded(AppMode.Offline)
-                            } else {
-                                onError("Failed to auto-load model")
-                            }
-                        } catch (e: Exception) {
-                            Log.e(TAG, "Error auto-loading model", e)
-                            onError("Error loading model: ${e.message}")
-                        } finally {
-                            onLoading(false)
-                        }
-                    }
+                    Log.i(TAG, "Selected model: ${model.displayName}, auto-selected Offline mode")
                 } ?: run {
-                    // Auto-select first HF downloaded model
-                    val firstHf = hfDownloadedModels.firstOrNull()
-                    firstHf?.let { file ->
+                    // Auto-select first HF downloaded model if no predefined model found
+                    hfModels.firstOrNull()?.let { file ->
                         val config = OfflineModelConfig(
                             id = "hf_${file.nameWithoutExtension.replace(" ", "_")}",
                             displayName = file.nameWithoutExtension,
@@ -228,7 +172,79 @@ fun ModelSetupView(
                         )
                         selectedOfflineModel = config
                         selectedMode = AppMode.HuggingFace
-                        Log.i(TAG, "Auto-selected HF model after detection: ${config.displayName}")
+                        Log.i(TAG, "Auto-selected HF model: ${config.displayName}")
+                    } ?: run {
+                        Log.i(TAG, "No offline models found. Available models: ${allModels.size}")
+                    }
+                }
+            }
+        }
+    }
+    
+    // FIX: Poll for model download completion - runs on IO thread, less frequent
+    LaunchedEffect(Unit) {
+        while (true) {
+            kotlinx.coroutines.delay(5000) // Check every 5 seconds (was 2 seconds)
+            
+            // Refresh HF models list (on IO thread)
+            val hfModels = refreshHfModels()
+            
+            // If no model selected yet, check if one appeared
+            if (selectedOfflineModel == null) {
+                withContext(Dispatchers.IO) {
+                    val modelsDir = File(context.getExternalFilesDir(null), "models")
+                    val allModels = getAllModels()
+                    val downloadedModel = allModels.find { model ->
+                        File(modelsDir, model.fileName).exists()
+                    }
+                    
+                    withContext(Dispatchers.Main) {
+                        downloadedModel?.let { model ->
+                            Log.i(TAG, "Detected newly downloaded model: ${model.displayName}")
+                            selectedOfflineModel = model
+                            selectedMode = AppMode.Offline
+                            
+                            // Auto-load the model immediately after detection
+                            if (!bridge.isLoaded()) {
+                                Log.i(TAG, "Auto-loading model after detection: ${model.displayName}")
+                                onLoading(true)
+                                try {
+                                    val modelFile = File(modelsDir, model.fileName)
+                                    val config = bridge.detectDeviceConfig()
+                                    val success = bridge.loadModel(modelFile.absolutePath, config)
+                                    if (success) {
+                                        bridge.setSystemPrompt(SystemPromptBuilder.buildSystemPrompt())
+                                        Log.i(TAG, "Model auto-loaded successfully, navigating to chat")
+                                        onModelLoaded(AppMode.Offline)
+                                    } else {
+                                        onError("Failed to auto-load model")
+                                    }
+                                } catch (e: Exception) {
+                                    Log.e(TAG, "Error auto-loading model", e)
+                                    onError("Error loading model: ${e.message}")
+                                } finally {
+                                    onLoading(false)
+                                }
+                            }
+                        } ?: run {
+                            // Auto-select first HF downloaded model
+                            hfModels.firstOrNull()?.let { file ->
+                                val config = OfflineModelConfig(
+                                    id = "hf_${file.nameWithoutExtension.replace(" ", "_")}",
+                                    displayName = file.nameWithoutExtension,
+                                    fileName = file.name,
+                                    sizeGB = file.length() / (1024f * 1024f * 1024f),
+                                    minRamGB = 3,
+                                    description = "Downloaded from Hugging Face",
+                                    downloadUrl = "",
+                                    isRecommended = false,
+                                    category = com.projekt_x.studybuddy.model.ModelCategory.GENERAL
+                                )
+                                selectedOfflineModel = config
+                                selectedMode = AppMode.HuggingFace
+                                Log.i(TAG, "Auto-selected HF model after detection: ${config.displayName}")
+                            }
+                        }
                     }
                 }
             }
@@ -335,43 +351,42 @@ fun ModelSetupView(
                     }
                 )
                 
-                // Hugging Face Mode Card (only if downloads exist)
-                if (hfDownloadedModels.isNotEmpty()) {
-                    val selectedHfModel = if (selectedMode is AppMode.HuggingFace) selectedOfflineModel else null
-                    ModeCard(
-                        icon = Icons.Default.Search,
-                        title = "Hugging Face",
-                        subtitle = "Downloaded models",
-                        statusText = selectedHfModel?.let { "Model: ${it.displayName} ✓" } 
-                            ?: "Select a model",
-                        isSelected = selectedMode is AppMode.HuggingFace,
-                        onSelect = { 
-                            // Auto-select first HF model if none selected
-                            if (selectedHfModel == null) {
-                                val firstHf = hfDownloadedModels.firstOrNull()
-                                firstHf?.let { file ->
-                                    selectedOfflineModel = OfflineModelConfig(
-                                        id = "hf_${file.nameWithoutExtension.replace(" ", "_")}",
-                                        displayName = file.nameWithoutExtension,
-                                        fileName = file.name,
-                                        sizeGB = file.length() / (1024f * 1024f * 1024f),
-                                        minRamGB = 3,
-                                        description = "Downloaded from Hugging Face",
-                                        downloadUrl = "",
-                                        isRecommended = false,
-                                        category = com.projekt_x.studybuddy.model.ModelCategory.GENERAL
-                                    )
-                                }
-                            }
-                            selectedMode = AppMode.HuggingFace
-                            Log.i(TAG, "HuggingFace mode selected")
-                        },
-                        onConfigure = {
-                            showHuggingFaceSearch = true
-                            Log.i(TAG, "HuggingFace search opened")
+                // Hugging Face Mode Card (ALWAYS shown)
+                val selectedHfModel = if (selectedMode is AppMode.HuggingFace) selectedOfflineModel else null
+                ModeCard(
+                    icon = Icons.Default.Search,
+                    title = "Hugging Face",
+                    subtitle = "Downloaded models",
+                    statusText = when {
+                        selectedHfModel != null -> "Model: ${selectedHfModel.displayName} ✓"
+                        hfDownloadedModels.isNotEmpty() -> "${hfDownloadedModels.size} model(s) available"
+                        else -> "Tap Configure to download"
+                    },
+                    isSelected = selectedMode is AppMode.HuggingFace,
+                    onSelect = { 
+                        // Auto-select first HF model if none selected
+                        if (selectedHfModel == null && hfDownloadedModels.isNotEmpty()) {
+                            val firstHf = hfDownloadedModels.first()
+                            selectedOfflineModel = OfflineModelConfig(
+                                id = "hf_${firstHf.nameWithoutExtension.replace(" ", "_")}",
+                                displayName = firstHf.nameWithoutExtension,
+                                fileName = firstHf.name,
+                                sizeGB = firstHf.length() / (1024f * 1024f * 1024f),
+                                minRamGB = 3,
+                                description = "Downloaded from Hugging Face",
+                                downloadUrl = "",
+                                isRecommended = false,
+                                category = com.projekt_x.studybuddy.model.ModelCategory.GENERAL
+                            )
                         }
-                    )
-                }
+                        selectedMode = AppMode.HuggingFace
+                        Log.i(TAG, "HuggingFace mode selected")
+                    },
+                    onConfigure = {
+                        showHuggingFaceSearch = true
+                        Log.i(TAG, "HuggingFace search opened")
+                    }
+                )
                 
                 // Online Mode Card
                 ModeCard(
@@ -733,8 +748,10 @@ fun ModelSetupView(
                 selectedMode = com.projekt_x.studybuddy.bridge.llm.AppMode.HuggingFace
                 Log.i(TAG, "State updated: selectedOfflineModel=${customModel.displayName}, selectedMode=HuggingFace")
                 
-                // Refresh HF models list AFTER state updates
-                refreshHfModels()
+                // Refresh HF models list AFTER state updates (launch in coroutine scope)
+                scope.launch {
+                    refreshHfModels()
+                }
                 
                 // Save the config immediately so resume works
                 lastModelPref.saveOfflineModel(customModel, false, file.absolutePath)

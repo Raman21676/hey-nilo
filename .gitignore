@@ -44,3 +44,11 @@ SESSION_SUMMARY.md
 TODO.md
 logs/*.md
 native_android/DEVELOPMENT_LOG.md
+
+# Testing screenshots (accidentally committed - do not track)
+screen*.png
+screenshot*.png
+dl_*.png
+dl_status.png
+hey-nilo.png
+test_screenshots/

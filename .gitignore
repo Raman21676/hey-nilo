@@ -60,3 +60,5 @@ dl_*.png
 dl_status.png
 agent-smith.png
 test_screenshots/
+build*.sh
+build.log

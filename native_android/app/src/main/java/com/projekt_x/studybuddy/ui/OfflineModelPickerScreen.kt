@@ -1369,7 +1369,7 @@ private fun startDownload(
     
     val request = okhttp3.Request.Builder()
         .url(model.downloadUrl)
-        .header("User-Agent", "Hey-Nilo/1.0 (Android)")
+        .header("User-Agent", "AGENT SMITH/1.0 (Android)")
         .header("Accept", "*/*")
         .build()
     

@@ -52,7 +52,7 @@ object ThemeManager {
     }
 }
 
-// Panda-inspired color schemes
+// Agent Smith color schemes
 private val DarkColorScheme = darkColorScheme(
     primary = PrimaryDark,
     onPrimary = OnPrimaryDark,
@@ -100,9 +100,9 @@ private val LightColorScheme = lightColorScheme(
 )
 
 @Composable
-fun HeyNiloTheme(
+fun AgentSmithTheme(
     darkTheme: Boolean? = null, // null = use ThemeManager state
-    // Disable dynamic color to use our Nilo theme consistently
+    // Disable dynamic color to use our SMITH theme consistently
     dynamicColor: Boolean = false,
     content: @Composable () -> Unit
 ) {

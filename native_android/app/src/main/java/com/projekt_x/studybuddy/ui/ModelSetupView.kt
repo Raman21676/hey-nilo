@@ -277,14 +277,14 @@ fun ModelSetupView(
             ) {
                 Image(
                     painter = painterResource(id = R.drawable.app_logo),
-                    contentDescription = "Hey-Nilo Logo",
+                    contentDescription = "AGENT SMITH Logo",
                     modifier = Modifier.size(80.dp)
                 )
                 
                 Spacer(modifier = Modifier.height(8.dp))
                 
                 Text(
-                    text = "Hey-Nilo",
+                    text = "AGENT SMITH",
                     style = MaterialTheme.typography.headlineMedium,
                     fontWeight = FontWeight.Bold
                 )
@@ -553,7 +553,7 @@ fun ModelSetupView(
     if (showQuitDialog) {
         AlertDialog(
             onDismissRequest = { showQuitDialog = false },
-            title = { Text("Quit Hey-Nilo?") },
+            title = { Text("Quit AGENT SMITH?") },
             text = { Text("Are you sure you want to exit the app?") },
             confirmButton = {
                 TextButton(

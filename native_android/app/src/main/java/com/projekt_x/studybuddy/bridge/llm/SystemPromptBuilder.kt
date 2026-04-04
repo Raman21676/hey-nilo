@@ -7,7 +7,7 @@ object SystemPromptBuilder {
 
     fun buildSystemPrompt(memoryManager: Any? = null, maxTokens: Int = 300): String {
         // Simple, clean system prompt. No tags. No markers. No memory context here.
-        return "You are Nilo, a helpful personal AI assistant. " +
+        return "You are SMITH, a helpful personal AI assistant. " +
                "Answer every question directly and completely. " +
                "When asked to list things, list them. " +
                "Do not introduce yourself unless the user asks who you are."

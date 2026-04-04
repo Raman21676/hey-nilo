@@ -1,8 +1,8 @@
 <resources>
-    <style name="Theme.HeyNilo" parent="android:Theme.Material.Light.NoActionBar">
+    <style name="Theme.AgentSmith" parent="android:Theme.Material.Light.NoActionBar">
         <item name="android:statusBarColor">@android:color/transparent</item>
         <item name="android:navigationBarColor">@android:color/transparent</item>
-        <!-- Use Nilo logo for splash screen background -->
+        <!-- Use SMITH logo for splash screen background -->
         <item name="android:windowBackground">@drawable/splash_background</item>
     </style>
 </resources>

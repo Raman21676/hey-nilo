@@ -116,7 +116,7 @@ private fun ProfileTab(
                 fontWeight = FontWeight.Bold
             )
             Text(
-                "Information about you that Nilo remembers",
+                "Information about you that SMITH remembers",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -182,7 +182,7 @@ private fun ProfileTab(
                     }
                     
                     if (facts.isEmpty()) {
-                        Text("No facts yet. Nilo will learn facts from your conversations automatically.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text("No facts yet. SMITH will learn facts from your conversations automatically.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     } else {
                         facts.forEachIndexed { index, fact ->
                             FactItem(fact = fact, onDelete = {

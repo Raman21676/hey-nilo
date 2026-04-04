@@ -76,7 +76,7 @@ import com.projekt_x.studybuddy.ui.components.CompactTopBar
 import com.projekt_x.studybuddy.ui.components.RamOptimizerDialog
 import com.projekt_x.studybuddy.ui.components.OptimizationResult
 import com.projekt_x.studybuddy.bridge.llm.SystemPromptBuilder
-import com.projekt_x.studybuddy.ui.theme.HeyNiloTheme
+import com.projekt_x.studybuddy.ui.theme.AgentSmithTheme
 import com.projekt_x.studybuddy.ui.theme.ThemeManager
 import kotlinx.coroutines.*
 import kotlin.coroutines.coroutineContext
@@ -107,7 +107,7 @@ class MainActivity : ComponentActivity() {
         // Show loading UI first
         enableEdgeToEdge()
         setContent {
-            HeyNiloTheme {
+            AgentSmithTheme {
                 InitializingView()
             }
         }
@@ -158,8 +158,8 @@ class MainActivity : ComponentActivity() {
                 // Switch to UI thread to update content
                 withContext(Dispatchers.Main) {
                     setContent {
-                        HeyNiloTheme {
-                            HeyNiloApp(
+                        AgentSmithTheme {
+                            AgentSmithApp(
                                 bridge = bridge!!,
                                 queue = queue!!,
                                 memoryManager = memManager,
@@ -181,7 +181,7 @@ class MainActivity : ComponentActivity() {
                         Toast.LENGTH_LONG
                     ).show()
                     setContent {
-                        HeyNiloTheme {
+                        AgentSmithTheme {
                             ErrorView(
                                 message = "Failed to initialize: ${e.message}",
                                 onRetry = { recreate() }
@@ -228,7 +228,7 @@ class MainActivity : ComponentActivity() {
 }
 
 /**
- * Animated Nilo Loading Screen
+ * Animated SMITH Loading Screen
  */
 @Composable
 fun InitializingView() {
@@ -261,7 +261,7 @@ fun InitializingView() {
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.spacedBy(24.dp)
         ) {
-            // Animated Nilo Logo
+            // Animated SMITH Logo
             Box(
                 modifier = Modifier
                     .size(180.dp)
@@ -272,14 +272,14 @@ fun InitializingView() {
             ) {
                 Image(
                     painter = painterResource(id = R.drawable.app_logo),
-                    contentDescription = "Hey-Nilo Logo",
+                    contentDescription = "AGENT SMITH Logo",
                     modifier = Modifier.size(140.dp)
                 )
             }
             
             // App Name
             Text(
-                text = "Hey-Nilo",
+                text = "AGENT SMITH",
                 style = MaterialTheme.typography.headlineLarge,
                 color = MaterialTheme.colorScheme.primary,
                 fontWeight = androidx.compose.ui.text.font.FontWeight.Bold
@@ -293,7 +293,7 @@ fun InitializingView() {
             
             // Status text
             Text(
-                text = "Waking up Nilo...",
+                text = "Waking up SMITH...",
                 style = MaterialTheme.typography.bodyLarge,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -318,7 +318,7 @@ fun InitializingView() {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun HeyNiloApp(
+fun AgentSmithApp(
     bridge: com.projekt_x.studybuddy.bridge.LlamaBridge,
     queue: InferenceQueue,
     memoryManager: MemoryManager?,
@@ -378,7 +378,7 @@ fun HeyNiloApp(
     if (showQuitDialog) {
         AlertDialog(
             onDismissRequest = { showQuitDialog = false },
-            title = { Text("Quit Hey-Nilo?") },
+            title = { Text("Quit AGENT SMITH?") },
             text = { Text("Are you sure you want to exit the app?") },
             confirmButton = {
                 TextButton(
@@ -464,7 +464,7 @@ fun HeyNiloApp(
     Scaffold(
         topBar = {
             CompactTopBar(
-                title = "Hey-Nilo",
+                title = "AGENT SMITH",
                 metrics = metrics,
                 isDarkTheme = isDarkTheme,
                 onThemeToggle = { ThemeManager.toggleTheme(appContext) },
@@ -479,7 +479,7 @@ fun HeyNiloApp(
                 .padding(padding)
         ) {
             when {
-                isLoading -> LoadingView("Loading Hey-Nilo...")
+                isLoading -> LoadingView("Loading AGENT SMITH...")
                 errorMessage != null -> ErrorView(
                     message = errorMessage!!,
                     onRetry = { errorMessage = null }
@@ -634,7 +634,7 @@ fun filterStreamingToken(text: String): String {
     
     // Common stuck word patterns
     filtered = filtered.replace("Iam", "I am")
-    filtered = filtered.replace("IamNilo", "I am Nilo")
+    filtered = filtered.replace("IamSMITH", "I am SMITH")
     filtered = filtered.replace("yourpersonal", "your personal")
     filtered = filtered.replace("personalAI", "personal AI")
     filtered = filtered.replace("AIassistant", "AI assistant")
@@ -751,7 +751,7 @@ fun filterAiResponse(text: String): String {
     
     // Pattern 3: common stuck word patterns (MOST IMPORTANT)
     filtered = filtered.replace("Iam", "I am")
-    filtered = filtered.replace("IamNilo", "I am Nilo")
+    filtered = filtered.replace("IamSMITH", "I am SMITH")
     filtered = filtered.replace("yourpersonal", "your personal")
     filtered = filtered.replace("personalAI", "personal AI")
     filtered = filtered.replace("AIassistant", "AI assistant")
@@ -1182,7 +1182,7 @@ fun UnifiedChatView(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                    // Voice button (circular) with Nilo head
+                    // Voice button (circular) with SMITH icon
                     IconButton(
                         onClick = {
                             if (isVoiceModeActive) {
@@ -1211,7 +1211,7 @@ fun UnifiedChatView(
                                 shape = CircleShape
                             )
                     ) {
-                        // Nilo head icon
+                        // SMITH icon icon
                         Image(
                             painter = painterResource(id = R.drawable.app_logo),
                             contentDescription = if (isVoiceModeActive) "Stop voice" else "Voice input",
@@ -1224,7 +1224,7 @@ fun UnifiedChatView(
                         value = inputText,
                         onValueChange = { inputText = it },
                         modifier = Modifier.weight(1f),
-                        placeholder = { Text("Message Hey-Nilo...") },
+                        placeholder = { Text("Message AGENT SMITH...") },
                         enabled = !isGenerating && !isVoiceModeActive,
                         keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
                         keyboardActions = KeyboardActions(
@@ -1355,11 +1355,11 @@ fun UnifiedChatView(
 /**
  * Voice Mode Overlay - Shows when voice mode is active
  * Displays listening status, waveform, and transcript
- * Uses animated Nilo logo for all states
+ * Uses animated SMITH logo for all states
  */
 /**
  * Voice Mode Overlay - Siri-style minimal indicator at bottom center
- * Shows small animated Nilo orb with status text above
+ * Shows small animated SMITH orb with status text above
  */
 @Composable
 fun VoiceModeOverlay(
@@ -1391,11 +1391,11 @@ fun VoiceModeOverlay(
     
     // Status text based on state
     val statusText = when (pipelineState) {
-        VoicePipelineManager.Companion.PipelineState.LISTENING -> "Nilo is listening..."
-        VoicePipelineManager.Companion.PipelineState.SPEECH_DETECTED -> "Nilo hears you!"
-        VoicePipelineManager.Companion.PipelineState.TRANSCRIBING -> "Nilo is writing..."
-        VoicePipelineManager.Companion.PipelineState.THINKING -> "Nilo is thinking..."
-        VoicePipelineManager.Companion.PipelineState.SPEAKING -> "Nilo is speaking..."
+        VoicePipelineManager.Companion.PipelineState.LISTENING -> "SMITH is listening..."
+        VoicePipelineManager.Companion.PipelineState.SPEECH_DETECTED -> "SMITH hears you!"
+        VoicePipelineManager.Companion.PipelineState.TRANSCRIBING -> "SMITH is writing..."
+        VoicePipelineManager.Companion.PipelineState.THINKING -> "SMITH is thinking..."
+        VoicePipelineManager.Companion.PipelineState.SPEAKING -> "SMITH is speaking..."
         else -> ""
     }
     
@@ -1456,7 +1456,7 @@ fun VoiceModeOverlay(
             }
         }
         
-        // Nilo orb container
+        // SMITH orb container
         Box(
             contentAlignment = Alignment.Center
         ) {
@@ -1471,7 +1471,7 @@ fun VoiceModeOverlay(
                 )
             }
             
-            // Main Nilo orb - small size
+            // Main SMITH orb - small size
             Box(
                 modifier = Modifier
                     .size(44.dp)
@@ -1483,10 +1483,10 @@ fun VoiceModeOverlay(
                     },
                 contentAlignment = Alignment.Center
             ) {
-                // Small Nilo icon inside orb
+                // Small SMITH icon inside orb
                 Image(
                     painter = painterResource(id = R.drawable.app_logo),
-                    contentDescription = "Nilo",
+                    contentDescription = "SMITH",
                     modifier = Modifier.size(28.dp)
                 )
             }
@@ -1674,7 +1674,7 @@ fun MessageBubble(message: Message) {
                 Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
                 // Sender name at top
                 Text(
-                    text = if (message.isUser) "You" else "Nilo",
+                    text = if (message.isUser) "You" else "SMITH",
                     style = MaterialTheme.typography.labelSmall,
                     color = textColor.copy(alpha = 0.7f)
                 )

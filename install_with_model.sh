@@ -1,9 +1,9 @@
 #!/bin/bash
-# Install Hey-Nilo app and push cached models
+# Install AGENT SMITH app and push cached models
 
 set -e
 
-echo "=== Installing Hey-Nilo with Model Cache ==="
+echo "=== Installing AGENT SMITH with Model Cache ==="
 
 # Uninstall old app
 echo "Uninstalling old app..."

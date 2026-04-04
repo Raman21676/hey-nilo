@@ -50,7 +50,7 @@ class LlamaBridge(private val context: Context) : BaseBridge() {
         
         // Default system prompt (fallback)
         // SIMPLIFIED: Clear identity without confusing instructions
-        const val DEFAULT_SYSTEM_PROMPT = """You are Nilo, a friendly AI assistant. Be helpful and concise."""
+        const val DEFAULT_SYSTEM_PROMPT = """You are SMITH, a friendly AI assistant. Be helpful and concise."""
         
         // Qwen2.5 chat template tokens
         const val SYSTEM_START = "<|im_start|>system\n"

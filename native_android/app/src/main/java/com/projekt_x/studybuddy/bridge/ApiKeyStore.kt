@@ -13,7 +13,7 @@ class ApiKeyStore(private val context: Context) {
     
     companion object {
         private const val TAG = "ApiKeyStore"
-        private const val PREFS_FILE = "hey_nilo_api_keys"
+        private const val PREFS_FILE = "agent_smith_api_keys"
         private const val KEY_PROVIDER = "provider"
         private const val KEY_API_KEY = "api_key"
         private const val KEY_MODEL_NAME = "model_name"

@@ -251,7 +251,7 @@ class FileSystemManager(private val context: Context) {
 - [ ] Set your personal goals here
 
 ---
-*This file is automatically managed by Hey-Nilo*
+*This file is automatically managed by AGENT SMITH*
 """
         return try {
             goalsFile.writeText(content)

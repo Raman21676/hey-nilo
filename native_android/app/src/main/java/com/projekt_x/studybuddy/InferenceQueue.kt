@@ -222,19 +222,6 @@ class InferenceQueue private constructor(
             bridge.setSystemPrompt(systemPrompt)
         }
         
-        // CRITICAL FIX: Add user message to history BEFORE generation.
-        // The C++ layer includes history when building the prompt via llama_chat_apply_template.
-        // Without this, the model sees only the current message and forgets everything.
-        val filteredUserMessage = request.prompt
-            .replace("<|im_end|>", "")
-            .replace("<|im_start|>", "")
-            .replace("</s>", "")
-            .trim()
-        if (filteredUserMessage.isNotBlank()) {
-            bridge.addToHistory("user", filteredUserMessage)
-            Log.i(TAG, "Added user message to history: ${filteredUserMessage.take(50)}...")
-        }
-        
         // Collect full response for history
         val responseBuilder = StringBuilder()
         
@@ -264,16 +251,28 @@ class InferenceQueue private constructor(
                 ))
             }
         
-        // Add assistant response to history
-        val fullResponse = responseBuilder.toString()
-        Log.i(TAG, "Full response collected: ${fullResponse.length} chars")
+        // CRITICAL FIX: Add BOTH user message and assistant response to history
+        // AFTER generation completes. History must only contain COMPLETED turns.
+        // Adding the user message BEFORE generation caused it to appear TWICE in
+        // the C++ prompt (once from history, once as the current message), which
+        // confused the model and produced garbage responses on follow-ups.
+        val filteredUserMessage = request.prompt
+            .replace("<|im_end|>", "")
+            .replace("<|im_start|>", "")
+            .replace("</s>", "")
+            .trim()
         
-        // CRITICAL FIX: Filter special tokens before saving to history
+        val fullResponse = responseBuilder.toString()
         val filteredResponse = fullResponse
             .replace("<|im_end|>", "")
             .replace("<|im_start|>", "")
             .replace("</s>", "")
             .trim()
+        
+        if (filteredUserMessage.isNotBlank()) {
+            bridge.addToHistory("user", filteredUserMessage)
+            Log.i(TAG, "Added user message to history: ${filteredUserMessage.take(50)}...")
+        }
         
         if (filteredResponse.isNotBlank()) {
             bridge.addToHistory("assistant", filteredResponse)

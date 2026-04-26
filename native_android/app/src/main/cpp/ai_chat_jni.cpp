@@ -797,7 +797,10 @@ Java_com_projekt_1x_studybuddy_LlamaBridge_nativeGenerateStream(
     LOGI("Prefill: %d tokens in %lld ms (%.2f t/s)", n_tokens, decode_ms, 
          decode_ms > 0 ? (n_tokens * 1000.0 / decode_ms) : 0.0);
     
-    g_state->current_pos += n_tokens;
+    // CRITICAL FIX: current_pos must equal the total number of tokens in the KV cache.
+    // With KV cache reuse, current_pos starts at common_prefix, so += n_tokens would
+    // give common_prefix + n_tokens (WRONG). We need current_pos = n_tokens always.
+    g_state->current_pos = n_tokens;
     
     llama_sampler_reset(g_state->sampler);
     

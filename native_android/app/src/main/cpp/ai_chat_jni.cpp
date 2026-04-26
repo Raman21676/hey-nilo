@@ -614,7 +614,20 @@ Java_com_projekt_1x_studybuddy_LlamaBridge_nativeGenerateStream(
     if (!g_system_prompt.empty()) {
         messages.push_back({"system", g_system_prompt.c_str()});
     }
+    
+    // CRITICAL FIX: Include conversation history in the prompt.
+    // This enables multi-turn context, follow-up questions, and "continue" support.
+    // History stores pairs as (role, content) where role is "user" or "assistant".
+    for (const auto& entry : g_state->history) {
+        messages.push_back({entry.first.c_str(), entry.second.c_str()});
+        LOGI("Adding history entry: role=%s, content=%.50s...", entry.first.c_str(), entry.second.c_str());
+    }
+    
+    // Add the current user message
     messages.push_back({"user", promptStr.c_str()});
+    
+    LOGI("Building prompt with %zu messages (including %zu history entries)",
+         messages.size(), g_state->history.size());
     
     // First call to get required buffer size
     int32_t req_size = llama_chat_apply_template(
@@ -648,6 +661,10 @@ Java_com_projekt_1x_studybuddy_LlamaBridge_nativeGenerateStream(
         // Fallback to generic ChatML format
         if (!g_system_prompt.empty()) {
             formatted += "<|im_start|>system\n" + g_system_prompt + "<|im_end|>\n";
+        }
+        // Include history in fallback too
+        for (const auto& entry : g_state->history) {
+            formatted += "<|im_start|>" + entry.first + "\n" + entry.second + "<|im_end|>\n";
         }
         formatted += "<|im_start|>user\n" + promptStr + "<|im_end|>\n";
         formatted += "<|im_start|>assistant\n";
@@ -744,9 +761,12 @@ Java_com_projekt_1x_studybuddy_LlamaBridge_nativeGenerateStream(
     int repeat_count = 0;
     const int MAX_REPEAT = 3;
     
-    // Hard timeout to prevent infinite generation loops
+    // CRITICAL FIX: Increased from 90s to 240s (4 minutes).
+    // On a slow device at ~2 tokens/sec, 90s = ~180 tokens max.
+    // With maxTokens=2048-4096, we need enough time for long responses.
+    // 240s allows ~480 tokens at 2 tok/s, enough for detailed answers.
     auto start_time = std::chrono::steady_clock::now();
-    const int MAX_GENERATION_SECONDS = 90;
+    const int MAX_GENERATION_SECONDS = 240;
     
     while (n_gen < maxTokens && !g_state->should_stop) {
         // Check hard timeout
@@ -906,7 +926,9 @@ Java_com_projekt_1x_studybuddy_LlamaBridge_nativeAddToHistory(
     
     // CRITICAL FIX: Truncate long assistant responses in history to prevent
     // prefill bloat on next request. Long responses make the next prefill slow.
-    const size_t MAX_HISTORY_CONTENT_LENGTH = 150;  // ~30-50 tokens worth of text
+    // CRITICAL FIX: Increased from 150 to 800 chars to preserve enough context
+    // for meaningful multi-turn conversations while keeping prefill manageable.
+    const size_t MAX_HISTORY_CONTENT_LENGTH = 800;
     if (roleString == "assistant" && contentString.length() > MAX_HISTORY_CONTENT_LENGTH) {
         contentString = contentString.substr(0, MAX_HISTORY_CONTENT_LENGTH) + "...";
         LOGI("Truncated long assistant response for history: %zu -> %zu chars", 
@@ -916,8 +938,10 @@ Java_com_projekt_1x_studybuddy_LlamaBridge_nativeAddToHistory(
     g_state->history.push_back({roleString, contentString});
     LOGI("Added to history: %s - %.50s...", roleStr, contentString.c_str());
     
-    // Apply same trimming logic as nativeGenerateStream
-    const size_t MAX_HISTORY_PAIRS = 1;  // Keep only 1 back-and-forth (was 3)
+    // CRITICAL FIX: Increased from 1 to 2 back-and-forth pairs.
+    // This lets the model see the last 2 exchanges, enabling "continue" and
+    // follow-up questions that reference previous answers.
+    const size_t MAX_HISTORY_PAIRS = 2;
     const size_t MAX_HISTORY_SIZE = MAX_HISTORY_PAIRS * 2;
     while (g_state->history.size() > MAX_HISTORY_SIZE) {
         g_state->history.erase(g_state->history.begin());

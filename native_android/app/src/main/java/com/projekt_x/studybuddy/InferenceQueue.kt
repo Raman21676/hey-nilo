@@ -222,11 +222,24 @@ class InferenceQueue private constructor(
             bridge.setSystemPrompt(systemPrompt)
         }
         
+        // CRITICAL FIX: Add user message to history BEFORE generation.
+        // The C++ layer includes history when building the prompt via llama_chat_apply_template.
+        // Without this, the model sees only the current message and forgets everything.
+        val filteredUserMessage = request.prompt
+            .replace("<|im_end|>", "")
+            .replace("<|im_start|>", "")
+            .replace("</s>", "")
+            .trim()
+        if (filteredUserMessage.isNotBlank()) {
+            bridge.addToHistory("user", filteredUserMessage)
+            Log.i(TAG, "Added user message to history: ${filteredUserMessage.take(50)}...")
+        }
+        
         // Collect full response for history
         val responseBuilder = StringBuilder()
         
         // CRITICAL FIX: Removed Kotlin withTimeout around JNI call.
-        // The C++ layer already has a 90-second hard timeout and maxTokens limit.
+        // The C++ layer already has a 240-second hard timeout and maxTokens limit.
         // Kotlin withTimeout was dangerous because it would throw in the coroutine
         // while the native thread kept running, deadlocking the llama mutex.
         bridge.generateStream(request.prompt, request.maxTokens)

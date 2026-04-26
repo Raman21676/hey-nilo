@@ -1551,7 +1551,7 @@ private fun sendTextMessage(
                 val request = CompletionRequest(
                     messages = listOf(ChatMessage.user(text)),
                     systemPrompt = fullSystemPrompt, // BUG FIX 3 & 5: Identity + memory
-                    maxTokens = 256,
+                    maxTokens = 2048,
                     stream = true
                 )
                 
@@ -1613,7 +1613,7 @@ private fun sendTextMessage(
                 id = aiMessage.id,
                 prompt = text,
                 systemPrompt = fullSystemPrompt, // BUG FIX 3 & 5: Identity + memory
-                maxTokens = 256,
+                maxTokens = 2048,
                 priority = InferenceQueue.Priority.HIGH
             )
         )

@@ -413,23 +413,34 @@ class LlamaBridge(private val context: Context) : BaseBridge() {
         val lowerMsg = userMessage.lowercase()
         return when {
             // Short conversational messages
-            userMessage.length < 20 -> 150
-            userMessage.length < 50 -> 200
-            
+            userMessage.length < 20 -> 512
+            userMessage.length < 50 -> 1024
+
+            // Long-form writing: letter, application, story, essay, poem, etc.
+            lowerMsg.containsAny(listOf(
+                "write a letter", "write an application", "write an essay",
+                "write a story", "write a poem", "write a report",
+                "application for", "formal letter", "cover letter",
+                "generate a letter", "generate an application"
+            )) -> 4096
+
+            // General writing requests
+            lowerMsg.containsAny(listOf("write", "story", "essay", "compose", "draft")) -> 3072
+
+            // Code and explanations
+            lowerMsg.containsAny(listOf("code", "explain", "describe", "detail")) -> 2048
+
             // List-type questions (names of, all planets, etc.)
-            lowerMsg.containsAny(listOf("name of all", "names of", "all the", "list", "planets", "countries", "cities")) -> 512
-            
-            // Explicit long content requests
-            lowerMsg.containsAny(listOf("write", "story", "code", "explain", "describe", "detail")) -> 600
-            
+            lowerMsg.containsAny(listOf("name of all", "names of", "all the", "list", "planets", "countries", "cities")) -> 2048
+
             // Questions that need detailed answers
-            lowerMsg.containsAny(listOf("how to", "what is", "why", "compare", "difference")) -> 400
-            
+            lowerMsg.containsAny(listOf("how to", "what is", "why", "compare", "difference")) -> 2048
+
             // Medium questions
-            userMessage.length < 150 -> 300
-            
-            // Default
-            else -> 400
+            userMessage.length < 150 -> 1024
+
+            // Default for longer messages
+            else -> 2048
         }
     }
     
@@ -680,7 +691,7 @@ class LlamaBridge(private val context: Context) : BaseBridge() {
      * CRITICAL FIX: Pass raw user message to C++, which handles prompt formatting
      * CRITICAL FIX: Now properly uses maxTokens parameter (was being ignored!)
      */
-    fun generateStream(prompt: String, maxTokens: Int = 256): kotlinx.coroutines.flow.Flow<String> = 
+    fun generateStream(prompt: String, maxTokens: Int = 2048): kotlinx.coroutines.flow.Flow<String> = 
         kotlinx.coroutines.flow.flow {
             val channel = kotlinx.coroutines.channels.Channel<String>(kotlinx.coroutines.channels.Channel.UNLIMITED)
             

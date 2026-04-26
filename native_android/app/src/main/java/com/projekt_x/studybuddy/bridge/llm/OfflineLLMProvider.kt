@@ -185,15 +185,14 @@ class OfflineLLMProvider(
         val errorChannel = Channel<String?>(1)
 
         try {
-            // CRITICAL FIX: Cap maxTokens to ensure generation completes within C++ timeout on slow devices.
-            // Samsung Tab A7 Lite generates ~2 tokens/sec, so 150 tokens = ~75s max. C++ timeout is 60s.
-            val requestedMaxTokens = request.maxTokens ?: 256
-            val maxTokens = requestedMaxTokens.coerceAtMost(120)
+            // Use requested maxTokens. Previous 120-token cap was cutting off long responses
+            // (letters, stories, applications) mid-sentence. C++ layer has its own 90s timeout
+            // that will stop generation if the device is too slow.
+            val maxTokens = request.maxTokens ?: 2048
 
-            // DIAGNOSTIC LOG - Verify maxTokens is reaching this point
             Log.d("NILO_DEBUG", "Query: $userMessage")
-            Log.d("NILO_DEBUG", "MaxTokens being passed to LLM: $maxTokens (was $requestedMaxTokens)")
-            Log.d(TAG, "Starting generation with maxTokens=$maxTokens (capped from $requestedMaxTokens)")
+            Log.d("NILO_DEBUG", "MaxTokens being passed to LLM: $maxTokens")
+            Log.d(TAG, "Starting generation with maxTokens=$maxTokens")
 
             // CRITICAL FIX: C++ nativeGenerateStream expects RAW user message and manages
             // its own history/formatting. Passing a pre-formatted prompt causes double

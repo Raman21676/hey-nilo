@@ -73,7 +73,7 @@ interface LLMProvider {
     suspend fun quickComplete(
         prompt: String,
         systemPrompt: String? = null,
-        maxTokens: Int = 256
+        maxTokens: Int = 2048
     ): String? {
         val request = CompletionRequest(
             messages = listOf(ChatMessage.user(prompt)),
@@ -270,7 +270,7 @@ suspend fun LLMProvider.completeSimple(
         messages = listOf(ChatMessage.user(userMessage)),
         systemPrompt = systemPrompt,
         memoryContext = memoryContext,
-        maxTokens = 256,
+        maxTokens = 2048,
         stream = false
     )
     
@@ -297,7 +297,7 @@ fun LLMProvider.streamSimple(
         messages = listOf(ChatMessage.user(userMessage)),
         systemPrompt = systemPrompt,
         memoryContext = memoryContext,
-        maxTokens = 256,
+        maxTokens = 2048,
         stream = true
     )
     

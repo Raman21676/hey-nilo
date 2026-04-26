@@ -54,8 +54,8 @@ Java_com_projekt_1x_studybuddy_bridge_LlamaBridge_nativeRelease(JNIEnv* env, job
 extern "C" JNIEXPORT void JNICALL
 Java_com_projekt_1x_studybuddy_bridge_LlamaBridge_nativeGenerate(JNIEnv* env, jobject thiz, jstring prompt, jobject callback) {
     LOGI("Bridge nativeGenerate called");
-    // Use default maxTokens = 256
-    Java_com_projekt_1x_studybuddy_LlamaBridge_nativeGenerateStream(env, thiz, prompt, 256, callback);
+    // Use default maxTokens = 2048
+    Java_com_projekt_1x_studybuddy_LlamaBridge_nativeGenerateStream(env, thiz, prompt, 2048, callback);
 }
 
 extern "C" JNIEXPORT void JNICALL

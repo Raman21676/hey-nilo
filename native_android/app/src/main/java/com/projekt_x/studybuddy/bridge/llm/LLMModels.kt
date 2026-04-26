@@ -53,7 +53,7 @@ data class LLMResponse(
  */
 data class CompletionRequest(
     val messages: List<ChatMessage>,
-    val maxTokens: Int = 256,
+    val maxTokens: Int = 2048,
     val temperature: Float = 0.7f,
     val topP: Float = 0.9f,
     val stopSequences: List<String> = emptyList(),

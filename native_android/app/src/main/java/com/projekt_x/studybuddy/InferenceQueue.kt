@@ -41,7 +41,7 @@ class InferenceQueue private constructor(
         val id: String,
         val prompt: String,
         val systemPrompt: String? = null,
-        val maxTokens: Int = 256,
+        val maxTokens: Int = 2048,
         val priority: Priority = Priority.NORMAL
     )
     

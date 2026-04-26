@@ -331,14 +331,6 @@ fun AgentSmithApp(
     // Voice mode states
     var isVoiceModeActive by remember { mutableStateOf(false) }
     
-    // Periodically sync model loaded state from bridge
-    LaunchedEffect(Unit) {
-        while (true) {
-            isModelLoaded = bridge.isLoaded()
-            delay(1000)
-        }
-    }
-    
     // Context
     val context = LocalContext.current
     

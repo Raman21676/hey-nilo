@@ -68,6 +68,12 @@ struct LlamaState {
     // Conversation history
     std::vector<std::pair<std::string, std::string>> history;
     
+    // CRITICAL FIX: Cache previous turn's tokens for KV cache reuse.
+    // This stores prompt_tokens + generated_tokens from the last turn.
+    // On the next turn, we compare the new prompt's tokens with this cache
+    // and only decode the diff, making follow-up questions MUCH faster.
+    std::vector<llama_token> last_prompt_tokens;
+    
     // Special token IDs (set during model load)
     llama_token token_im_end = -1;
     llama_token token_im_start = -1;
@@ -98,6 +104,7 @@ struct LlamaState {
         should_stop = false;
         current_pos = 0;
         perf_stats = PerformanceStats{};
+        last_prompt_tokens.clear();
     }
 };
 
@@ -674,18 +681,6 @@ Java_com_projekt_1x_studybuddy_LlamaBridge_nativeGenerateStream(
     // DEBUG: Log first 300 chars of prompt to see what's being sent
     LOGI("PROMPT DEBUG: %.300s", formatted.c_str());
     
-    g_state->current_pos = 0;
-    g_state->batch.n_tokens = 0;
-    
-    // CRITICAL FIX: Clear KV cache at start of each request to prevent context pollution
-    llama_memory_t mem = llama_get_memory(g_state->ctx);
-    if (mem) {
-        llama_memory_clear(mem, true);
-        LOGI("KV cache cleared at start of generation");
-    } else {
-        LOGW("Could not get memory for clearing");
-    }
-    
     // CRITICAL FIX: Reset should_stop flag so new requests don't immediately cancel
     g_state->should_stop = false;
     LOGI("should_stop reset to false for new generation");
@@ -710,9 +705,70 @@ Java_com_projekt_1x_studybuddy_LlamaBridge_nativeGenerateStream(
     LOGI("Tokenized %d tokens", n_tokens);
     tokens.resize(n_tokens);
     
+    // ========================================================================
+    // CRITICAL FIX: KV CACHE REUSE FOR FAST FOLLOW-UP QUESTIONS
+    // ========================================================================
+    // Compare new prompt tokens with cached tokens from previous turn.
+    // If they share a common prefix, we can reuse the KV cache and only
+    // decode the new suffix. This makes follow-up questions ~10-50x faster
+    // because we skip re-processing all the history tokens.
+    bool reused_kv = false;
+    size_t common_prefix = 0;
+    llama_memory_t mem = llama_get_memory(g_state->ctx);
+    
+    if (!g_state->last_prompt_tokens.empty() && mem) {
+        const auto& cached = g_state->last_prompt_tokens;
+        size_t min_len = std::min((size_t)n_tokens, cached.size());
+        for (size_t i = 0; i < min_len; i++) {
+            if (tokens[i] == cached[i]) {
+                common_prefix++;
+            } else {
+                break;
+            }
+        }
+        
+        // Only reuse if common prefix is significant (>10 tokens)
+        // This avoids false matches from short prompts
+        if (common_prefix > 10) {
+            LOGI("KV CACHE REUSE: common_prefix=%zu / cached=%zu / new=%d",
+                 common_prefix, cached.size(), n_tokens);
+            
+            // Trim KV cache to keep only the common prefix
+            bool rm_ok = llama_memory_seq_rm(mem, 0, (llama_pos)common_prefix, -1);
+            if (rm_ok) {
+                g_state->current_pos = (llama_pos)common_prefix;
+                g_state->batch.n_tokens = 0;
+                reused_kv = true;
+                LOGI("KV cache trimmed to %zu tokens, current_pos=%d",
+                     common_prefix, (int)g_state->current_pos);
+            } else {
+                LOGW("llama_memory_seq_rm failed, falling back to full prefill");
+            }
+        } else {
+            LOGI("No significant common prefix (%zu tokens), doing full prefill", common_prefix);
+        }
+    }
+    
+    if (!reused_kv) {
+        // Standard path: clear KV cache and do full prefill from position 0
+        g_state->current_pos = 0;
+        g_state->batch.n_tokens = 0;
+        
+        if (mem) {
+            llama_memory_clear(mem, true);
+            LOGI("KV cache cleared for full prefill");
+        } else {
+            LOGW("Could not get memory for clearing");
+        }
+    }
+    
     auto decode_start = std::chrono::high_resolution_clock::now();
     
-    for (int i = 0; i < n_tokens; i += g_state->n_batch) {
+    // Decode tokens. If reusing KV cache, start from common_prefix.
+    // Otherwise start from 0.
+    int start_i = reused_kv ? (int)common_prefix : 0;
+    
+    for (int i = start_i; i < n_tokens; i += g_state->n_batch) {
         // CRITICAL FIX: Check for stop request during prefill
         if (g_state->should_stop) {
             LOGI("Prefill stopped early due to user cancellation");
@@ -752,6 +808,8 @@ Java_com_projekt_1x_studybuddy_LlamaBridge_nativeGenerateStream(
     
     int n_gen = 0;
     std::string response;
+    std::vector<llama_token> generated_tokens;
+    generated_tokens.reserve(maxTokens);
     
     // Use pre-scanned special token IDs from model load
     llama_token token_im_end = g_state->token_im_end;
@@ -817,6 +875,9 @@ Java_com_projekt_1x_studybuddy_LlamaBridge_nativeGenerateStream(
             last_token = new_token;
         }
         
+        // Track generated token for KV cache reuse on next turn
+        generated_tokens.push_back(new_token);
+        
         char piece[256];
         int n = llama_token_to_piece(vocab, new_token, piece, sizeof(piece), 0, true);
         if (n <= 0) {
@@ -869,6 +930,17 @@ Java_com_projekt_1x_studybuddy_LlamaBridge_nativeGenerateStream(
     }
     
     g_state->is_generating = false;
+    
+    // CRITICAL FIX: Save prompt + generated tokens for KV cache reuse on next turn.
+    // This enables fast follow-up questions by avoiding re-processing history.
+    g_state->last_prompt_tokens = tokens;
+    g_state->last_prompt_tokens.insert(
+        g_state->last_prompt_tokens.end(),
+        generated_tokens.begin(),
+        generated_tokens.end()
+    );
+    LOGI("Cached %zu tokens for next turn (prompt=%d + generated=%zu)",
+         g_state->last_prompt_tokens.size(), n_tokens, generated_tokens.size());
     
     // CRITICAL FIX: Release the mutex immediately after generation ends.
     // The mutex was acquired at the start of this function and would normally
@@ -1148,6 +1220,10 @@ Java_com_projekt_1x_studybuddy_LlamaBridge_nativeClearContext(
     size_t old_size = g_state->history.size();
     g_state->history.clear();
     LOGI("Conversation history cleared (was %zu messages)", old_size);
+    
+    // Clear cached prompt tokens so next generation does full prefill
+    g_state->last_prompt_tokens.clear();
+    LOGI("Cached prompt tokens cleared");
     
     // Clear any pending batch tokens
     if (g_state->batch.n_tokens > 0) {

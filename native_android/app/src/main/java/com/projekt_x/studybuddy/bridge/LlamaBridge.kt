@@ -8,6 +8,7 @@ import android.util.Log
 import kotlinx.coroutines.*
 import java.io.BufferedReader
 import java.io.FileReader
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * JNI-compatible callback interface for token streaming.
@@ -80,6 +81,11 @@ class LlamaBridge(private val context: Context) : BaseBridge() {
     private var currentConfig: BridgeConfig? = null
     private var modelPath: String? = null
     private var currentSystemPrompt: String = DEFAULT_SYSTEM_PROMPT
+    
+    // CRITICAL FIX: Atomic guard to prevent concurrent loadModel/unloadModel calls.
+    // Multiple rapid taps or racing coroutines can call loadModel() simultaneously,
+    // causing native crashes in llama.cpp. This ensures only one load/unload at a time.
+    private val isLoadingModel = AtomicBoolean(false)
 
     // ========================================================================
     // BaseBridge Implementation
@@ -156,42 +162,52 @@ class LlamaBridge(private val context: Context) : BaseBridge() {
      * @return true if loaded successfully
      */
     fun loadModel(path: String, config: BridgeConfig = detectDeviceConfig()): Boolean {
-        // Only check state, not isLoaded() - we need to load the model!
-        if (currentState != State.READY) {
-            val msg = "Cannot load model: bridge not ready (state: $currentState)"
-            setError(msg)
+        // CRITICAL FIX: Atomic guard against concurrent loadModel calls.
+        if (!isLoadingModel.compareAndSet(false, true)) {
+            Log.w(TAG, "loadModel ignored: another load/unload is already in progress")
             return false
         }
         
-        updateState(State.LOADING)
-        
-        return try {
-            Log.i(TAG, "Loading model from: $path")
-            Log.i(TAG, "Config: threads=${config.threads}, context=${config.contextSize}, " +
-                    "mmap=${config.useMmap}")
-            
-            val success = nativeLoadModel(
-                path,
-                config.threads,
-                config.contextSize,
-                config.batchSize,
-                config.useMmap,
-                config.memoryPressure
-            )
-            
-            if (success) {
-                modelPath = path
-                currentConfig = config
-                updateState(State.READY)
-                Log.i(TAG, "Model loaded successfully")
-            } else {
-                setError("Failed to load model. Possible causes: (1) The model file is corrupted or not a valid GGUF, (2) Your device doesn't have enough free RAM to load this model, (3) This model architecture is not supported by the app yet. Try a smaller model or reinstall.")
+        try {
+            // Only check state, not isLoaded() - we need to load the model!
+            if (currentState != State.READY) {
+                val msg = "Cannot load model: bridge not ready (state: $currentState)"
+                setError(msg)
+                return false
             }
             
-            success
-        } catch (e: Exception) {
-            setError("Exception loading model: ${e.message}")
-            false
+            updateState(State.LOADING)
+            
+            return try {
+                Log.i(TAG, "Loading model from: $path")
+                Log.i(TAG, "Config: threads=${config.threads}, context=${config.contextSize}, " +
+                        "mmap=${config.useMmap}")
+                
+                val success = nativeLoadModel(
+                    path,
+                    config.threads,
+                    config.contextSize,
+                    config.batchSize,
+                    config.useMmap,
+                    config.memoryPressure
+                )
+                
+                if (success) {
+                    modelPath = path
+                    currentConfig = config
+                    updateState(State.READY)
+                    Log.i(TAG, "Model loaded successfully")
+                } else {
+                    setError("Failed to load model. Possible causes: (1) The model file is corrupted or not a valid GGUF, (2) Your device doesn't have enough free RAM to load this model, (3) This model architecture is not supported by the app yet. Try a smaller model or reinstall.")
+                }
+                
+                success
+            } catch (e: Exception) {
+                setError("Exception loading model: ${e.message}")
+                false
+            }
+        } finally {
+            isLoadingModel.set(false)
         }
     }
     
@@ -207,6 +223,12 @@ class LlamaBridge(private val context: Context) : BaseBridge() {
      * Unload the current model
      */
     fun unloadModel(): Boolean {
+        // CRITICAL FIX: Don't unload while a load is in progress
+        if (isLoadingModel.get()) {
+            Log.w(TAG, "unloadModel ignored: a load is currently in progress")
+            return false
+        }
+        
         return try {
             nativeUnloadModel()
             modelPath = null

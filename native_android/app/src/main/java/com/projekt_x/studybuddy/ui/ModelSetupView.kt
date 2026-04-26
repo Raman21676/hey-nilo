@@ -18,6 +18,7 @@ import androidx.activity.compose.BackHandler
 
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -81,8 +82,12 @@ fun ModelSetupView(
     var savedConfig by remember { mutableStateOf<LastModelPreference.SavedConfig?>(null) }
     var isAutoLoading by remember { mutableStateOf(false) }
     
-    // FIX: Prevent double-click crash on Start Chatting button
-    var isStartButtonLoading by remember { mutableStateOf(false) }
+    // FIX: Prevent double-click crash on Start Chatting button.
+    // CRITICAL FIX: Use rememberSaveable so the flag persists across
+    // recompositions and remounts. With plain remember, the flag resets
+    // to false when ModelSetupView is unmounted and remounted, allowing
+    // a second tap while native teardown is still in progress.
+    var isStartButtonLoading by rememberSaveable { mutableStateOf(false) }
     
     // FIX: Track HuggingFace downloaded models for dedicated bar
     var hfDownloadedModels by remember { mutableStateOf<List<File>>(emptyList()) }
@@ -207,8 +212,10 @@ fun ModelSetupView(
                             selectedOfflineModel = model
                             selectedMode = AppMode.Offline
                             
-                            // Auto-load the model immediately after detection
-                            if (!bridge.isLoaded()) {
+                            // CRITICAL FIX: Only auto-load if user hasn't already tapped
+                            // Start Chatting. The isStartButtonLoading flag (now rememberSaveable)
+                            // persists across remounts and prevents racing with user-initiated loads.
+                            if (!bridge.isLoaded() && !isStartButtonLoading) {
                                 Log.i(TAG, "Auto-loading model after detection: ${model.displayName}")
                                 onLoading(true)
                                 try {
@@ -228,6 +235,8 @@ fun ModelSetupView(
                                 } finally {
                                     onLoading(false)
                                 }
+                            } else {
+                                Log.i(TAG, "Auto-load skipped: bridge.isLoaded=${bridge.isLoaded()}, isStartButtonLoading=$isStartButtonLoading")
                             }
                         } ?: run {
                             // Auto-select first HF downloaded model

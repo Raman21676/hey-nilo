@@ -81,6 +81,9 @@ fun ModelSetupView(
     var savedConfig by remember { mutableStateOf<LastModelPreference.SavedConfig?>(null) }
     var isAutoLoading by remember { mutableStateOf(false) }
     
+    // FIX: Prevent double-click crash on Start Chatting button
+    var isStartButtonLoading by remember { mutableStateOf(false) }
+    
     // FIX: Track HuggingFace downloaded models for dedicated bar
     var hfDownloadedModels by remember { mutableStateOf<List<File>>(emptyList()) }
     
@@ -265,8 +268,9 @@ fun ModelSetupView(
             modifier = Modifier
                 .fillMaxSize()
                 .verticalScroll(rememberScrollState())
+                .windowInsetsPadding(androidx.compose.foundation.layout.WindowInsets.statusBars)
                 .padding(horizontal = 24.dp)
-                .padding(top = 4.dp, bottom = 16.dp),
+                .padding(bottom = 16.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.Top
         ) {
@@ -414,18 +418,24 @@ fun ModelSetupView(
             ) {
                 Button(
                     onClick = {
+                        // CRITICAL FIX: Set loading flag IMMEDIATELY before any other logic.
+                        // The old code set it deep inside 'when' branches, allowing rapid taps to
+                        // slip through before the flag was visible.
+                        if (isStartButtonLoading) {
+                            Log.d(TAG, "Start Chatting ignored: already loading")
+                            return@Button
+                        }
+                        isStartButtonLoading = true
+
                         when (selectedMode) {
                             is AppMode.Offline -> {
                                 if (selectedOfflineModel != null) {
-                                    // Check model type to determine path
                                     val customModel = CustomModelManager.getCustomModel(context)
                                     val isCustomModel = selectedOfflineModel!!.id.startsWith("custom_")
-                                    
                                     val modelPath = when {
                                         isCustomModel && customModel != null -> customModel.path
                                         else -> File(context.getExternalFilesDir(null), "models/${selectedOfflineModel!!.fileName}").absolutePath
                                     }
-                                    
                                     val modelFile = File(modelPath)
                                     if (modelFile.exists()) {
                                         onLoading(true)
@@ -435,7 +445,6 @@ fun ModelSetupView(
                                                 val success = bridge.loadModel(modelPath, config)
                                                 if (success) {
                                                     bridge.setSystemPrompt(com.projekt_x.studybuddy.bridge.llm.SystemPromptBuilder.buildSystemPrompt())
-                                                    // Save config for resume
                                                     val isCustom = selectedOfflineModel!!.id.startsWith("custom_")
                                                     val customPath = if (isCustom) modelPath else null
                                                     lastModelPref.saveOfflineModel(selectedOfflineModel!!, isCustom, customPath)
@@ -447,13 +456,16 @@ fun ModelSetupView(
                                             } catch (e: Exception) {
                                                 onError("Error: ${e.message}")
                                             } finally {
+                                                isStartButtonLoading = false
                                                 onLoading(false)
                                             }
                                         }
                                     } else {
+                                        isStartButtonLoading = false
                                         snackbarMessage = "Model not found at: $modelPath"
                                     }
                                 } else {
+                                    isStartButtonLoading = false
                                     snackbarMessage = "Tap 'Configure' on Offline card to select a model first."
                                 }
                             }
@@ -469,7 +481,6 @@ fun ModelSetupView(
                                                 val success = bridge.loadModel(modelPath, config)
                                                 if (success) {
                                                     bridge.setSystemPrompt(com.projekt_x.studybuddy.bridge.llm.SystemPromptBuilder.buildSystemPrompt())
-                                                    // Save HF config for resume
                                                     lastModelPref.saveOfflineModel(selectedOfflineModel!!, false, modelPath)
                                                     Log.i(TAG, "Saved HF model config for resume: ${selectedOfflineModel!!.displayName}")
                                                     onModelLoaded(AppMode.HuggingFace)
@@ -479,27 +490,39 @@ fun ModelSetupView(
                                             } catch (e: Exception) {
                                                 onError("Error: ${e.message}")
                                             } finally {
+                                                isStartButtonLoading = false
                                                 onLoading(false)
                                             }
                                         }
                                     } else {
+                                        isStartButtonLoading = false
                                         snackbarMessage = "Model not found at: $modelPath"
                                     }
                                 } else {
+                                    isStartButtonLoading = false
                                     snackbarMessage = "Tap 'Configure' on Hugging Face card to download a model first."
                                 }
                             }
                             is AppMode.Online -> {
                                 if (onlineConfig?.apiKey?.isNotBlank() == true) {
-                                    // Save the config for resume on next app launch
-                                    lastModelPref.saveOnlineConfig(onlineConfig!!)
-                                    Log.i(TAG, "Saved online config for resume: ${onlineConfig!!.provider.name}")
-                                    onOnlineConfigured(onlineConfig!!)
+                                    onLoading(true)
+                                    scope.launch {
+                                        try {
+                                            lastModelPref.saveOnlineConfig(onlineConfig!!)
+                                            Log.i(TAG, "Saved online config for resume: ${onlineConfig!!.provider.name}")
+                                            onOnlineConfigured(onlineConfig!!)
+                                        } finally {
+                                            isStartButtonLoading = false
+                                            onLoading(false)
+                                        }
+                                    }
                                 } else {
+                                    isStartButtonLoading = false
                                     snackbarMessage = "Tap 'Configure' on Online card to set up API key."
                                 }
                             }
                             null -> {
+                                isStartButtonLoading = false
                                 snackbarMessage = "Select a mode first"
                             }
                         }
@@ -507,7 +530,7 @@ fun ModelSetupView(
                     modifier = Modifier
                         .fillMaxWidth()
                         .height(56.dp),
-                    enabled = selectedMode != null
+                    enabled = selectedMode != null && !isStartButtonLoading
                 ) {
                     Icon(Icons.Default.PlayArrow, contentDescription = null)
                     Spacer(modifier = Modifier.width(8.dp))

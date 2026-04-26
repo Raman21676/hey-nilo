@@ -63,7 +63,7 @@ enum class ModelCategory(val displayName: String, val icon: String) {
 }
 
 /**
- * ALL 28 Models organized by their ACTUAL minimum RAM requirements
+ * ALL 27 Models organized by their ACTUAL minimum RAM requirements
  * Each tier contains models that need that specific amount of RAM
  * 
  * EXPANDED: Added 18 new models based on popular demand (Pocket Pal style)
@@ -117,18 +117,6 @@ val ALL_OFFLINE_MODELS: List<OfflineModelConfig> = listOf(
         downloadUrl = "https://huggingface.co/Qwen/Qwen2-0.5B-Instruct-GGUF/resolve/main/qwen2-0_5b-instruct-q4_0.gguf",
         category = ModelCategory.ULTRA_LIGHT
     ),
-    OfflineModelConfig(
-        id = "stablelm2-zephyr",
-        displayName = "StableLM 2 Zephyr 1.6B",
-        fileName = "stablelm-2-zephyr-1.6b-Q4_K_M.gguf",
-        sizeGB = 1.0f,
-        minRamGB = 3,
-        isRecommended = false,
-        description = "Natural chat · DPO-tuned conversations",
-        downloadUrl = "https://huggingface.co/second-state/stablelm-2-zephyr-1.6b-GGUF/resolve/main/stablelm-2-zephyr-1.6b-Q4_K_M.gguf",
-        category = ModelCategory.GENERAL
-    ),
-
     // ========================================
     // TIER 2: 4GB RAM (Lightweight quality models)
     // ========================================
@@ -144,14 +132,25 @@ val ALL_OFFLINE_MODELS: List<OfflineModelConfig> = listOf(
         category = ModelCategory.GENERAL
     ),
     OfflineModelConfig(
-        id = "gemma-2b",
-        displayName = "Gemma 2B IT",
-        fileName = "gemma-2b-it-Q4_K_M.gguf",
-        sizeGB = 1.4f,
+        id = "gemma-2-2b",
+        displayName = "Gemma 2 2B IT",
+        fileName = "gemma-2-2b-it-Q4_K_M.gguf",
+        sizeGB = 1.6f,
         minRamGB = 4,
         isRecommended = false,
-        description = "Google's model · High quality",
-        downloadUrl = "https://huggingface.co/lmstudio-community/gemma-2b-it-GGUF/resolve/main/gemma-2b-it-Q4_K_M.gguf",
+        description = "Gemma 2 · Better quality & safety",
+        downloadUrl = "https://huggingface.co/bartowski/gemma-2-2b-it-GGUF/resolve/main/gemma-2-2b-it-Q4_K_M.gguf",
+        category = ModelCategory.GENERAL
+    ),
+    OfflineModelConfig(
+        id = "gemma-4-e2b",
+        displayName = "Gemma 4 E2B IT",
+        fileName = "gemma-4-E2B-it-Q4_K_M.gguf",
+        sizeGB = 2.9f,
+        minRamGB = 4,
+        isRecommended = false,
+        description = "Gemma 4 Edge · Latest small model",
+        downloadUrl = "https://huggingface.co/unsloth/gemma-4-E2B-it-GGUF/resolve/main/gemma-4-E2B-it-Q4_K_M.gguf",
         category = ModelCategory.GENERAL
     ),
     OfflineModelConfig(
@@ -168,12 +167,12 @@ val ALL_OFFLINE_MODELS: List<OfflineModelConfig> = listOf(
     OfflineModelConfig(
         id = "smollm2",
         displayName = "SmolLM2 1.7B",
-        fileName = "smollm2-1.7b-instruct-q4_0.gguf",
+        fileName = "SmolLM2-1.7B-Instruct-Q4_K_M.gguf",
         sizeGB = 1.0f,
         minRamGB = 4,
         isRecommended = false,
         description = "Microsoft's best · Very fast & efficient",
-        downloadUrl = "https://huggingface.co/HuggingFaceTB/SmolLM2-1.7B-Instruct-GGUF/resolve/main/smollm2-1.7b-instruct-q4_0.gguf",
+        downloadUrl = "https://huggingface.co/bartowski/SmolLM2-1.7B-Instruct-GGUF/resolve/main/SmolLM2-1.7B-Instruct-Q4_K_M.gguf",
         category = ModelCategory.GENERAL
     ),
     OfflineModelConfig(
@@ -214,6 +213,28 @@ val ALL_OFFLINE_MODELS: List<OfflineModelConfig> = listOf(
         category = ModelCategory.GENERAL
     ),
     OfflineModelConfig(
+        id = "gemma-3-4b",
+        displayName = "Gemma 3 4B IT",
+        fileName = "gemma-3-4b-it-Q4_K_M.gguf",
+        sizeGB = 2.5f,
+        minRamGB = 6,
+        isRecommended = false,
+        description = "Gemma 3 4B · Vision + text capable",
+        downloadUrl = "https://huggingface.co/unsloth/gemma-3-4b-it-GGUF/resolve/main/gemma-3-4b-it-Q4_K_M.gguf",
+        category = ModelCategory.GENERAL
+    ),
+    OfflineModelConfig(
+        id = "gemma-4-e4b",
+        displayName = "Gemma 4 E4B IT",
+        fileName = "gemma-4-E4B-it-Q4_K_M.gguf",
+        sizeGB = 4.6f,
+        minRamGB = 6,
+        isRecommended = false,
+        description = "Gemma 4 Edge 4B · Latest medium model",
+        downloadUrl = "https://huggingface.co/unsloth/gemma-4-E4B-it-GGUF/resolve/main/gemma-4-E4B-it-Q4_K_M.gguf",
+        category = ModelCategory.GENERAL
+    ),
+    OfflineModelConfig(
         id = "qwen2.5-3b",
         displayName = "Qwen2.5 3B",
         fileName = "qwen2.5-3b-instruct-q4_0.gguf",
@@ -227,23 +248,23 @@ val ALL_OFFLINE_MODELS: List<OfflineModelConfig> = listOf(
     OfflineModelConfig(
         id = "deepseek-coder-1.3b",
         displayName = "DeepSeek Coder 1.3B",
-        fileName = "deepseek-coder-1.3b-instruct-Q4_K_M.gguf",
-        sizeGB = 0.9f,
+        fileName = "deepseek-coder-1.3b-instruct.Q4_K_M.gguf",
+        sizeGB = 0.8f,
         minRamGB = 5,
         isRecommended = false,
         description = "Code specialist · Completion & debug",
-        downloadUrl = "https://huggingface.co/TheBloke/DeepSeek-Coder-V2-Lite-Instruct-GGUF/resolve/main/deepseek-coder-1.3b-instruct.Q4_K_M.gguf",
+        downloadUrl = "https://huggingface.co/TheBloke/deepseek-coder-1.3b-instruct-GGUF/resolve/main/deepseek-coder-1.3b-instruct.Q4_K_M.gguf",
         category = ModelCategory.CODING
     ),
     OfflineModelConfig(
         id = "exaone-3.5-2.4b",
         displayName = "EXAONE 3.5 2.4B",
-        fileName = "exaone-3.5-2.4b-instruct-Q4_K_M.gguf",
+        fileName = "EXAONE-3.5-2.4B-Instruct-Q4_K_M.gguf",
         sizeGB = 1.5f,
         minRamGB = 5,
         isRecommended = false,
         description = "LG AI · Bilingual EN/KO support",
-        downloadUrl = "https://huggingface.co/LGAI-EXAONE/EXAONE-3.5-2.4B-Instruct-GGUF/resolve/main/exaone-3.5-2.4b-instruct-Q4_K_M.gguf",
+        downloadUrl = "https://huggingface.co/bartowski/EXAONE-3.5-2.4B-Instruct-GGUF/resolve/main/EXAONE-3.5-2.4B-Instruct-Q4_K_M.gguf",
         category = ModelCategory.MULTILINGUAL
     ),
     OfflineModelConfig(
@@ -264,34 +285,34 @@ val ALL_OFFLINE_MODELS: List<OfflineModelConfig> = listOf(
     OfflineModelConfig(
         id = "llama3-8b",
         displayName = "Llama 3 8B",
-        fileName = "llama-3-8b-instruct-q4_k_m.gguf",
-        sizeGB = 4.5f,
+        fileName = "Meta-Llama-3-8B-Instruct-Q4_K_M.gguf",
+        sizeGB = 4.6f,
         minRamGB = 8,
         isRecommended = true,
         description = "Meta's full model · Excellent quality",
-        downloadUrl = "https://huggingface.co/hugging-quants/Llama-3-8B-Instruct-Q4_K_M-GGUF/resolve/main/llama-3-8b-instruct-q4_k_m.gguf",
+        downloadUrl = "https://huggingface.co/bartowski/Meta-Llama-3-8B-Instruct-GGUF/resolve/main/Meta-Llama-3-8B-Instruct-Q4_K_M.gguf",
         category = ModelCategory.GENERAL
     ),
     OfflineModelConfig(
         id = "qwen2.5-7b",
         displayName = "Qwen2.5 7B",
-        fileName = "qwen2.5-7b-instruct-q4_0.gguf",
+        fileName = "Qwen2.5-7B-Instruct-Q4_K_M.gguf",
         sizeGB = 4.4f,
         minRamGB = 8,
         isRecommended = false,
         description = "Alibaba's large model · Top tier",
-        downloadUrl = "https://huggingface.co/Qwen/Qwen2.5-7B-Instruct-GGUF/resolve/main/qwen2.5-7b-instruct-q4_0.gguf",
+        downloadUrl = "https://huggingface.co/bartowski/Qwen2.5-7B-Instruct-GGUF/resolve/main/Qwen2.5-7B-Instruct-Q4_K_M.gguf",
         category = ModelCategory.MULTILINGUAL
     ),
     OfflineModelConfig(
         id = "mistral-7b",
         displayName = "Mistral 7B Instruct",
-        fileName = "mistral-7b-instruct-v0.3.Q4_K_M.gguf",
+        fileName = "Mistral-7B-Instruct-v0.3-Q4_K_M.gguf",
         sizeGB = 4.1f,
         minRamGB = 8,
         isRecommended = false,
         description = "Creative writing · Story & dialogue",
-        downloadUrl = "https://huggingface.co/TheBloke/Mistral-7B-Instruct-v0.3-GGUF/resolve/main/mistral-7b-instruct-v0.3.Q4_K_M.gguf",
+        downloadUrl = "https://huggingface.co/bartowski/Mistral-7B-Instruct-v0.3-GGUF/resolve/main/Mistral-7B-Instruct-v0.3-Q4_K_M.gguf",
         category = ModelCategory.CREATIVE
     ),
     OfflineModelConfig(
@@ -302,7 +323,7 @@ val ALL_OFFLINE_MODELS: List<OfflineModelConfig> = listOf(
         minRamGB = 8,
         isRecommended = false,
         description = "Best coding model · 82% HumanEval",
-        downloadUrl = "https://huggingface.co/TheBloke/DeepSeek-Coder-V2-Lite-Instruct-GGUF/resolve/main/deepseek-coder-6.7b-instruct.Q4_K_M.gguf",
+        downloadUrl = "https://huggingface.co/TheBloke/deepseek-coder-6.7b-instruct-GGUF/resolve/main/deepseek-coder-6.7b-instruct.Q4_K_M.gguf",
         category = ModelCategory.CODING
     ),
     OfflineModelConfig(
@@ -320,7 +341,7 @@ val ALL_OFFLINE_MODELS: List<OfflineModelConfig> = listOf(
         id = "qwen2.5-coder-7b",
         displayName = "Qwen2.5 Coder 7B",
         fileName = "qwen2.5-coder-7b-instruct-q4_k_m.gguf",
-        sizeGB = 4.2f,
+        sizeGB = 4.4f,
         minRamGB = 8,
         isRecommended = false,
         description = "Advanced coding · Multi-language",
@@ -334,12 +355,12 @@ val ALL_OFFLINE_MODELS: List<OfflineModelConfig> = listOf(
     OfflineModelConfig(
         id = "llama3.1-8b",
         displayName = "Llama 3.1 8B",
-        fileName = "llama-3.1-8b-instruct-q4_k_m.gguf",
-        sizeGB = 4.7f,
+        fileName = "Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf",
+        sizeGB = 4.6f,
         minRamGB = 10,
         isRecommended = true,
         description = "128K context · Best responses",
-        downloadUrl = "https://huggingface.co/hugging-quants/Llama-3.1-8B-Instruct-Q4_K_M-GGUF/resolve/main/llama-3.1-8b-instruct-q4_k_m.gguf",
+        downloadUrl = "https://huggingface.co/bartowski/Meta-Llama-3.1-8B-Instruct-GGUF/resolve/main/Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf",
         category = ModelCategory.GENERAL
     ),
     OfflineModelConfig(
@@ -356,23 +377,23 @@ val ALL_OFFLINE_MODELS: List<OfflineModelConfig> = listOf(
     OfflineModelConfig(
         id = "mistral-nemo-12b",
         displayName = "Mistral Nemo 12B",
-        fileName = "mistral-nemo-instruct-2407-Q4_K_M.gguf",
+        fileName = "Mistral-Nemo-Instruct-2407-Q4_K_M.gguf",
         sizeGB = 7.0f,
         minRamGB = 12,
         isRecommended = false,
         description = "Best creative writing · Stories",
-        downloadUrl = "https://huggingface.co/TheBloke/Mistral-Nemo-Instruct-2407-GGUF/resolve/main/mistral-nemo-instruct-2407.Q4_K_M.gguf",
+        downloadUrl = "https://huggingface.co/bartowski/Mistral-Nemo-Instruct-2407-GGUF/resolve/main/Mistral-Nemo-Instruct-2407-Q4_K_M.gguf",
         category = ModelCategory.CREATIVE
     ),
     OfflineModelConfig(
         id = "qwen2.5-14b",
         displayName = "Qwen2.5 14B",
-        fileName = "qwen2.5-14b-instruct-q4_k_m.gguf",
-        sizeGB = 8.5f,
+        fileName = "Qwen2.5-14B-Instruct-Q4_K_M.gguf",
+        sizeGB = 8.4f,
         minRamGB = 12,
         isRecommended = false,
         description = "Power users · Advanced reasoning",
-        downloadUrl = "https://huggingface.co/Qwen/Qwen2.5-14B-Instruct-GGUF/resolve/main/qwen2.5-14b-instruct-q4_k_m.gguf",
+        downloadUrl = "https://huggingface.co/bartowski/Qwen2.5-14B-Instruct-GGUF/resolve/main/Qwen2.5-14B-Instruct-Q4_K_M.gguf",
         category = ModelCategory.REASONING
     )
     // Note: Llama 3.1 70B removed as it requires 40GB - not practical for mobile

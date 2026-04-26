@@ -20,8 +20,10 @@ set(GGML_ROOT ${LLAMA_ROOT}/ggml)
 # GGML sources (shared)
 set(GGML_SOURCES
     ${GGML_ROOT}/src/ggml.c
+    ${GGML_ROOT}/src/ggml.cpp
     ${GGML_ROOT}/src/ggml-alloc.c
     ${GGML_ROOT}/src/ggml-backend.cpp
+    ${GGML_ROOT}/src/ggml-backend-meta.cpp
     ${GGML_ROOT}/src/ggml-quants.c
     ${GGML_ROOT}/src/ggml-threading.cpp
     ${GGML_ROOT}/src/gguf.cpp

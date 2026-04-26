@@ -447,13 +447,25 @@ private suspend fun downloadModel(
                 }
                 is HuggingFaceClient.DownloadProgress.Completed -> {
                     Log.i(TAG, "Download completed: ${progress.file.absolutePath}, size=${progress.file.length()}")
-                    // FIX: Verify file actually exists before calling onComplete
-                    if (progress.file.exists() && progress.file.length() > 0) {
-                        onComplete(progress.file)
-                    } else {
+                    // FIX: Verify file actually exists and is a valid GGUF before calling onComplete
+                    if (!progress.file.exists() || progress.file.length() == 0L) {
                         Log.e(TAG, "Download reported complete but file is missing or empty")
                         onError("Download failed: file missing after completion")
+                        return@collect
                     }
+                    // Validate GGUF magic bytes
+                    val magic = progress.file.inputStream().use { input ->
+                        val buf = ByteArray(4)
+                        input.read(buf)
+                        String(buf, Charsets.US_ASCII)
+                    }
+                    if (magic != "GGUF") {
+                        Log.e(TAG, "Downloaded file is not a valid GGUF model. Magic bytes: $magic")
+                        progress.file.delete()
+                        onError("Download failed: file is not a valid GGUF model. The download may have been blocked by HuggingFace or the model is incompatible.")
+                        return@collect
+                    }
+                    onComplete(progress.file)
                 }
                 is HuggingFaceClient.DownloadProgress.Error -> {
                     Log.e(TAG, "Download error: ${progress.message}")

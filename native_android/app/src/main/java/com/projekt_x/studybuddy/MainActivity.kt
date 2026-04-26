@@ -105,7 +105,6 @@ class MainActivity : ComponentActivity() {
         ThemeManager.init(this)
         
         // Show loading UI first
-        enableEdgeToEdge()
         setContent {
             AgentSmithTheme {
                 InitializingView()

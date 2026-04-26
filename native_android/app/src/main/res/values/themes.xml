@@ -1,7 +1,10 @@
 <resources>
     <style name="Theme.AgentSmith" parent="android:Theme.Material.Light.NoActionBar">
-        <item name="android:statusBarColor">@android:color/transparent</item>
+        <!-- FIX: Use solid status bar color so system bar is visible and separate from app content -->
+        <item name="android:statusBarColor">@color/status_bar_color</item>
         <item name="android:navigationBarColor">@android:color/transparent</item>
+        <!-- Dark icons on light status bar -->
+        <item name="android:windowLightStatusBar">true</item>
         <!-- Use SMITH logo for splash screen background -->
         <item name="android:windowBackground">@drawable/splash_background</item>
     </style>

@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Status bar background color - light gray to match app surface -->
+    <color name="status_bar_color">#FFF5F5F5</color>
+</resources>

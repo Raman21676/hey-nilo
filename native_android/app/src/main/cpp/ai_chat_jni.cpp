@@ -497,8 +497,21 @@ Java_com_projekt_1x_studybuddy_LlamaBridge_prepareContext(JNIEnv* env, jobject /
     g_state->ctx = llama_init_from_model(g_state->model, ctx_params);
     
     if (!g_state->ctx) {
-        LOGE("Failed to create context");
-        return -1;
+        LOGW("Failed to create context with n_ctx=%d, retrying with smaller sizes...", g_state->n_ctx);
+        // Fallback: try halving context size until it works or we hit minimum
+        int fallback_ctx = g_state->n_ctx;
+        while (!g_state->ctx && fallback_ctx > 256) {
+            fallback_ctx /= 2;
+            ctx_params.n_ctx = fallback_ctx;
+            LOGI("Retrying context creation with n_ctx=%d", fallback_ctx);
+            g_state->ctx = llama_init_from_model(g_state->model, ctx_params);
+        }
+        if (!g_state->ctx) {
+            LOGE("Failed to create context even with n_ctx=256");
+            return -1;
+        }
+        g_state->n_ctx = fallback_ctx;
+        LOGI("Context created successfully with reduced n_ctx=%d", fallback_ctx);
     }
     
     g_state->batch = llama_batch_init(g_state->n_batch, 0, 1);
@@ -586,20 +599,59 @@ Java_com_projekt_1x_studybuddy_LlamaBridge_nativeGenerateStream(
     // The Kotlin layer will add to history after successful completion.
     env->ReleaseStringUTFChars(userPrompt, prompt);
     
-    // Build prompt with ONLY current user message - no history
-    // This ensures fast prefill (20-30 tokens) instead of slow (70+ tokens)
+    // Build prompt with model's native chat template
+    // This ensures correct formatting for ANY model (Qwen, Gemma, Llama, etc.)
     std::string formatted;
     
-    // Add system prompt if set
-    if (!g_system_prompt.empty()) {
-        formatted += "<|im_start|>system\n" + g_system_prompt + "<|im_end|>\n";
+    const char* chat_template = llama_model_chat_template(g_state->model, nullptr);
+    if (chat_template) {
+        LOGI("Using model chat template");
+    } else {
+        LOGW("Model has no chat template, falling back to generic ChatML format");
     }
     
-    // Add ONLY the current user message - no conversation history
-    // This is the key to fast prefill times
-    formatted += "<|im_start|>user\n" + promptStr + "<|im_end|>\n";
-    // Add assistant prefix for completion
-    formatted += "<|im_start|>assistant\n";
+    std::vector<llama_chat_message> messages;
+    if (!g_system_prompt.empty()) {
+        messages.push_back({"system", g_system_prompt.c_str()});
+    }
+    messages.push_back({"user", promptStr.c_str()});
+    
+    // First call to get required buffer size
+    int32_t req_size = llama_chat_apply_template(
+        chat_template,
+        messages.data(),
+        messages.size(),
+        true,  // add_assistant_prefix
+        nullptr,
+        0
+    );
+    
+    if (req_size > 0) {
+        std::vector<char> buf(req_size + 1);
+        int32_t res = llama_chat_apply_template(
+            chat_template,
+            messages.data(),
+            messages.size(),
+            true,
+            buf.data(),
+            buf.size()
+        );
+        if (res > 0) {
+            formatted = std::string(buf.data(), res);
+        } else {
+            LOGE("llama_chat_apply_template failed, falling back to generic format");
+            req_size = -1; // trigger fallback
+        }
+    }
+    
+    if (req_size <= 0) {
+        // Fallback to generic ChatML format
+        if (!g_system_prompt.empty()) {
+            formatted += "<|im_start|>system\n" + g_system_prompt + "<|im_end|>\n";
+        }
+        formatted += "<|im_start|>user\n" + promptStr + "<|im_end|>\n";
+        formatted += "<|im_start|>assistant\n";
+    }
     
     LOGI("Prompt length: %zu chars", formatted.length());
     // DEBUG: Log first 300 chars of prompt to see what's being sent

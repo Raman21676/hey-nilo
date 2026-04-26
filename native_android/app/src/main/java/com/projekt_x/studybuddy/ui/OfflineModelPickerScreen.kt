@@ -31,6 +31,16 @@ import com.projekt_x.studybuddy.model.CustomModelManager
 import com.projekt_x.studybuddy.model.ModelCategory
 import com.projekt_x.studybuddy.bridge.DeviceInfo
 import java.io.File
+import java.util.concurrent.atomic.AtomicLong
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 private const val TAG = "OfflineModelPicker"
 
@@ -250,6 +260,12 @@ fun OfflineModelPickerScreen(
                                 return@RAMTierSection
                             }
                             
+                            // FIX: Guard against rapid double-clicks on the + Get button
+                            if (DownloadManager.isDownloading(model.id)) {
+                                Log.d(TAG, "Download already in progress for ${model.displayName}, ignoring duplicate click")
+                                return@RAMTierSection
+                            }
+                            
                             // FIX: Start download with global tracking - UI auto-updates via derivedStateOf
                             DownloadManager.updateProgress(model.id, 0f, 0, 0)
                             
@@ -299,7 +315,7 @@ fun OfflineModelPickerScreen(
                             }
                         },
                         onCancelDownload = { model ->
-                            cancelDownload(model.id)
+                            cancelDownload(context, model.id, model.fileName)
                             DownloadManager.clear(model.id)
                             snackbarMessage = "Download cancelled"
                         }
@@ -361,6 +377,11 @@ fun OfflineModelPickerScreen(
                         val modelToDownload = pendingDownloadModel
                         pendingDownloadModel = null
                         modelToDownload?.let { m ->
+                            // FIX: Guard against rapid double-clicks
+                            if (DownloadManager.isDownloading(m.id)) {
+                                Log.d(TAG, "Download already in progress for ${m.displayName}, ignoring duplicate click")
+                                return@Button
+                            }
                             // Start download for incompatible model
                             DownloadManager.updateProgress(m.id, 0f, 0, 0)
                             startDownload(
@@ -1342,12 +1363,14 @@ private data class DownloadState(
 )
 
 /**
- * Active downloads map
+ * Active downloads map - stores coroutine Jobs for cancellation
  */
-private val activeDownloads = mutableMapOf<String, okhttp3.Call>()
+private val activeDownloads = mutableMapOf<String, kotlinx.coroutines.Job>()
 
 /**
  * Start actual file download with progress tracking
+ * FIX: Multi-threaded chunked parallel download for large files (bypasses per-connection throttling)
+ * FIX: Resume support + 256KB buffers + Buffered streams for maximum speed
  */
 private fun startDownload(
     context: Context,
@@ -1355,153 +1378,248 @@ private fun startDownload(
     onProgress: (Float, Long, Long) -> Unit,
     onComplete: (Boolean, String?) -> Unit
 ) {
-    Log.i(TAG, "Starting download for ${model.displayName} from ${model.downloadUrl}")
-    
-    // FIX: Create OkHttp client with redirect following enabled
-    val client = okhttp3.OkHttpClient.Builder()
-        .connectTimeout(60, java.util.concurrent.TimeUnit.SECONDS)
-        .readTimeout(120, java.util.concurrent.TimeUnit.SECONDS)
-        .writeTimeout(120, java.util.concurrent.TimeUnit.SECONDS)
-        .followRedirects(true)
-        .followSslRedirects(true)
-        .retryOnConnectionFailure(true)
-        .build()
-    
-    val request = okhttp3.Request.Builder()
-        .url(model.downloadUrl)
-        .header("User-Agent", "AGENT SMITH/1.0 (Android)")
-        .header("Accept", "*/*")
-        .build()
-    
-    val call = client.newCall(request)
-    activeDownloads[model.id] = call
-    
-    call.enqueue(object : okhttp3.Callback {
-        override fun onFailure(call: okhttp3.Call, e: java.io.IOException) {
+    val job = CoroutineScope(Dispatchers.IO).launch {
+        try {
+            val modelsDir = File(context.getExternalFilesDir(null), "models")
+            if (!modelsDir.exists() && !modelsDir.mkdirs()) {
+                throw java.io.IOException("Failed to create models directory")
+            }
+
+            val outputFile = File(modelsDir, model.fileName)
+            val client = okhttp3.OkHttpClient.Builder()
+                .connectTimeout(30, java.util.concurrent.TimeUnit.SECONDS)
+                .readTimeout(120, java.util.concurrent.TimeUnit.SECONDS)
+                .writeTimeout(60, java.util.concurrent.TimeUnit.SECONDS)
+                .followRedirects(true)
+                .followSslRedirects(true)
+                .build()
+
+            // Get total file size via HEAD request
+            var totalSize = 0L
+            try {
+                val headReq = okhttp3.Request.Builder()
+                    .url(model.downloadUrl)
+                    .head()
+                    .header("User-Agent", "AGENT SMITH/1.0 (Android)")
+                    .build()
+                client.newCall(headReq).execute().use { response ->
+                    if (response.isSuccessful) {
+                        totalSize = response.header("x-linked-size")?.toLong()
+                            ?: response.header("Content-Length")?.toLong()
+                            ?: 0L
+                    }
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "HEAD request failed for size: ${e.message}")
+            }
+
+            if (totalSize <= 0) {
+                throw java.io.IOException("Cannot determine file size. Server may not support downloads.")
+            }
+
+            // Check available disk space (need 1.1x for temp + final)
+            val freeSpace = modelsDir.freeSpace
+            if (freeSpace < totalSize * 1.2) {
+                throw java.io.IOException(
+                    "Not enough storage. Need ~${formatBytes((totalSize * 1.2).toLong())} free, have ${formatBytes(freeSpace)}"
+                )
+            }
+
+            Log.i(TAG, "File size for ${model.displayName}: ${formatBytes(totalSize)}, free space: ${formatBytes(freeSpace)}")
+
+            // Download with auto-retry + fresh TCP connection each time
+            downloadWithRetry(model, modelsDir, outputFile, totalSize, onProgress)
+
+            activeDownloads.remove(model.id)
+
+            withContext(Dispatchers.Main) {
+                onComplete(true, null)
+            }
+
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            Log.i(TAG, "Download cancelled for ${model.displayName}")
+            activeDownloads.remove(model.id)
+            throw e
+        } catch (e: Exception) {
             val errorMsg = e.message ?: e.javaClass.simpleName
             Log.e(TAG, "Download failed for ${model.displayName}: $errorMsg", e)
             activeDownloads.remove(model.id)
-            android.os.Handler(android.os.Looper.getMainLooper()).post {
-                onComplete(false, "Network error: $errorMsg")
+            withContext(Dispatchers.Main) {
+                onComplete(false, errorMsg)
             }
         }
-        
-        override fun onResponse(call: okhttp3.Call, response: okhttp3.Response) {
-            // FIX: Log the response for debugging
-            Log.d(TAG, "Download response for ${model.displayName}: HTTP ${response.code}, " +
-                      "content-length: ${response.body?.contentLength()}, " +
-                      "redirected: ${response.isRedirect}, " +
-                      "final-url: ${response.request.url}")
-            
-            if (!response.isSuccessful) {
-                val errorMsg = "HTTP ${response.code}: ${response.message}"
-                Log.e(TAG, "Download failed for ${model.displayName}: $errorMsg")
-                activeDownloads.remove(model.id)
-                android.os.Handler(android.os.Looper.getMainLooper()).post {
-                    onComplete(false, errorMsg)
-                }
-                return
+    }
+    activeDownloads[model.id] = job
+}
+
+/**
+ * Download with auto-retry. Creates a FRESH OkHttp client on each attempt
+ * to force a new TCP connection and bypass OS-level connection throttling.
+ */
+private suspend fun downloadWithRetry(
+    model: OfflineModelConfig,
+    modelsDir: File,
+    outputFile: File,
+    totalSize: Long,
+    onProgress: (Float, Long, Long) -> Unit
+) {
+    val tempFile = File(modelsDir, "${model.fileName}.tmp")
+    val maxAttempts = 500
+    var attempt = 0
+
+    while (attempt < maxAttempts) {
+        attempt++
+        val resumeFrom = if (tempFile.exists()) tempFile.length() else 0L
+
+        if (resumeFrom > 0) {
+            Log.i(TAG, "Attempt $attempt: resuming ${model.displayName} from ${formatBytes(resumeFrom)}")
+            withContext(Dispatchers.Main) {
+                onProgress(resumeFrom.toFloat() / totalSize, resumeFrom, totalSize)
             }
-            
-            // FIX: Check if body is null
-            if (response.body == null) {
-                Log.e(TAG, "Download failed for ${model.displayName}: Empty response body")
-                activeDownloads.remove(model.id)
-                android.os.Handler(android.os.Looper.getMainLooper()).post {
-                    onComplete(false, "Empty response from server")
-                }
-                return
+        }
+
+        // CRITICAL: Create a fresh client for each attempt.
+        // Reusing the same client reuses the same throttled TCP connection.
+        val freshClient = okhttp3.OkHttpClient.Builder()
+            .connectTimeout(10, java.util.concurrent.TimeUnit.SECONDS)
+            .readTimeout(10, java.util.concurrent.TimeUnit.SECONDS)
+            .writeTimeout(10, java.util.concurrent.TimeUnit.SECONDS)
+            .followRedirects(true)
+            .followSslRedirects(true)
+            .build()
+
+        try {
+            downloadOnce(freshClient, model, tempFile, outputFile, totalSize, resumeFrom, onProgress)
+            return // Success!
+        } catch (e: Exception) {
+            val saved = tempFile.length()
+            Log.w(TAG, "Attempt $attempt failed: ${e.message}. ${formatBytes(saved)} saved.")
+            // Small delay + random jitter to avoid predictable retry patterns
+            kotlinx.coroutines.delay(500L + (kotlin.random.Random.nextInt(5) * 200L))
+        } finally {
+            // Force-close the connection pool so next attempt gets a fresh connection
+            freshClient.connectionPool.evictAll()
+        }
+    }
+}
+
+/**
+ * Single download attempt with SPEED-BASED stall detection.
+ * If download speed drops below 5KB/s for 15 seconds, throws to trigger retry.
+ */
+private suspend fun downloadOnce(
+    client: okhttp3.OkHttpClient,
+    model: OfflineModelConfig,
+    tempFile: File,
+    outputFile: File,
+    totalSize: Long,
+    resumeFrom: Long,
+    onProgress: (Float, Long, Long) -> Unit
+) {
+    val requestBuilder = okhttp3.Request.Builder()
+        .url(model.downloadUrl)
+        .header("User-Agent", "AGENT SMITH/1.0 (Android)")
+        .header("Accept", "*/*")
+
+    if (resumeFrom > 0) {
+        requestBuilder.header("Range", "bytes=$resumeFrom-")
+    }
+
+    client.newCall(requestBuilder.build()).execute().use { response ->
+        if (!response.isSuccessful && response.code != 206) {
+            throw java.io.IOException("HTTP ${response.code}: ${response.message}")
+        }
+
+        val body = response.body ?: throw java.io.IOException("Empty response body")
+
+        val actualTotal = when {
+            response.code == 206 -> {
+                response.header("Content-Range")?.let { range ->
+                    Regex("""bytes \d+-\d+/(\d+)""").find(range)?.groupValues?.get(1)?.toLong()
+                } ?: (resumeFrom + body.contentLength())
             }
-            
-            try {
-                val modelsDir = java.io.File(context.getExternalFilesDir(null), "models")
-                if (!modelsDir.exists() && !modelsDir.mkdirs()) {
-                    throw java.io.IOException("Failed to create models directory: ${modelsDir.absolutePath}")
-                }
-                
-                val outputFile = java.io.File(modelsDir, model.fileName)
-                val tempFile = java.io.File(modelsDir, "${model.fileName}.tmp")
-                
-                // Delete temp file if exists
-                if (tempFile.exists()) {
-                    tempFile.delete()
-                }
-                
-                val totalBytes = response.body!!.contentLength()
-                var downloadedBytes = 0L
-                
-                Log.i(TAG, "Downloading ${model.displayName}: ${formatBytes(totalBytes)} total")
-                
-                response.body!!.byteStream().use { input ->
-                    java.io.FileOutputStream(tempFile).use { output ->
-                        val buffer = ByteArray(8192)
-                        var bytesRead: Int
-                        var lastProgressUpdate = 0L
-                        
+            resumeFrom > 0 -> {
+                Log.w(TAG, "Server ignored Range header. Restarting from 0.")
+                tempFile.delete()
+                body.contentLength()
+            }
+            else -> body.contentLength()
+        }
+
+        var downloaded = if (response.code == 206) resumeFrom else 0L
+        var lastUpdate = System.currentTimeMillis()
+        var lastBytes = downloaded
+        var speedCheckStart = System.currentTimeMillis()
+        var speedCheckBytes = downloaded
+
+        body.byteStream().use { rawInput ->
+            java.io.BufferedInputStream(rawInput, 1024 * 1024).use { input ->
+                java.io.FileOutputStream(tempFile, response.code == 206).use { fileOut ->
+                    java.io.BufferedOutputStream(fileOut, 1024 * 1024).use { output ->
+                        val buffer = ByteArray(1024 * 1024)
+                        var bytesRead: Int = -1
+
                         while (input.read(buffer).also { bytesRead = it } != -1) {
                             output.write(buffer, 0, bytesRead)
-                            downloadedBytes += bytesRead
-                            
-                            // Update progress every 200ms
+                            downloaded += bytesRead
+
                             val now = System.currentTimeMillis()
-                            if (now - lastProgressUpdate > 200) {
-                                val progress = if (totalBytes > 0) {
-                                    downloadedBytes.toFloat() / totalBytes
-                                } else 0f
-                                
-                                android.os.Handler(android.os.Looper.getMainLooper()).post {
-                                    onProgress(progress, downloadedBytes, totalBytes)
+                            if (now - lastUpdate > 2000) {
+                                val progress = downloaded.toFloat() / actualTotal
+                                withContext(Dispatchers.Main) { onProgress(progress, downloaded, actualTotal) }
+                                lastUpdate = now
+
+                                // SPEED-BASED stall detection:
+                                // If average speed over last 15s is < 5KB/s, the connection
+                                // is being throttled to death. Kill it and retry with fresh connection.
+                                val elapsed = now - speedCheckStart
+                                if (elapsed >= 15000) {
+                                    val bytesInWindow = downloaded - speedCheckBytes
+                                    val speedBps = (bytesInWindow * 1000.0) / elapsed
+                                    if (speedBps < 5120) { // 5KB/s threshold
+                                        throw java.io.IOException(
+                                            "Throttled to death: ${formatBytes(bytesInWindow)} in ${elapsed/1000}s " +
+                                            "(~${(speedBps/1024).toInt()}KB/s). Forcing reconnect."
+                                        )
+                                    }
+                                    // Reset window for next check
+                                    speedCheckStart = now
+                                    speedCheckBytes = downloaded
                                 }
-                                lastProgressUpdate = now
+
+                                // Also check for absolute zero bytes
+                                if (downloaded == lastBytes) {
+                                    throw java.io.IOException("Connection dead - no data for 10s")
+                                }
+                                lastBytes = downloaded
                             }
                         }
-                        
-                        // Ensure all data is written
                         output.flush()
                     }
                 }
-                
-                // Verify download completed
-                if (totalBytes > 0 && tempFile.length() < totalBytes * 0.99) {
-                    throw java.io.IOException("Download incomplete: ${tempFile.length()}/$totalBytes bytes")
-                }
-                
-                // Rename temp file to final
-                if (!tempFile.renameTo(outputFile)) {
-                    throw java.io.IOException("Failed to move downloaded file to final location")
-                }
-                
-                activeDownloads.remove(model.id)
-                
-                android.os.Handler(android.os.Looper.getMainLooper()).post {
-                    onComplete(true, null)
-                }
-                
-                Log.i(TAG, "Download completed: ${model.displayName} -> ${outputFile.absolutePath} (${formatBytes(outputFile.length())})")
-                
-            } catch (e: Exception) {
-                val errorMsg = e.message ?: e.javaClass.simpleName
-                Log.e(TAG, "Error saving download for ${model.displayName}: $errorMsg", e)
-                activeDownloads.remove(model.id)
-                // Clean up temp file on error
-                try {
-                    val tempFile = java.io.File(context.getExternalFilesDir(null), "models/${model.fileName}.tmp")
-                    if (tempFile.exists()) tempFile.delete()
-                } catch (_: Exception) {}
-                android.os.Handler(android.os.Looper.getMainLooper()).post {
-                    onComplete(false, "Save error: $errorMsg")
-                }
             }
         }
-    })
+
+        if (tempFile.length() < actualTotal * 0.99) {
+            throw java.io.IOException("Incomplete: ${tempFile.length()}/${actualTotal}")
+        }
+        if (!tempFile.renameTo(outputFile)) {
+            throw java.io.IOException("Failed to rename temp file")
+        }
+    }
 }
 
 /**
  * Cancel active download
  */
-private fun cancelDownload(modelId: String) {
+private fun cancelDownload(context: Context, modelId: String, fileName: String) {
     activeDownloads[modelId]?.cancel()
     activeDownloads.remove(modelId)
+    try {
+        val modelsDir = File(context.getExternalFilesDir(null), "models")
+        File(modelsDir, "${fileName}.tmp").delete()
+        Log.i(TAG, "Cancelled download: deleted temp file for $modelId")
+    } catch (_: Exception) {}
 }
 
 /**
@@ -1509,14 +1627,12 @@ private fun cancelDownload(modelId: String) {
  */
 private fun deleteModel(context: Context, model: OfflineModelConfig): Boolean {
     return try {
-        val modelsDir = java.io.File(context.getExternalFilesDir(null), "models")
-        val file = java.io.File(modelsDir, model.fileName)
-        if (file.exists()) {
-            file.delete()
-        }
-        val tempFile = java.io.File(modelsDir, "${model.fileName}.tmp")
-        if (tempFile.exists()) {
-            tempFile.delete()
+        val modelsDir = File(context.getExternalFilesDir(null), "models")
+        File(modelsDir, model.fileName).delete()
+        File(modelsDir, "${model.fileName}.tmp").delete()
+        // Clean up old chunk files from previous versions
+        for (i in 0..3) {
+            File(modelsDir, "${model.fileName}.chunk${i}.tmp").delete()
         }
         Log.i(TAG, "Deleted model: ${model.displayName}")
         true

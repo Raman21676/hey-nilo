@@ -185,7 +185,7 @@ class LlamaBridge(private val context: Context) : BaseBridge() {
                 updateState(State.READY)
                 Log.i(TAG, "Model loaded successfully")
             } else {
-                setError("Native loadModel returned false")
+                setError("Failed to load model. Possible causes: (1) The model file is corrupted or not a valid GGUF, (2) Your device doesn't have enough free RAM to load this model, (3) This model architecture is not supported by the app yet. Try a smaller model or reinstall.")
             }
             
             success
